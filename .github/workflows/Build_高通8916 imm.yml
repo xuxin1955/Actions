@@ -220,21 +220,22 @@ jobs:
         cd openwrt
 
         echo "⬇️ Downloading..."
-        make download -j$(nproc) -k V=s 2>&1 | tee download.log
+        output=$(make download -j$(nproc) -k V=s 2>&1)
 
-        if grep -E "ERROR 404|ERROR 403|failed to download|Download failed|wget:|curl:|Hash verification failed|checksum mismatch|MD5.*mismatch|sha256sum.*WARNING" download.log | grep -v "grep" > failed_downloads.txt; then
+        if echo "$output" | grep -qE "Hash verification failed|checksum mismatch|MD5.*mismatch|sha256sum.*WARNING"; then
           echo "❌ Failed packages and their logs:"
-          cat failed_downloads.txt
+          echo "$output" | grep -E "Hash verification failed|checksum mismatch|MD5.*mismatch|sha256sum.*WARNING"
           echo ""
           echo "Detailed logs:"
-          while read line; do
-            pkg=$(echo "$line" | grep -oP '(?<=/)[^/]+(?=\.tar|\.gz|\.bz2|\.xz|\.zip)' | head -1)
-            [ -n "$pkg" ] && grep -A10 -B5 "$pkg" download.log || true
-          done < failed_downloads.txt
-        else
-          echo "✅ All downloads completed"
+          echo "$output" | grep -E "Hash verification failed|checksum mismatch" | sed 's/.*failed for //;s/.*mismatch //' | while read f; do
+            pkg=$(basename "$f" | sed 's/\.[^.]*$//')
+            echo ""
+            echo "🔍 $pkg (file: $(basename "$f"))"
+            echo "$output" | grep -A10 -B5 "$pkg" || true
+          done
         fi
       shell: bash
+
 
 
 
