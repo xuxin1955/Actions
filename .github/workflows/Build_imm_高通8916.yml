@@ -1,4 +1,4 @@
-name: Build_imm_高通_8916
+name: Build_imm_高通8916
 
 on:
   repository_dispatch:
@@ -143,22 +143,8 @@ jobs:
     - name: Update feeds
       run: |
         cd openwrt
-
-        ./scripts/feeds clean
-        rm -rf feeds
-
         ./scripts/feeds update -a
         ./scripts/feeds install -a -f
-
-        echo "📌 Local packages feed:"
-        git -C feeds/packages log -1 --format="%H %ci %s"
-
-        echo "📌 Actual remote of feeds/packages:"
-        git -C feeds/packages remote get-url origin
-        
-        echo "📌 Remote HEAD actually used:"
-        git -C feeds/packages ls-remote HEAD || true
-
 
     - name: remove warning
       run: |
