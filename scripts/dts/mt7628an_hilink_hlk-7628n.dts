@@ -107,7 +107,7 @@
 };
 
 &esw {
-	mediatek,portmap = "wllll";
+	mediatek,portmap = <0x3e>;
 };
 
 &wmac {
