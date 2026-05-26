@@ -39,15 +39,14 @@ jobs:
         ./scripts/show_hardware_info.sh
 
     - name: Free Disk Space (Ubuntu)
-      uses: jlumbroso/free-disk-space@main
+      uses: insightsengineering/disk-space-reclaimer@mini
       with:
-        tool-cache: false
-        android: false
-        dotnet: false
-        haskell: false
-        large-packages: false
-        docker-images: false
-        swap-storage: false
+        remove-android: false
+        remove-dotnet: false
+        remove-haskell: false
+        remove-large-packages: false
+        remove-docker-images: false
+        remove-swap-storage: false
 
     - name: space usage check  
       run: |
