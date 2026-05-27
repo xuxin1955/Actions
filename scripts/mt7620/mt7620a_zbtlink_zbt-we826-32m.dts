@@ -45,7 +45,8 @@
 	};
 
 	keys {
-		compatible = "gpio-keys";
+		compatible = "gpio-keys-polled";
+		poll-interval = <20>;
 
 		uboot {
 			label = "uboot";
