@@ -3,9 +3,6 @@
 # Modify default IP
 sed -i 's/192.168.1.1/192.168.100.1/g' package/base-files/files/bin/config_generate
 
-# luci-theme-design
-git clone https://github.com/gngpp/luci-theme-design.git package/luci-theme-design
-
 # hlk7620A dts
 mkdir -p target/linux/ramips/dts/
 cp -f "$GITHUB_WORKSPACE/scripts/mt7620/mt7620a_zbtlink_zbt-we826-32m.dts" "target/linux/ramips/dts/mt7620a_zbtlink_zbt-we826-32m.dts"
