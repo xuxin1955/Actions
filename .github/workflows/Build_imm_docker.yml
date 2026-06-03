@@ -64,7 +64,7 @@ jobs:
     
     - name: Build in Ubuntu 18.04
       run: |
-        docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace ubuntu:18.04 bash -c "set -e && apt-get update && apt-get install -y curl && curl -sL https://build-scripts.immortalwrt.eu.org/init_build_environment.sh | bash && chmod +x /workspace/diy-part.sh && /workspace/diy-part.sh && echo Build done"
+        docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace ubuntu:18.04 bash -c "set -e && export DEBIAN_FRONTEND=noninteractive && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo Asia/Shanghai > /etc/timezone && apt-get update && apt-get install -y curl && curl -sL https://build-scripts.immortalwrt.eu.org/init_build_environment.sh | bash && chmod +x /workspace/diy-part.sh && /workspace/diy-part.sh && echo Build done"
 
         
     - name: mkbootimg build
