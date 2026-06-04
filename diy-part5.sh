@@ -14,3 +14,6 @@ cp -f "$GITHUB_WORKSPACE/scripts/mt7620/01_leds" "target/linux/ramips/mt7620/bas
 # 北大源
 cp -r "$GITHUB_WORKSPACE/scripts/files-7620" "$GITHUB_WORKSPACE/openwrt/files"
 ls -R "$GITHUB_WORKSPACE/openwrt/files"
+
+# turboacc
+curl -sSL https://raw.githubusercontent.com/mufeng05/turboacc/main/add_turboacc.sh -o add_turboacc.sh && bash add_turboacc.sh

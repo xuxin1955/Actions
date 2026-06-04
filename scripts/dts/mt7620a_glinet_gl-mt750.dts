@@ -21,6 +21,7 @@
 		air {
 			label = "green:wifi";
 			gpios = <&gpio3 0 GPIO_ACTIVE_LOW>;
+			default-state = "on";
 			linux,default-trigger = "phy0tx";
 		};
 	};
@@ -130,8 +131,6 @@
 
 &pcie {
 	status = "okay";
-	
-	reset-gpios = <&gpio1 12 GPIO_ACTIVE_LOW>;
 };
 
 &pcie0 {

@@ -11,5 +11,5 @@ cp -f "$GITHUB_WORKSPACE/scripts/dts/mt7620a_glinet_gl-mt750.dts" "target/linux/
 mkdir -p "target/linux/ramips/mt7620/base-files/etc/board.d/"
 cp -f "$GITHUB_WORKSPACE/scripts/mt7620/01_leds" "target/linux/ramips/mt7620/base-files/etc/board.d/01_leds"
 
-# password
-# sed -i 's/$1$V4UetPzk$CYXluq4wUazHjmCDBCqXF.//g' package/lean/default-settings/files/zzz-default-settings
+# turboacc
+curl -sSL https://raw.githubusercontent.com/mufeng05/turboacc/main/add_turboacc.sh -o add_turboacc.sh && bash add_turboacc.sh
