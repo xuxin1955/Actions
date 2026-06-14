@@ -130,8 +130,7 @@ engenius,esr600)
 	ucidef_set_led_netdev "wlan2g" "2.4GHz" "blue:wlan2g" "wlan1"
 	;;
 glinet,gl-mt300a|\
-glinet,gl-mt300n|\
-glinet,gl-mt750)
+glinet,gl-mt300n)
 	ucidef_set_led_wlan "wifi_led" "wifi" "green:wifi" "phy0tx"
 	;;
 hiwifi,hc5661|\
