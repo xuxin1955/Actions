@@ -128,7 +128,7 @@ jobs:
         ln -sfn /mnt/openwrt/build_dir openwrt/build_dir
         df -H
         
-    - name: Load custom feeds
+    - name: DIY_P4
       run: |
         [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
         chmod +x $DIY_P4_SH
@@ -159,7 +159,14 @@ jobs:
       uses: mxschmitt/action-tmate@master
       if: ${{ inputs.ssh || contains(github.event.action, 'ssh') }}
       
-
+    - name: 自动上传最新源码生成.config编译配置
+      uses: actions/upload-artifact@main
+      with:
+       name: build-config
+       path: |
+         ${{ github.workspace }}/openwrt/.config
+         ${{ github.workspace }}/openwrt/feeds.conf.default
+       include-hidden-files: true
       
       
     - name: Download package
@@ -175,14 +182,6 @@ jobs:
       
            ls -la openwrt/.config
 
-    - name: 自动上传最新源码生成.config编译配置
-      uses: actions/upload-artifact@main
-      with:
-       name: build-config
-       path: |
-         ${{ github.workspace }}/openwrt/.config
-         ${{ github.workspace }}/openwrt/feeds.conf.default
-       include-hidden-files: true
 
     - name: Compile the OpenWrt
       id: compile
