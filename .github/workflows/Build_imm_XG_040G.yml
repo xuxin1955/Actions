@@ -135,10 +135,6 @@ jobs:
         chmod 755 $GITHUB_WORKSPACE/scripts/diy-part.sh
         $GITHUB_WORKSPACE/scripts/diy-part.sh
         
-    - name: Clone airoha-npu
-      run: |
-        rm -rf openwrt/package/luci-app-airoha-npu
-        git clone https://github.com/rchen14b/luci-app-airoha-npu.git openwrt/package/luci-app-airoha-npu
 
     - name: Configuration Customization
       run: |
