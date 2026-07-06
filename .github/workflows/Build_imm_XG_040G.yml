@@ -105,11 +105,7 @@ jobs:
         echo "::set-output name=status::success"
         fi
         
-    - name: Clone airoha-npu
-      run: |
-        git clone https://github.com/rchen14b/luci-app-airoha-npu.git openwrt/package/luci-app-airoha-npu
 
-       
     - name: Free up disk space
       run: |
         sudo mkdir -p /mnt/openwrt/{dl,staging_dir,build_dir}
@@ -139,6 +135,10 @@ jobs:
         chmod 755 $GITHUB_WORKSPACE/scripts/diy-part.sh
         $GITHUB_WORKSPACE/scripts/diy-part.sh
         
+    - name: Clone airoha-npu
+      run: |
+        git clone https://github.com/rchen14b/luci-app-airoha-npu.git openwrt/package/luci-app-airoha-npu
+
 
     - name: Configuration Customization
       run: |
