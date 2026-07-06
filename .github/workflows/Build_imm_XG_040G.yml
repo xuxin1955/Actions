@@ -129,7 +129,7 @@ jobs:
         
         ./scripts/feeds install -a -f
 
-        ./scripts/feeds install luci-app-airoha-npu || true
+        ./scripts/feeds install luci-app-airoha-npu
         
     - name: remove warning
       run: |
