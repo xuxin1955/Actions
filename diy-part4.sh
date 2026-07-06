@@ -19,6 +19,8 @@ if [ ! -d "package/luci-app-airoha-npu" ]; then
 fi
 
 
+echo "src-git airoha-npu https://github.com/rchen14b/luci-app-airoha-npu" >> openwrt/feeds.conf.default
+
 
 # 验证
 echo "=== 验证 airoha-npu ==="
