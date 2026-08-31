@@ -206,41 +206,25 @@ jobs:
          ${{ github.workspace }}/openwrt/feeds.conf.default
        include-hidden-files: true
        
+    - name: Get source version
+      id: srcver
+      run: |
+        cd openwrt
+        echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+      shell: bash
+
     - name: Cache dl
       id: cache-dl
       uses: actions/cache@v5
       with:
         path: openwrt/dl
-        key: dl-${{ runner.os }}-${{ hashFiles('openwrt/feeds.conf.default') }}
-        restore-keys: |
-          dl-${{ runner.os }}-
-
+        key: dl-${{ runner.os }}-${{ steps.srcver.outputs.sha }}
 
     - name: Download package
       run: |
-        if [[ "${{ steps.cache-dl.outputs.cache-hit }}" == "true" ]]; then
-          echo "✅ dl cache hit"
-        else
-          echo "⚠️ dl cache miss"
-        fi
-
         cd openwrt
-
-        echo "⬇️ Downloading..."
-        output=$(make download -j$(nproc) -k V=s 2>&1)
-
-        if echo "$output" | grep -qE "Hash verification failed|checksum mismatch|MD5.*mismatch|sha256sum.*WARNING"; then
-          echo "❌ Failed packages and their logs:"
-          echo "$output" | grep -E "Hash verification failed|checksum mismatch|MD5.*mismatch|sha256sum.*WARNING"
-          echo ""
-          echo "Detailed logs:"
-          echo "$output" | grep -E "Hash verification failed|checksum mismatch" | sed 's/.*failed for //;s/.*mismatch //' | while read f; do
-            pkg=$(basename "$f" | sed 's/\.[^.]*$//')
-            echo ""
-            echo "🔍 $pkg (file: $(basename "$f"))"
-            echo "$output" | grep -A10 -B5 "$pkg" || true
-          done
-        fi
+        [ "${{ steps.cache-dl.outputs.cache-hit }}" = "true" ] && echo "cache hit" || echo "cache miss"
+        make download -j$(nproc) -k V=s
       shell: bash
     
     - name: make -j$(nproc)
