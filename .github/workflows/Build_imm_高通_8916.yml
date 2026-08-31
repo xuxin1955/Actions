@@ -183,11 +183,10 @@ jobs:
       if: ${{ inputs.ssh || contains(github.event.action, 'ssh') }}
       
       
-    - name: make defconfig
+    - name: make olddefconfig
       run: |
         cd openwrt
-        make defconfig V=s
-
+        make kernel_olddefconfig V=s
        
     - name: 查看 openwrt 目录
       run: ls -la openwrt/
