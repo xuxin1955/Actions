@@ -1,4 +1,4 @@
-name: Build_imm_glinet_gl-mt750
+name: Build_imm_xiaomi_miwifi-mini
 
 on:
   repository_dispatch:
@@ -16,7 +16,7 @@ on:
         type: boolean
 
 env:
-  CONFIG_FILE: 'config/glinet_gl-mt750.config'
+  CONFIG_FILE: 'config/xiaomi_miwifi-mini.config'
   REPO_URL: https://github.com/immortalwrt/immortalwrt
   REPO_BRANCH: master
   FEEDS_CONF: feeds.conf.default
@@ -174,7 +174,7 @@ jobs:
             echo "Compile success"
         else
             echo "Compile failed, retry with debug log..."
-            make -j4 V=s
+            make -j6 V=s
         fi
 
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
@@ -203,9 +203,9 @@ jobs:
       if: env.UPLOAD_RELEASE == 'true' && steps.organize.outputs.status == 'success'
       run: |
         echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
-        echo "🚀 OpenWrt firmware for glinet_gl-mt750_7620A WIFI路由模块" >> release.txt
+        echo "🚀 immortalwrt firmware for xiaomi_miwifi-mini_7620A WIFI路由模块" >> release.txt
         echo "----------------------" >> release.txt
-        echo "设备: glinet_gl-mt750_7620A WIFI路由模块" >> release.txt
+        echo "设备: xiaomi_miwifi-mini WIFI路由模块" >> release.txt
         echo "时间: $(date +"%Y-%m-%d %H:%M")" >> release.txt
         echo "内核版本: $(grep -h "kmod-usb2" ${{ env.FIRMWARE }}/*.manifest 2>/dev/null | awk -F' - ' '{print $2}' | grep -oP '[5-6]\.[0-9]+\.[0-9]+' | head -1 || echo '未知')" >> release.txt
         echo "源码仓库: ${{ env.REPO_URL }}" >> release.txt
@@ -243,10 +243,6 @@ jobs:
         allowUpdates: true
         draft: false
         prerelease: false
-
-
-
-
 
     - name: Delete old workflow runs via GitHub API
       if: always()
