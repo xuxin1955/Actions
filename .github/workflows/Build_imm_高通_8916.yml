@@ -224,7 +224,11 @@ jobs:
       run: |
         cd openwrt
         [ "${{ steps.cache-dl.outputs.cache-hit }}" = "true" ] && echo "cache hit" || echo "cache miss"
-        make download -j$(nproc) -k V=s
+        output=$(make download -j$(nproc) -k V=s 2>&1)
+        if echo "$output" | grep -qiE "Hash verification failed|checksum mismatch|ERROR"; then
+          echo "===== download errors ====="
+          echo "$output" | grep -iE "Hash verification failed|checksum mismatch|ERROR"
+        fi
       shell: bash
     
     - name: make -j$(nproc)
