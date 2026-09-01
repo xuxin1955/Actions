@@ -17,8 +17,8 @@ on:
 
 env:
   CONFIG_FILE: 'config/xiaomi_miwifi-mini.config'
-  REPO_URL: https://github.com/immortalwrt/immortalwrt
-  REPO_BRANCH: master
+  REPO_URL: https://github.com/fanchmwrt/fanchmwrt
+  REPO_BRANCH: fanchmwrt-25.12.4
   FEEDS_CONF: feeds.conf.default
   DIY_P5_SH: diy-part5.sh
   UPLOAD_FIRMWARE: true
