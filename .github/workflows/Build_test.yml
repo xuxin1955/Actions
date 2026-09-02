@@ -7,8 +7,8 @@ on:
 
 
 env:
-  REPO_URL: https://github.com/bingoguo93/immortalwrt
-  REPO_BRANCH: 6.18
+  REPO_URL: https://github.com/openwrt/openwrt
+  REPO_BRANCH: openwrt-23.05
   FEEDS_CONF: feeds.conf.default
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
@@ -18,7 +18,7 @@ env:
   
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
     - name: Checkout
