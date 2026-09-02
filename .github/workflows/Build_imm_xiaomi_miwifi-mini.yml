@@ -17,8 +17,8 @@ on:
 
 env:
   CONFIG_FILE: 'config/xiaomi_miwifi-mini.config'
-  REPO_URL: https://github.com/openwrt/openwrt
-  REPO_BRANCH: openwrt-23.05
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
+  REPO_BRANCH: master
   FEEDS_CONF: feeds.conf.default
   DIY_P5_SH: diy-part5.sh
   UPLOAD_FIRMWARE: true
