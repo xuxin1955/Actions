@@ -12,16 +12,18 @@ echo "src-git qmodem https://github.com/FUjr/QModem.git;main" >> "$GITHUB_WORKSP
 
 # hlk7620A dts
 mkdir -p target/linux/ramips/dts/
-cp -f "$GITHUB_WORKSPACE/scripts/mt7620/mt7620a_glinet_gl-mt750.dts" "target/linux/ramips/dts/mt7620a_glinet_gl-mt750.dts"
-cp -f "$GITHUB_WORKSPACE/scripts/mt7620/mt7620a_xiaomi_miwifi-mini.dts" "target/linux/ramips/dts/mt7620a_xiaomi_miwifi-mini.dts"
+# cp -f "$GITHUB_WORKSPACE/scripts/mt7620/mt7620a_glinet_gl-mt750.dts" "target/linux/ramips/dts/mt7620a_glinet_gl-mt750.dts"
+# cp -f "$GITHUB_WORKSPACE/scripts/mt7620/mt7620a_xiaomi_miwifi-mini.dts" "target/linux/ramips/dts/mt7620a_xiaomi_miwifi-mini.dts"
+cp -f "$GITHUB_WORKSPACE/scripts/mt7620a_xiaomi_miwifi-mini.dts" "target/linux/ramips/dts/mt7620a_xiaomi_miwifi-mini.dts"
 
 
-mkdir -p "target/linux/ramips/mt7620/base-files/etc/board.d/"
-cp -f "$GITHUB_WORKSPACE/scripts/mt7620/01_leds" "target/linux/ramips/mt7620/base-files/etc/board.d/01_leds"
+
+# mkdir -p "target/linux/ramips/mt7620/base-files/etc/board.d/"
+# cp -f "$GITHUB_WORKSPACE/scripts/mt7620/01_leds" "target/linux/ramips/mt7620/base-files/etc/board.d/01_leds"
 
 # 北大源
-cp -r "$GITHUB_WORKSPACE/scripts/files-7620" "$GITHUB_WORKSPACE/openwrt/files"
-ls -R "$GITHUB_WORKSPACE/openwrt/files"
+# cp -r "$GITHUB_WORKSPACE/scripts/files-7620" "$GITHUB_WORKSPACE/openwrt/files"
+# ls -R "$GITHUB_WORKSPACE/openwrt/files"
 
 
 sed -i 's/^root:[^:]*:/root::/' package/base-files/files/etc/shadow
