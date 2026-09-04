@@ -195,19 +195,14 @@ jobs:
          ${{ github.workspace }}/openwrt/feeds.conf.default
        include-hidden-files: true
        
-    - name: Get source version
-      id: srcver
-      run: |
-        cd openwrt
-        echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-      shell: bash
-
     - name: Cache dl
       id: cache-dl
       uses: actions/cache@v5
       with:
         path: openwrt/dl
-        key: dl-${{ runner.os }}-${{ steps.srcver.outputs.sha }}
+        key: dl-${{ runner.os }}-immortalwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
+        restore-keys: |
+          dl-${{ runner.os }}-immortalwrt-
 
     - name: Download package
       run: |
@@ -219,7 +214,7 @@ jobs:
           echo "$output" | grep -iE "Hash verification failed|checksum mismatch|ERROR"
         fi
       shell: bash
-    
+
     - name: make -j$(nproc)
       id: compile
       run: |
