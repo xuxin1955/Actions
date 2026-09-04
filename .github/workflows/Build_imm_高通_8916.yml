@@ -39,18 +39,7 @@ jobs:
       matrix:
         device:
           - jz02v10
-          - ufi001c
-          - ufi001b
-          - ufi103s
-          - qrzl903
-          - w001
-          - ufi003
-          - uz801
-          - mf32
-          - mf601
-          - wf2
-          - sp970v11
-          - sp970v10
+
     steps:
    
     - name: Checkout
