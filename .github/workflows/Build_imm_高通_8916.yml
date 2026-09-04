@@ -176,8 +176,6 @@ jobs:
       run: |
         cd openwrt
         make defconfig V=s
-        sed -i 's/^CONFIG_PACKAGE_rootfs-resizer=.*/# CONFIG_PACKAGE_rootfs-resizer is not set/' .config
-
 
        
     - name: 查看 openwrt 目录
