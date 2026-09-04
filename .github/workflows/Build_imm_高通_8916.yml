@@ -203,6 +203,7 @@ jobs:
         key: dl-${{ runner.os }}-immortalwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
         restore-keys: |
           dl-${{ runner.os }}-immortalwrt-
+          dl-${{ runner.os }}-c1c7610cf12d51c4330c53e338ebd7f883d32b71
 
     - name: Download package
       run: |
