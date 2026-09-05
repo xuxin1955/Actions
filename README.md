@@ -2,14 +2,13 @@
 
 ## Credits
 
-- msm8916的包需要解压
+- msm8916的包刷机 
+- 首次刷机下载仓库 flash.zip解压
+- immortalwrt-msm89xx-msm8916-openstick-jz02v10-squashfs-system.img改名为rootfs.img
+- immortalwrt-msm89xx-msm8916-openstick-jz02v10-squashfs-boot.img改名为boot.img
+- boot.img和rootfs.img放flash目录去windows执行flash.bat刷机 linux系统执行./flash.sh刷机  
+- 后续直接支持系统内在线升级刷机直接下载 immortalwrt-msm89xx-msm8916-openstick-jz02v10-squashfs-sysupgrade.bin 
 
-- immortalwrt-msm89xx-msm8916-openstick-jz02v10-ext4-system.img.gz
-- immortalwrt-msm89xx-msm8916-openstick-jz02v10-ext4-boot.img.gz
-
-- bootloader模式刷入命令
-- fastboot flash boot immortalwrt-msm89xx-msm8916-openstick-jz02v10-ext4-boot.img
-- fastboot flash rootfs immortalwrt-msm89xx-msm8916-openstick-jz02v10-ext4-system.img
 
 
 - [GitHub Actions](https://github.com/features/actions)
