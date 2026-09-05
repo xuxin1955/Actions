@@ -39,7 +39,18 @@ jobs:
       matrix:
         device:
           - jz02v10
-
+          - ufi001c
+          - ufi001b
+          - ufi103s
+          - qrzl903
+          - w001
+          - ufi003
+          - uz801
+          - mf32
+          - mf601
+          - wf2
+          - sp970v11
+          - sp970v10
     steps:
    
     - name: Checkout
@@ -195,15 +206,19 @@ jobs:
          ${{ github.workspace }}/openwrt/feeds.conf.default
        include-hidden-files: true
        
+    - name: Get source version
+      id: srcver
+      run: |
+        cd openwrt
+        echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+      shell: bash
+
     - name: Cache dl
       id: cache-dl
       uses: actions/cache@v5
       with:
         path: openwrt/dl
-        key: dl-${{ runner.os }}-immortalwrt-${{ hashFiles('openwrt/feeds.conf.default') }}
-        restore-keys: |
-          dl-${{ runner.os }}-immortalwrt-
-          dl-${{ runner.os }}-c1c7610cf12d51c4330c53e338ebd7f883d32b71
+        key: dl-${{ runner.os }}-${{ steps.srcver.outputs.sha }}
 
     - name: Download package
       run: |
@@ -215,7 +230,7 @@ jobs:
           echo "$output" | grep -iE "Hash verification failed|checksum mismatch|ERROR"
         fi
       shell: bash
-
+    
     - name: make -j$(nproc)
       id: compile
       run: |
