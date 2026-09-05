@@ -215,7 +215,7 @@ jobs:
         restore-keys: |
           dl-${{ runner.os }}-immortalwrt-
           dl-${{ runner.os }}-c1c7610cf12d51c4330c53e338ebd7f883d32b71
-        key: dl-${{ runner.os }}-${{ steps.srcver.outputs.sha }}
+          key: dl-${{ runner.os }}-${{ steps.srcver.outputs.sha }}
 
     - name: Download package
       run: |
