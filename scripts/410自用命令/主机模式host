@@ -1,0 +1,27 @@
+进入 vi /etc/init.d/set_usb_role
+
+输入i 复制下面👇🏻粘贴
+#!/bin/sh /etc/rc.common
+
+START=99
+USE_PROCD=1
+
+start_service() {
+    procd_open_instance
+    procd_set_param command /bin/true
+    procd_close_instance
+    echo host > /sys/class/udc/ci_hdrc.0/device/driver/ci_hdrc.0/role
+}
+
+stop_service() {
+    echo device > /sys/class/udc/ci_hdrc.0/device/driver/ci_hdrc.0/role
+}
+
+输入esc
+
+输入:wq
+复制下面两条命令权限和开机自启！
+chmod +x /etc/init.d/set_usb_role
+
+/etc/init.d/set_usb_role enable
+

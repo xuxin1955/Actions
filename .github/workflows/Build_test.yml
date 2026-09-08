@@ -1,0 +1,149 @@
+name: Build_test
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+
+
+
+env:
+  REPO_URL: https://github.com/xuxin1955/immortalwrt
+  REPO_BRANCH: master
+  FEEDS_CONF: feeds.conf.default
+  DIY_P1_SH: diy-part1.sh
+  DIY_P2_SH: diy-part2.sh
+  UPLOAD_FIRMWARE: true
+  UPLOAD_RELEASE: true
+  TZ: Asia/Shanghai
+  
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Show hardware info
+      run: |
+        chmod 755 ./scripts/show_hardware_info.sh
+        ./scripts/show_hardware_info.sh
+
+    - name: Free Disk Space (Ubuntu)
+      uses: insightsengineering/disk-space-reclaimer@v1.1.2
+      with:
+        android: false
+        dotnet: false
+        haskell: false
+        large-packages: false
+        swap-storage: false
+        docker-images: false
+        tools-cache: true
+
+    - name: space usage check  
+      run: |
+        df -H
+
+    - name: Initialization environment
+      id: init
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo -E apt-get -y update
+        sudo -E apt-get -y install --no-install-recommends $(curl -fsSL https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt)
+        echo "status=success" >> ${GITHUB_OUTPUT}
+
+        
+    - name: mkbootimg build
+      run: |
+        wget https://github.com/xuxin1955/depend_ubuntu2204_openwrt/releases/download/ubuntu_26.04_LTS_mkbootimg/mkbootimg_34.0.5-12build1_all.deb
+        sudo dpkg -i mkbootimg_34.0.5-12build1_all.deb
+        sudo apt-get install -f -y
+        # 验证安装
+        mkbootimg --help || true
+        MKBOOTIMG_PATH=$(which mkbootimg)
+        if [ -n "$MKBOOTIMG_PATH" ]; then
+        echo "mkbootimg found at: $MKBOOTIMG_PATH"
+        file "$MKBOOTIMG_PATH"
+        else
+        echo "❌ mkbootimg not found in PATH!"
+        fi
+        
+        sudo timedatectl set-timezone "${TZ}"
+        
+        
+    - name: Ensure Python build tools
+      run: |
+        python3 -m pip install --upgrade pip setuptools wheel
+        python3 -m pip install Unidecode
+        
+        
+    - name: Clone source code
+      id: codes
+      if: steps.init.outputs.status == 'success' && success()
+      run: |
+        git clone "$REPO_URL" -b "$REPO_BRANCH" openwrt
+        cd openwrt
+        git pull origin "$REPO_BRANCH"
+        git log --oneline -1
+        cd ..
+        if [ -n "$GITHUB_OUTPUT" ]; then
+        echo "status=success" >> "$GITHUB_OUTPUT"
+        else
+        echo "::set-output name=status::success"
+        fi
+
+       
+    - name: Free up disk space
+      run: |
+        sudo mkdir -p /mnt/openwrt/{dl,staging_dir,build_dir}
+        sudo chown -R $USER:$GROUPS /mnt/openwrt
+        ln -sfn /mnt/openwrt/dl openwrt/dl
+        ln -sfn /mnt/openwrt/staging_dir openwrt/staging_dir
+        ln -sfn /mnt/openwrt/build_dir openwrt/build_dir
+        df -H
+        
+    - name: Load custom DIY_P1_SH
+      run: |
+        [ -e $FEEDS_CONF ] && mv $FEEDS_CONF openwrt/feeds.conf.default
+        chmod +x $DIY_P1_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P1_SH
+
+    - name: Update & Install feeds
+      working-directory: ./openwrt
+      run: |
+        ./scripts/feeds update -a
+        
+        ./scripts/feeds install -a -f
+        
+    - name: remove warning
+      run: |
+        chmod 755 $GITHUB_WORKSPACE/scripts/diy-part.sh
+        $GITHUB_WORKSPACE/scripts/diy-part.sh
+        
+        
+    - name: Load custom DIY_P2_SH
+      run: |
+        
+        chmod +x $DIY_P2_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P2_SH
+        
+        
+    - name: SSH 调试有效时间6h!
+      uses: mxschmitt/action-tmate@master
+      
+    - name: 自动上传最新源码生成.config编译配置
+      uses: actions/upload-artifact@main
+      with:
+       name: build-config
+       path: |
+         ${{ github.workspace }}/openwrt/.config
+         ${{ github.workspace }}/openwrt/feeds.conf.default
+       include-hidden-files: true    
+      
+    - name: 上传完成，结束 job
+      run: |
+        echo "config 已上传，结束"
+        exit 0

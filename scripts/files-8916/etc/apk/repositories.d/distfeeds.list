@@ -1,0 +1,8 @@
+# This file is auto-generated and build-specific, any changes will be intentionally lost in sysupgrade.
+# Add your custom feeds to /etc/apk/repositories.d/customfeeds.list
+https://mirrors.pku.edu.cn/immortalwrt/snapshots/targets/armsr/armv8/packages/packages.adb
+https://mirrors.pku.edu.cn/immortalwrt/snapshots/packages/aarch64_generic/base/packages.adb
+https://mirrors.pku.edu.cn/immortalwrt/snapshots/packages/aarch64_generic/luci/packages.adb
+https://mirrors.pku.edu.cn/immortalwrt/snapshots/packages/aarch64_generic/packages/packages.adb
+https://mirrors.pku.edu.cn/immortalwrt/snapshots/packages/aarch64_generic/routing/packages.adb
+https://mirrors.pku.edu.cn/immortalwrt/snapshots/packages/aarch64_generic/telephony/packages.adb

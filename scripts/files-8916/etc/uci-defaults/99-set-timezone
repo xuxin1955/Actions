@@ -1,0 +1,17 @@
+#!/bin/sh
+
+# 设置 WiFi 国家码
+uci -q set wireless.radio0.country='CN'
+uci -q set wireless.radio1.country='CN'
+
+# 设置时区为上海（CST-8）
+uci -q set system.@system[0].zonename='Asia/Shanghai'
+uci -q set system.@system[0].timezone='CST-8'
+
+# 提交配置
+uci commit wireless
+uci commit system
+
+/etc/init.d/system reload 2>/dev/null
+
+exit 0

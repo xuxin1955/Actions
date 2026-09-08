@@ -1,0 +1,30 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+
+SWAPFILE="/overlay/swapfile"
+SWAPSIZE=256
+
+start() {
+    [ -d /overlay ] || return 0
+
+    grep -q "$SWAPFILE" /proc/swaps 2>/dev/null && return 0
+
+    if [ ! -f "$SWAPFILE" ]; then
+        echo "Creating 256MB swapfile..."
+
+        dd if=/dev/zero of="$SWAPFILE" bs=1M count="$SWAPSIZE" 2>/dev/null || {
+            rm -f "$SWAPFILE"
+            return 1
+        }
+
+        chmod 600 "$SWAPFILE"
+
+        mkswap "$SWAPFILE" >/dev/null 2>&1 || {
+            rm -f "$SWAPFILE"
+            return 1
+        }
+    fi
+
+    swapon "$SWAPFILE"
+}

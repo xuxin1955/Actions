@@ -1,0 +1,74 @@
+{
+	"messages" : [
+		"5553424387654321000000000000061e000000000000000000000000000000",
+		"5553424397654321000000000000061b000000010000000000000000000000",
+		"5553424307654321000000000000061b000000020000000000000000000000"
+	],
+	"devices" : {
+		"a69c:5721": {
+			"*": {
+				"t_vendor": 13861,
+				"t_product": [ 272 ],
+				"mode": "StandardEject",
+				"msg": [ ]
+			}
+		},
+		"a69c:5723": {
+			"*": {
+				"t_vendor": 13861,
+				"t_product": [ 272 ],
+				"mode": "StandardEject",
+				"msg": [ ]
+			}
+		},
+		"a69c:5724": {
+			"*": {
+				"t_vendor": 13861,
+				"t_product": [ 272 ],
+				"mode": "StandardEject",
+				"msg": [ ]
+			}
+		},
+		"a69c:5725": {
+			"*": {
+				"t_vendor": 13861,
+				"t_product": [ 272 ],
+				"mode": "StandardEject",
+				"msg": [ ]
+			}
+		},
+		"a69c:5726": {
+			"*": {
+				"t_vendor": 13861,
+				"t_product": [ 272 ],
+				"mode": "StandardEject",
+				"msg": [ ]
+			}
+		},
+		"a69c:5727": {
+			"*": {
+				"t_vendor": 13861,
+				"t_product": [ 272 ],
+				"mode": "StandardEject",
+				"msg": [ ]
+			}
+		},
+		"a69c:572a": {
+			"*": {
+				"t_vendor": 13861,
+				"t_product": [ 272 ],
+				"mode": "StandardEject",
+				"msg": [ ]
+			}
+		},
+		"a69c:572c": {
+			"*": {
+				"t_vendor": 13861,
+				"t_product": [ 272 ],
+				"mode": "StandardEject",
+				"msg": [ ]
+			}
+		}
+	}
+}
+

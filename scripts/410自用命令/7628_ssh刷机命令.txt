@@ -1,0 +1,9 @@
+7628N   ssh刷机命令
+7628D
+自改对应ip地址
+
+不保配置推送刷机！
+cat immortalwrt-ramips-mt76x8-hilink_hlk-7628n-squashfs-sysupgrade.bin | ssh root@192.168.100.1 "cat > /tmp/fw.bin && sysupgrade -n /tmp/fw.bin"
+
+保配置推送刷机
+cat immortalwrt-ramips-mt76x8-hilink_hlk-7628n-squashfs-sysupgrade.bin | ssh root@192.168.100.1 "cat > /tmp/fw.bin && sysupgrade /tmp/fw.bin"

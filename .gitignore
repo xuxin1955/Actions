@@ -1,0 +1,8 @@
+/bin/
+/build_dir/
+/dl/
+/tmp/
+/staging_dir/
+config/rootfs.img
+*.zip
+pics/
