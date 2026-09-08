@@ -1323,7 +1323,7 @@ f_wcn36xx_sta_ifname() {
 
 	# Prefer netifd runtime status, it's more reliable than guessing from sysfs.
 	raw="$("${trm_ubuscmd}" -S call network.wireless status 2>/dev/null)"
-	ifname="$(printf "%s" "${raw}" | "${trm_jsoncmd}" -ql1 -e '@.*.interfaces[@.section!="" && @.config.mode="sta" && @.config.device="'"${radio}"'"].ifname')"
+	ifname="$(printf "%s" "${raw}" | "${trm_jsoncmd}" -ql1 -e '@.*.interfaces[@.config.mode="sta"].ifname')"
 	if [ -n "${ifname}" ]; then
 		printf "%s" "${ifname}"
 		return 0
@@ -1365,6 +1365,12 @@ f_wcn36xx_sta_channel() {
 	if [ -n "${channel}" ] && [ "${channel}" != "0" ] && [ "${channel}" != "auto" ]; then
 		printf "%s" "${channel}"
 		return 0
+	# fallback: iwinfo cli (more universally available than ubus iwinfo info)
+	channel="$(iwinfo "${ifname}" info 2>/dev/null | awk -F'[:, ]' '/# Channel:/{print $2; exit}')"
+	if [ -n "${channel}" ] && [ "${channel}" != "0" ] && [ "${channel}" != "auto" ]; then
+		printf "%s" "${channel}"
+		return 0
+	fi
 	fi
 
 	# Fallback to freq from nl80211 link info.
