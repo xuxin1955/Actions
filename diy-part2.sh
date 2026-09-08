@@ -14,8 +14,5 @@ git clone https://github.com/lkiuyu/DbusSmsForwardCPlus package/DbusSmsForwardCP
 cp -r "$GITHUB_WORKSPACE/scripts/files-8916" "$GITHUB_WORKSPACE/openwrt/files"
 ls -R "$GITHUB_WORKSPACE/openwrt/files"
 
-# wcn36xx
-OPENWRT_DIR="$GITHUB_WORKSPACE/openwrt"
-
-patch -d "$OPENWRT_DIR/feeds/packages" -p1 \
-  < "$GITHUB_WORKSPACE/scripts/travelmate-wcn36xx-imm-master-fixed.patch"
+# wcn36xx travelmate
+cp "$GITHUB_WORKSPACE/scripts/travelmate-functions.sh" "$GITHUB_WORKSPACE/openwrt/feeds/packages/net/travelmate/files/travelmate-functions.sh"
