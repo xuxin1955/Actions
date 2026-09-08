@@ -16,5 +16,6 @@ ls -R "$GITHUB_WORKSPACE/openwrt/files"
 
 # wcn36xx
 OPENWRT_DIR="$GITHUB_WORKSPACE/openwrt"
+
 patch -d "$OPENWRT_DIR/feeds/packages" -p1 \
-< "$GITHUB_WORKSPACE/scripts/travelmate-wcn36xx-imm-master.patch"
+  < "$GITHUB_WORKSPACE/scripts/travelmate-wcn36xx-immortalwrt-final.patch"
