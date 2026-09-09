@@ -12,7 +12,7 @@ case "$INTERFACE" in
             ifdown) echo 0 > "$BLUE/brightness" ;;
         esac
         ;;
-    phy0-ap0)
+    lan)
         [ -d "$GREEN" ] || exit 0
         case "$ACTION" in
             ifup)   echo phy0rx > "$GREEN/trigger" ;;
