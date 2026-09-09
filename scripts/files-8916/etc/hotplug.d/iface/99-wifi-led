@@ -1,0 +1,22 @@
+#!/bin/sh
+
+BLUE="/sys/class/leds/blue:wan"
+GREEN="/sys/class/leds/green:wlan"
+
+case "$INTERFACE" in
+    modem)
+        [ -d "$BLUE" ] || exit 0
+        echo none > "$BLUE/trigger"
+        case "$ACTION" in
+            ifup|ifupdate)   echo 1 > "$BLUE/brightness" ;;
+            ifdown) echo 0 > "$BLUE/brightness" ;;
+        esac
+        ;;
+    phy0-ap0)
+        [ -d "$GREEN" ] || exit 0
+        case "$ACTION" in
+            ifup)   echo phy0rx > "$GREEN/trigger" ;;
+            ifdown) echo none > "$GREEN/trigger"; echo 0 > "$GREEN/brightness" ;;
+        esac
+        ;;
+esac
