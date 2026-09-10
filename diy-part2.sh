@@ -13,6 +13,3 @@ git clone https://github.com/lkiuyu/DbusSmsForwardCPlus package/DbusSmsForwardCP
 # 北大源
 cp -r "$GITHUB_WORKSPACE/scripts/files-8916" "$GITHUB_WORKSPACE/openwrt/files"
 ls -R "$GITHUB_WORKSPACE/openwrt/files"
-
-# wcn36xx travelmate
-cp "$GITHUB_WORKSPACE/scripts/travelmate-functions.sh" "$GITHUB_WORKSPACE/openwrt/feeds/packages/net/travelmate/files/travelmate-functions.sh"
