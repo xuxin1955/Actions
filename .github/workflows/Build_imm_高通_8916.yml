@@ -147,6 +147,7 @@ jobs:
       run: |
         cd openwrt
         ./scripts/feeds update -a
+        
         ./scripts/feeds update istore
         
         echo "📌 Local packages feed:"
@@ -163,7 +164,7 @@ jobs:
         cd openwrt
         ./scripts/feeds install -a -f
        
-       ./scripts/feeds install -d y -p istore luci-app-store
+        ./scripts/feeds install -d y -p istore luci-app-store
        
     - name: remove warning
       run: |
