@@ -165,7 +165,9 @@ jobs:
         ./scripts/feeds install -a -f
        
         ./scripts/feeds install -d y -p istore luci-app-store
-       
+        
+        sed -i '/^LUCI_DESCRIPTION:=/a LUCI_DEFAULT:=y' feeds/istore/luci/luci-app-store/Makefile
+        
     - name: remove warning
       run: |
         chmod 755 $GITHUB_WORKSPACE/scripts/diy-part.sh
