@@ -3,6 +3,8 @@
 ## Credits
 
 - msm8916的包刷机 
+- web在线升级没变化使用flash.zip线刷一下最新固件即可
+-
 - 首次刷机下载仓库 flash.zip解压 注意不执行这一步无法开机
 - immortalwrt-msm89xx-msm8916-openstick-jz02v10-squashfs-system.img改名为rootfs.img
 - immortalwrt-msm89xx-msm8916-openstick-jz02v10-squashfs-boot.img改名为boot.img
