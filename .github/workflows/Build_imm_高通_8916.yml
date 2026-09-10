@@ -147,6 +147,7 @@ jobs:
     - name: Install feeds
       run: |
         cd openwrt
+        git clone --depth=1 https://github.com/linkease/istore.git package/istore
         ./scripts/feeds install -a -f
         ./scripts/feeds install -d y -p istore luci-app-store
         
