@@ -169,6 +169,17 @@ jobs:
         echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
         ./scripts/feeds update istore
         ./scripts/feeds install -d y -p istore luci-app-store
+        echo "===== package Makefile ====="
+        ls -l package/feeds/istore/luci-app-store/Makefile
+
+        echo "===== tmp .config ====="
+        grep -n 'luci-app-store' tmp/.config* 2>/dev/null || true
+
+        echo "===== feeds index ====="
+        grep -n 'luci-app-store' feeds/istore.index
+
+        echo "===== package config ====="
+        grep -n 'luci-app-store' package/feeds/istore/luci-app-store/Makefile
         
     - name: remove warning
       run: |
