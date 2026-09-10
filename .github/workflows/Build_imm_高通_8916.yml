@@ -143,14 +143,7 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P1_SH
         
-        
-    - name: Install luci-app-store
-      run: |
-        cd openwrt
-        echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
-        ./scripts/feeds update istore
-        ./scripts/feeds install -d y -p istore luci-app-store
-        
+     
     - name: Update feeds
       run: |
         cd openwrt
@@ -169,6 +162,13 @@ jobs:
       run: |
         cd openwrt
         ./scripts/feeds install -a -f
+        
+    - name: Install luci-app-store
+      run: |
+        cd openwrt
+        echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
+        ./scripts/feeds update istore
+        ./scripts/feeds install -d y -p istore luci-app-store
         
     - name: remove warning
       run: |
