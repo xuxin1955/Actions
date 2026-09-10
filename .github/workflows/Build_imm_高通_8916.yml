@@ -144,11 +144,11 @@ jobs:
         $GITHUB_WORKSPACE/$DIY_P1_SH
         
         
-    - name: Install feeds
+    - name: Install luci-app-store
       run: |
         cd openwrt
-        git clone --depth=1 https://github.com/linkease/istore.git package/istore
-        ./scripts/feeds install -a -f
+        echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
+        ./scripts/feeds update istore
         ./scripts/feeds install -d y -p istore luci-app-store
         
     - name: Update feeds
