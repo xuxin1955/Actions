@@ -7,6 +7,7 @@ on:
 
 
 env:
+  CONFIG_FILE: 'config/jz02v10.config'
   REPO_URL: https://github.com/xuxin1955/immortalwrt
   REPO_BRANCH: master
   FEEDS_CONF: feeds.conf.default
@@ -125,11 +126,18 @@ jobs:
         
     - name: Load custom DIY_P2_SH
       run: |
-        
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
         chmod +x $DIY_P2_SH
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
         
+    - name: Update & Install feeds
+      working-directory: ./openwrt
+      run: |
+        echo >> feeds.conf.default
+        echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
+        ./scripts/feeds update istore
+        ./scripts/feeds install -d y -p istore luci-app-store
         
     - name: SSH 调试有效时间6h!
       uses: mxschmitt/action-tmate@master
