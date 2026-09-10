@@ -139,6 +139,12 @@ jobs:
         ./scripts/feeds update istore
         ./scripts/feeds install -d y -p istore luci-app-store
         
+        
+    - name: make defconfig
+      run: |
+        cd openwrt
+        make defconfig V=s
+        
     - name: 自动上传最新源码生成.config编译配置
       uses: actions/upload-artifact@main
       with:
