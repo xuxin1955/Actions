@@ -143,12 +143,17 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P1_SH
         
+        
+    - name: Install feeds
+      run: |
+        cd openwrt
+        ./scripts/feeds install -a -f
+        ./scripts/feeds install -d y -p istore luci-app-store
+        
     - name: Update feeds
       run: |
         cd openwrt
         ./scripts/feeds update -a
-        
-        ./scripts/feeds update istore
         
         echo "📌 Local packages feed:"
         git -C feeds/packages log -1 --format="%H %ci %s"
@@ -163,10 +168,6 @@ jobs:
       run: |
         cd openwrt
         ./scripts/feeds install -a -f
-       
-        ./scripts/feeds install -d y -p istore luci-app-store
-        
-        sed -i '/^LUCI_DESCRIPTION:=/a LUCI_DEFAULT:=y' feeds/istore/luci/luci-app-store/Makefile
         
     - name: remove warning
       run: |
