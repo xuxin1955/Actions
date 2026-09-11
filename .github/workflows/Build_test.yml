@@ -132,21 +132,34 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
         
-    - name: Check iStore dependencies
+    - name: Fully diagnose iStore
       working-directory: ./openwrt
       run: |
         echo "===== iStore dependencies ====="
         grep '^LUCI_DEPENDS' package/feeds/istore/luci-app-store/Makefile
 
-        echo "===== dependency packages ====="
-        for p in curl tar libuci-lua mount-utils luci-lib-taskd; do
-          echo "[$p]"
-          ./scripts/feeds list | grep -E "^$p[[:space:]]" || echo "NOT FOUND"
-        done
+        echo "===== libuci ====="
+        grep -R -nE 'define Package/[^[:space:]]*libuci[^[:space:]]*($|/)' package feeds 2>/dev/null | head -50 || true
 
-        echo "===== dependency config ====="
-        grep -E '^CONFIG_PACKAGE_(curl|tar|libuci-lua|mount-utils|luci-lib-taskd)=' .config || true
-        
+        echo "===== mount ====="
+        grep -R -nE 'define Package/[^[:space:]]*mount[^[:space:]]*($|/)' package feeds 2>/dev/null | head -100 || true
+
+        echo "===== all matching package names ====="
+        find package feeds -type f -name Makefile -print0 2>/dev/null |
+          xargs -0 grep -hE '^define Package/' 2>/dev/null |
+          grep -E 'libuci|mount' | sort -u || true
+
+        echo "===== current config ====="
+        grep -E '^CONFIG_PACKAGE_(luci-app-store|libuci|mount)' .config || true
+
+        echo "===== defconfig test ====="
+        make defconfig >/tmp/defconfig.log 2>&1
+
+        echo "===== iStore result ====="
+        grep '^CONFIG_PACKAGE_luci-app-store=' .config || echo "REMOVED"
+
+        echo "===== relevant defconfig messages ====="
+        grep -iE 'luci-app-store|libuci|mount-utils|dependency' /tmp/defconfig.log || true
     - name: make defconfig
       run: |
         cd openwrt
