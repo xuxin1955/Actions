@@ -177,7 +177,7 @@ jobs:
         
         
     - name: SSH 调试有效时间6h! 连接后输入q 输入exit即可退出，自动继续后续编译流程
-      uses: mxschmitt/action-tmate@master
+      uses: WarpBuilds/action-debugger@master
       if: ${{ inputs.ssh || contains(github.event.action, 'ssh') }}
       
       
