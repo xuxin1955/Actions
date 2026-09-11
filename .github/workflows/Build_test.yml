@@ -111,13 +111,6 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P1_SH
         
-        
-    - name: Update istore
-      working-directory: openwrt
-      run: |
-       ./scripts/feeds update istore
-       
-       ./scripts/feeds install -d y -p istore luci-app-store
 
     - name: Update & Install feeds
       working-directory: ./openwrt
