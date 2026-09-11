@@ -132,6 +132,27 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
         
+    - name: Check iStore
+      working-directory: ./openwrt
+      run: |
+        echo "===== 1. iStore package ====="
+        ls -la package/feeds/istore/luci-app-store || true
+
+        echo "===== 2. Makefile ====="
+        cat package/feeds/istore/luci-app-store/Makefile || true
+
+        echo "===== 3. Package definition ====="
+        grep -R "Package/luci-app-store" package/feeds/istore/luci-app-store 2>/dev/null || true
+
+        echo "===== 4. Config BEFORE defconfig ====="
+        grep "CONFIG_PACKAGE_luci-app-store" .config || true
+
+        echo "===== 5. Run defconfig ====="
+        make defconfig
+
+        echo "===== 6. Config AFTER defconfig ====="
+        grep "CONFIG_PACKAGE_luci-app-store" .config || true
+        
 
     - name: make defconfig
       run: |
