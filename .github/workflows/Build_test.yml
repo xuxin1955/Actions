@@ -119,11 +119,6 @@ jobs:
         
         ./scripts/feeds install -a -f
         
-    - name: 查主包在哪个 feed
-      working-directory: ./openwrt
-      run: |
-       ./scripts/feeds search luci-app-store
-        
     - name: remove warning
       run: |
         chmod 755 $GITHUB_WORKSPACE/scripts/diy-part.sh
@@ -137,14 +132,7 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
     
-    - name: defconfig
-      working-directory: ./openwrt
-      run: |
-        echo 'CONFIG_PACKAGE_luci-app-store=y' >> .config
-        make defconfig 2>&1 | grep -iE 'luci-app-store|depends on|not set|warning' | head -40
 
-
-        
     - name: make defconfig
       run: |
         cd openwrt
