@@ -131,24 +131,7 @@ jobs:
         chmod +x $DIY_P2_SH
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
-        
-    - name: Debug package metadata
-      working-directory: ./openwrt
-      run: |
-        set +e
-        make -j1 package/metadata V=sc 2>&1 | tee /tmp/metadata.log
-        ret=${PIPESTATUS[0]}
 
-        echo "===== ERROR ====="
-        grep -n -E "ERROR|Error|error|failed|Failed|cannot|Cannot|No rule|not found" /tmp/metadata.log | tail -100 || true
-
-        echo "===== ISTORE ====="
-        grep -n -A30 -B5 "luci-app-store" /tmp/metadata.log | tail -100 || true
-
-        echo "===== EXIT CODE ====="
-        echo "$ret"
-
-        exit "$ret"
         
     - name: make defconfig
       run: |
