@@ -141,7 +141,7 @@ jobs:
 
         
     - name: SSH 调试有效时间6h!
-      uses: percona/gh-action-action-tmate@master
+      uses: WarpBuilds/action-debugger@master
       
     - name: 自动上传最新源码生成.config编译配置
       uses: actions/upload-artifact@main

@@ -24,10 +24,8 @@ echo ">>> OPP VOLTAGE COUNT: $(grep -c 'opp-microvolt' target/linux/msm89xx/dts/
 
 
 # kenzo
-# echo 'src-git kenzo https://github.com/kenzok8/openwrt-packages' >> feeds.conf.default
+echo 'src-git kenzo https://github.com/kenzok8/openwrt-packages' >> feeds.conf.default
 
 # small
-# echo 'src-git small https://github.com/kenzok8/small' >> feeds.conf.default
+echo 'src-git small https://github.com/kenzok8/small' >> feeds.conf.default
 
-echo >> feeds.conf.default
-echo 'src-git istore https://github.com/xuxin1955/istore;main' >> feeds.conf.default
