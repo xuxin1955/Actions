@@ -140,16 +140,6 @@ jobs:
         ./scripts/feeds install -d y -p istore luci-app-store
         
         
-    - name: Debug istore package
-      working-directory: ./openwrt
-      run: |
-        echo "===== istore.index 里的 luci-app-store ====="
-        grep -A 25 "^Package: luci-app-store" feeds/istore.index || echo "NOT FOUND IN INDEX"
-        echo "===== .config 里相关行 ====="
-        grep -iE "luci-app-store|luci-lib-taskd|taskd" .config || echo "NONE IN .config"
-        echo "===== 强行 compile 看真实报错 ====="
-        make package/feeds/istore/luci-app-store/compile V=s 2>&1 | tail -40
-        
         
     - name: make defconfig
       run: |
