@@ -132,16 +132,23 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
         
-    - name: Check iStore Kconfig
+    - name: Debug package metadata
       working-directory: ./openwrt
       run: |
-        make package/metadata
-        echo "===== luci-app-store ====="
-        grep -n -A35 -B5 'config PACKAGE_luci-app-store' tmp/.config-package.in
-        echo "===== luci-lib-taskd ====="
-        grep -n -A35 -B5 'config PACKAGE_luci-lib-taskd' tmp/.config-package.in
-        
-        
+        set +e
+        make -j1 package/metadata V=sc 2>&1 | tee /tmp/metadata.log
+        ret=${PIPESTATUS[0]}
+
+        echo "===== ERROR ====="
+        grep -n -E "ERROR|Error|error|failed|Failed|cannot|Cannot|No rule|not found" /tmp/metadata.log | tail -100 || true
+
+        echo "===== ISTORE ====="
+        grep -n -A30 -B5 "luci-app-store" /tmp/metadata.log | tail -100 || true
+
+        echo "===== EXIT CODE ====="
+        echo "$ret"
+
+        exit "$ret"
         
     - name: make defconfig
       run: |
