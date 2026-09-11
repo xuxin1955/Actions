@@ -22,3 +22,9 @@ sed -i 's|src-git-full openstick https://github.com/lkiuyu/openstick-feeds.git|s
 echo ">>> OPP VOLTAGE COUNT: $(grep -c 'opp-microvolt' target/linux/msm89xx/dts/msm8916.dtsi) <<<"
 
 
+# kenzo
+echo 'src-git kenzo https://github.com/kenzok8/openwrt-packages' >> feeds.conf.default
+
+# small
+echo 'src-git small https://github.com/kenzok8/small' >> feeds.conf.default
+
