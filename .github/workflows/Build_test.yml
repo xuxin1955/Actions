@@ -136,6 +136,13 @@ jobs:
         chmod +x $DIY_P2_SH
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
+    
+    - name: defconfig
+      working-directory: ./openwrt
+      run: |
+        echo 'CONFIG_PACKAGE_luci-app-store=y' >> .config
+        make defconfig 2>&1 | grep -iE 'luci-app-store|depends on|not set|warning' | head -40
+
 
         
     - name: make defconfig
