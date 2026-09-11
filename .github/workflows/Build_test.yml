@@ -135,7 +135,7 @@ jobs:
       working-directory: ./openwrt
       run: |
         echo >> feeds.conf.default
-        echo 'src-git istore https://github.com/xuxin1955/istore;main' >> feeds.conf.default
+        echo 'src-git istore https://github.com/qtjxj/istore;main' >> feeds.conf.default
         ./scripts/feeds update istore
         ./scripts/feeds install -d y -p istore luci-app-store
         
