@@ -26,3 +26,8 @@ sed -i 's|src-git-full openstick https://github.com/lkiuyu/openstick-feeds.git|s
 
 # inspect
 echo ">>> OPP VOLTAGE COUNT: $(grep -c 'opp-microvolt' target/linux/msm89xx/dts/msm8916.dtsi) <<<"
+
+
+# istore
+echo >> feeds.conf.default
+echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default

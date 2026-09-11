@@ -110,6 +110,14 @@ jobs:
         chmod +x $DIY_P1_SH
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P1_SH
+        
+        
+    - name: Update istore
+      working-directory: openwrt
+      run: |
+       ./scripts/feeds update istore
+       
+       ./scripts/feeds install -d y -p istore luci-app-store
 
     - name: Update & Install feeds
       working-directory: ./openwrt
@@ -131,16 +139,7 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
         
-    - name: Update & Install feeds
-      working-directory: ./openwrt
-      run: |
-        echo >> feeds.conf.default
-        echo 'src-git istore https://github.com/xuxin1955/istore;main' >> feeds.conf.default
-        ./scripts/feeds update istore
-        ./scripts/feeds install -d y -p istore luci-app-store
-        
-        
-        
+
     - name: make defconfig
       run: |
         cd openwrt
