@@ -119,6 +119,11 @@ jobs:
         
         ./scripts/feeds install -a -f
         
+    - name: 查主包在哪个 feed
+      working-directory: ./openwrt
+      run: |
+       ./scripts/feeds search luci-app-store
+        
     - name: remove warning
       run: |
         chmod 755 $GITHUB_WORKSPACE/scripts/diy-part.sh
