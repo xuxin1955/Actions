@@ -138,17 +138,10 @@ jobs:
         cd openwrt
         make defconfig V=s
         
-    - name: 自动上传最新源码生成.config编译配置
-      uses: actions/upload-artifact@main
-      with:
-       name: build-config
-       path: |
-         ${{ github.workspace }}/openwrt/.config
-         ${{ github.workspace }}/openwrt/feeds.conf.default
-       include-hidden-files: true    
+
         
     - name: SSH 调试有效时间6h!
-      uses: mxschmitt/action-tmate@master
+      uses: mxschmitt/action-tmate@v3.24
       
     - name: 自动上传最新源码生成.config编译配置
       uses: actions/upload-artifact@main
