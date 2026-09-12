@@ -191,20 +191,17 @@ jobs:
       uses: actions/cache@v5
       with:
         path: /mnt/openwrt/.ccache
-        key: ccache-${{ runner.os }}-msm8916-${{ github.run_id }}
+        key: ccache-msm8916-stable
         restore-keys: |
-          ccache-${{ runner.os }}-msm8916-
-          
+          ccache-msm8916-
+
     - name: Setup ccache
       run: |
         mkdir -p /mnt/openwrt/.ccache
         echo "CCACHE_DIR=/mnt/openwrt/.ccache" >> "$GITHUB_ENV"
-
         ccache --set-config=cache_dir=/mnt/openwrt/.ccache
-        ccache --set-config=max_size=10G
+        ccache --set-config=max_size=4G
         ccache --set-config=compression=true
-
-        echo "===== ccache config ====="
         ccache --show-config
  
              
