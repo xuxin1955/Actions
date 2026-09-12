@@ -3,7 +3,7 @@
 START=99
 
 SWAPFILE="/overlay/swapfile"
-SWAPSIZE=256
+SWAPSIZE=128
 
 start() {
     [ -d /overlay ] || return 0
@@ -11,7 +11,7 @@ start() {
     grep -q "$SWAPFILE" /proc/swaps 2>/dev/null && return 0
 
     if [ ! -f "$SWAPFILE" ]; then
-        echo "Creating 256MB swapfile..."
+        echo "Creating 128MB swapfile..."
 
         dd if=/dev/zero of="$SWAPFILE" bs=1M count="$SWAPSIZE" 2>/dev/null || {
             rm -f "$SWAPFILE"
