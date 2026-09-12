@@ -156,6 +156,8 @@ jobs:
       id: compile
       run: |
         cd openwrt
+        make tools/install
+        make toolchain/install
         make package/simadmin/compile V=s
 
       
