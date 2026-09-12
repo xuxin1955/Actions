@@ -4,19 +4,12 @@
 mkdir -p target/linux/msm89xx/dts/
 cp -f "$GITHUB_WORKSPACE/scripts/dts/msm8916.dtsi" "target/linux/msm89xx/dts/msm8916.dtsi"
 
-# OpenClash
-# git clone --depth 1 https://github.com/vernesong/OpenClash.git OpenClash
-
 # OpenAppFilter
-git clone --depth 1 https://github.com/destan19/OpenAppFilter.git package/OpenAppFilter
 git clone --depth 1 https://github.com/destan19/luci-app-harbor-file.git package/harbor-file
 
 # turboacc
 # curl -sSL https://raw.githubusercontent.com/mufeng05/turboacc/main/add_turboacc.sh -o add_turboacc.sh && bash add_turboacc.sh
 curl -sSL https://raw.githubusercontent.com/chenmozhijin/turboacc/luci/add_turboacc.sh -o add_turboacc.sh && bash add_turboacc.sh
-
-# 调试
-sed -i 's|src-git-full openstick https://github.com/lkiuyu/openstick-feeds.git|src-git-full openstick https://github.com/xuxin1955/openstick-feeds|g' feeds.conf.default
 
 
 # inspect
