@@ -151,6 +151,13 @@ jobs:
          ${{ github.workspace }}/openwrt/.config
          ${{ github.workspace }}/openwrt/feeds.conf.default
        include-hidden-files: true    
+
+    - name: make -j$(nproc)
+      id: compile
+      run: |
+        cd openwrt
+        make package/simadmin/compile V=s
+
       
     - name: 上传完成，结束 job
       run: |
