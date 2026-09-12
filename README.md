@@ -5,6 +5,9 @@
 - msm8916的包刷机 
 - web在线升级没变化使用flash.zip线刷一下最新固件即可
 -
+- 想快速进bootloader模式线刷小技巧 重启就是bootloader模式了
+- 系统内执行 dd if=/dev/zero of=/dev/mmcblk0p12 bs=4M sync
+-
 - 首次刷机下载仓库 flash.zip解压 注意不执行这一步无法开机
 - immortalwrt-msm89xx-msm8916-openstick-jz02v10-squashfs-system.img改名为rootfs.img
 - immortalwrt-msm89xx-msm8916-openstick-jz02v10-squashfs-boot.img改名为boot.img
