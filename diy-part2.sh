@@ -42,14 +42,17 @@ EOF
 grep -q 'graph_child_address' include/image.mk && echo "FAIL: image.mk 未修复" || echo "OK: image.mk DTC 参数已修复"
 
 
-FW4_SRC=scripts/msm89xx/package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch
+FW4_SRC=$GITHUB_WORKSPACE/scripts/msm89xx/package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch
 FW4_PATCH=package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch
 FW4_VER=$(sed -n 's/^PKG_SOURCE_VERSION:=//p' package/network/config/firewall4/Makefile)
 echo "firewall4 pin: ${FW4_VER:-unknown}"
 
 if [ "$FW4_VER" = "bac1d656e09b48e542f860844fe91cbba82abae2" ]; then
-	cp -f "$FW4_SRC" "$FW4_PATCH"
-	echo "firewall4: local fullcone patch applied"
+	if cp -f "$FW4_SRC" "$FW4_PATCH"; then
+		echo "firewall4: local fullcone patch applied"
+	else
+		echo "::error::firewall4: local patch missing at $FW4_SRC"
+	fi
 else
 	rm -f "$FW4_PATCH"
 	git checkout -- package/network/config/firewall4
@@ -61,4 +64,5 @@ if grep -q "zone.dflags.helper = false;" "$FW4_PATCH" 2>/dev/null; then
 else
 	echo "::warning::firewall4 patch verify: failed"
 fi
+
 
