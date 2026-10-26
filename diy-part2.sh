@@ -42,4 +42,9 @@ EOF
 grep -q 'graph_child_address' include/image.mk && echo "FAIL: image.mk 未修复" || echo "OK: image.mk DTC 参数已修复"
 
 
-grep -q "PKG_SOURCE_VERSION:=bac1d656e09b48e542f860844fe91cbba82abae2" package/network/config/firewall4/Makefile || echo "::error::firewall4 pin changed, fullcone patch override stale"
+FW4_VER=$(sed -n 's/^PKG_SOURCE_VERSION:=//p' package/network/config/firewall4/Makefile)
+if [ "$FW4_VER" != "bac1d656e09b48e542f860844fe91cbba82abae2" ]; then
+	rm -f package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch
+	git checkout -- package/network/config/firewall4
+	echo "firewall4 pin=$FW4_VER, fallback to upstream patch"
+fi
