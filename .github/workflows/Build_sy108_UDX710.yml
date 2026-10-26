@@ -102,6 +102,15 @@ jobs:
         cd "$SY108_OUT/openwrt-build"
         $GITHUB_WORKSPACE/$DIY_SY108_SH
 
+    - name: Download package
+      working-directory: ./sy108
+      run: |
+        ./tools/python tools/build/firmware.py "$PROFILE" --configure-only
+        KARC=$(jq -r .archive manifests/kernel.json)
+        cd "$SY108_OUT/openwrt-build"
+        make download -j8 LINUX_SOURCE="$KARC" LINUX_SITE=file:///downloads
+        find dl/ -size -1024c -delete
+
     - name: SSH 调试有效时间6h! 连接后输入q 输入exit即可退出，自动继续后续编译流程
       uses: WarpBuilds/action-debugger@master
       if: ${{ inputs.ssh || contains(github.event.action, 'ssh') }}
