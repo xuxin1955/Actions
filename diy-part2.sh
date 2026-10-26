@@ -40,3 +40,6 @@ patch -p1 --fuzz=2 <<'EOF'
  DTC_FLAGS += $(DTC_WARN_FLAGS)
 EOF
 grep -q 'graph_child_address' include/image.mk && echo "FAIL: image.mk 未修复" || echo "OK: image.mk DTC 参数已修复"
+
+
+grep -q "PKG_SOURCE_VERSION:=bac1d656e09b48e542f860844fe91cbba82abae2" package/network/config/firewall4/Makefile || echo "::error::firewall4 pin changed, fullcone patch override stale"
