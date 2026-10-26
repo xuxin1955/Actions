@@ -79,7 +79,8 @@ jobs:
         test "$PROBE" = "echo" || { echo "::error::container() override not applied, got: $PROBE"; exit 1; }
 
         sed -i 's|raise SystemExit("Linux archive checksum mismatch")|print(f"::warning::kernel archive sha256={digest}, manifest mismatch ignored")|' tools/build/kernel-source.py
-        grep -n "checksum" tools/build/kernel-source.py || true
+        sed -i "s/'V=s'/'V=' + __import__('os').environ.get('V','0')/g" tools/build/firmware.py
+        grep -n "'V='" tools/build/firmware.py
 
     - name: Map build paths
       run: |
@@ -120,8 +121,8 @@ jobs:
       working-directory: ./sy108
       run: |
         if ! ./tools/python tools/build/firmware.py "$PROFILE" --jobs "$JOBS"; then
-            echo "Compile failed, retry with -j2"
-            ./tools/python tools/build/firmware.py "$PROFILE" --jobs 2
+            echo "Compile failed, retry with -j2 V=s"
+            V=s ./tools/python tools/build/firmware.py "$PROFILE" --jobs 2
         fi
 
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
