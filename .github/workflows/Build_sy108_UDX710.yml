@@ -57,11 +57,14 @@ jobs:
 
     - name: Initialization environment
       id: init
+      timeout-minutes: 25
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo -E apt-get -y update
-        sudo -E apt-get -y install --no-install-recommends $(curl -fsSL https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt)
+        APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=15 -o Acquire::ForceIPv4=true"
+        sudo -E apt-get $APT_OPTS -y update
+        PKGS=$(curl -fsSL https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt | tr ' ' '\n' | grep -vE '^(gcc-multilib|g\+\+-multilib|libc6-dev-i386)$' | tr '\n' ' ')
+        sudo -E apt-get $APT_OPTS -y install --no-install-recommends $PKGS
         sudo timedatectl set-timezone "${TZ}"
         echo "status=success" >> ${GITHUB_OUTPUT}
 
@@ -108,6 +111,16 @@ jobs:
         cd "$SY108_OUT/openwrt-build"
         $GITHUB_WORKSPACE/$DIY_SY108_SH
 
+    - name: Restore package cache
+      id: dcache
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          dl
+        key: sy108-dl-${{ hashFiles('sy108/manifests/*.json') }}
+        restore-keys: |
+          sy108-dl-
+
     - name: Download package
       working-directory: ./sy108
       run: |
@@ -116,6 +129,15 @@ jobs:
         cd "$SY108_OUT/openwrt-build"
         make download -j8 LINUX_SOURCE="$KARC" LINUX_SITE=file:///downloads
         find dl/ -size -1024c -delete
+
+    - name: Save package cache
+      continue-on-error: true
+      if: steps.dcache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          dl
+        key: ${{ steps.dcache.outputs.cache-primary-key }}
 
     - name: SSH 调试有效时间6h! 连接后输入q 输入exit即可退出，自动继续后续编译流程
       uses: WarpBuilds/action-debugger@master
@@ -158,6 +180,7 @@ jobs:
         name: SY108_firmware_${{ env.PROFILE }}${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}/*
 
+
   release:
     needs: build
     runs-on: ubuntu-latest
@@ -173,10 +196,7 @@ jobs:
       id: tag
       run: |
         echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
-        echo "SY108 固件 for Soyealink SY108 (UDX710)" > release.txt
-        echo "----------------------" >> release.txt
-        echo "时间: $(date +"%Y-%m-%d %H:%M")" >> release.txt
-        echo "" >> release.txt
+        : > release.txt
         for d in firmware/*/; do
           p=$(basename "$d" | sed -E 's/^SY108_firmware_//; s/_[0-9]{12}$//')
           for f in "$d"*; do
@@ -184,9 +204,26 @@ jobs:
           done
           rmdir "$d" 2>/dev/null || true
         done
-        echo "### 文件列表" >> release.txt
-        for f in firmware/*; do
-          echo "- $(basename "$f")  $(du -h "$f" | cut -f1)" >> release.txt
+        cd firmware
+        ls | grep -vE '^(main|recovery)-(boot\.bin|rootfs\.squashfs|sysupgrade\.bin|build\.json|openwrt\.config|openwrt-sprd-udx710-(main|recovery)\.manifest)$' | xargs -r rm -f
+        sha256sum * > sha256sums.txt
+        cd ..
+        KVER=$(jq -r '.kernel.version' firmware/main-build.json 2>/dev/null || echo unknown)
+        echo "源码: $REPO_URL" >> release.txt
+        echo "分支: $REPO_BRANCH" >> release.txt
+        echo "内核版本: $KVER" >> release.txt
+        echo "管理地址: 192.168.66.1" >> release.txt
+        echo "登录账号: root" >> release.txt
+        echo "密码: admin" >> release.txt
+        echo "" >> release.txt
+        for m in firmware/*.manifest; do
+          [ -f "$m" ] || continue
+          echo "#### $(basename "$m" | cut -d- -f1)" >> release.txt
+          awk '{print $1}' "$m" \
+            | sed -E 's/:.*$//; s/-[0-9][^-]*$//' \
+            | grep -E '^(luci-app|luci-i18n|udx|kmod)-' \
+            | sort -u | sed 's/^/- /' >> release.txt
+          echo "" >> release.txt
         done
         cat release.txt
 
@@ -197,7 +234,7 @@ jobs:
       with:
         tag: ${{ steps.tag.outputs.release_tag }}
         bodyFile: release.txt
-        artifacts: firmware/**/*
+        artifacts: firmware/*
         artifactErrorsFailBuild: false
         allowUpdates: true
         draft: false
