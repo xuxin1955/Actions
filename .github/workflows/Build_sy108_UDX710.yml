@@ -195,7 +195,9 @@ jobs:
     - name: Prepare release
       id: tag
       run: |
-        echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
+        TAG=$(date +"%Y.%m.%d-%H%M")
+        echo "release_tag=$TAG" >> $GITHUB_OUTPUT
+        echo "release_name=SY108 华为5G通讯壳 OpenWrt 固件 (UDX710) $TAG" >> $GITHUB_OUTPUT
         : > release.txt
         for d in firmware/*/; do
           p=$(basename "$d" | sed -E 's/^SY108_firmware_//; s/_[0-9]{12}$//')
@@ -232,6 +234,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
+        name: ${{ steps.tag.outputs.release_name }}
         tag: ${{ steps.tag.outputs.release_tag }}
         bodyFile: release.txt
         artifacts: firmware/*
