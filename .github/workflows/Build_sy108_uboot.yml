@@ -1,0 +1,104 @@
+name: Build_sy108_uboot
+
+on:
+  workflow_dispatch:
+
+env:
+  TZ: Asia/Shanghai
+  REPO_URL: https://github.com/jason-liu-4980/sy108-mainline
+  REPO_BRANCH: main
+  OEM_DIR: sy108-oem
+  SPL_FILE: splloader-before.bin
+  SML_FILE: sml-full.bin
+  UBOOT_REPO: https://github.com/jason-liu-4980/sy108-uboot-spl
+  UBOOT_TAG: uboot-mainline
+
+jobs:
+  uboot:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+
+    - name: Clone source
+      run: |
+        git clone --depth 1 -b "$REPO_BRANCH" "$REPO_URL" sy108
+
+    - name: Merge OEM inputs
+      run: |
+        for f in "$SPL_FILE" "$SML_FILE"; do
+          if [ ! -f "sy108/$f" ]; then
+            if [ -f "$OEM_DIR/$f" ]; then
+              cp "$OEM_DIR/$f" "sy108/$f"
+            else
+              echo "::error::$f not found in sy108/ or $OEM_DIR/"
+              exit 1
+            fi
+          fi
+          echo "sy108/$f $(stat -c%s "sy108/$f") bytes"
+        done
+
+    - name: Validate OEM inputs
+      run: |
+        python3 - "$SPL_FILE" "$SML_FILE" <<'PYEOF'
+        import struct, sys
+        from pathlib import Path
+        for name, limit in ((sys.argv[1], 0x40000), (sys.argv[2], 0xC0000)):
+            data = Path('sy108', name).read_bytes()
+            if len(data) < 512 or data[:8] != b'DHTB\1\0\0\0':
+                raise SystemExit(name + ' is not a DHTB image')
+            payload = struct.unpack_from('<I', data, 48)[0]
+            need = 512 + payload + 96 + 564
+            print('%-24s partition=%d payload=%d content_end=%d limit=%d'
+                  % (name, len(data), payload, need, limit))
+        PYEOF
+
+    - name: Download capsules
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        mkdir -p capsules
+        TAG=$(gh release list --repo "${{ github.repository }}" --limit 30 \
+          --json tagName,createdAt \
+          --jq '[.[] | select(.tagName | test("^[0-9]{4}\\."))] | sort_by(.createdAt) | last | .tagName')
+        echo "firmware release: $TAG"
+        gh release download "$TAG" --repo "${{ github.repository }}" \
+          --pattern '*-boot.bin' --dir capsules --clobber
+        ls -l capsules
+
+    - name: Build uboot
+      run: |
+        git clone --depth 1 "$UBOOT_REPO" uboot-src
+        git -C uboot-src fetch --depth 1 origin oem:oem
+        make -C uboot-src offline LABEL=mainline \
+          SPL_IMAGE="$PWD/sy108/$SPL_FILE" \
+          SML_IMAGE="$PWD/sy108/$SML_FILE" \
+          MAIN_CAPSULE="$PWD/capsules/main-boot.bin" \
+          RECOVERY_CAPSULE="$PWD/capsules/recovery-boot.bin"
+        ls -l uboot-src/build/mainline/uboot.bin
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@main
+      with:
+        name: SY108_uboot
+        path: |
+          uboot-src/build/mainline/uboot.bin
+          uboot-src/build/mainline/offline-report.json
+
+    - name: Publish uboot
+      uses: ncipollo/release-action@main
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        name: SY108 U-Boot (UDX710)
+        tag: ${{ env.UBOOT_TAG }}
+        body: |
+          uboot.bin for SY108 mainline boot.
+          Built from sy108-uboot-spl with the SPL/SML stored in the sy108 source tree.
+        artifacts: uboot-src/build/mainline/uboot.bin
+        artifactErrorsFailBuild: false
+        allowUpdates: true
+        replacesArtifacts: true
+        draft: false
+        prerelease: false

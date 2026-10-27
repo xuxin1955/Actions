@@ -180,7 +180,6 @@ jobs:
         name: SY108_firmware_${{ env.PROFILE }}${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}/*
 
-
   release:
     needs: build
     runs-on: ubuntu-latest
@@ -192,6 +191,14 @@ jobs:
         pattern: SY108_firmware_*
         path: firmware
 
+    - name: Download uboot
+      continue-on-error: true
+      run: |
+        mkdir -p uboot
+        curl -fsSL -o uboot/uboot.bin \
+          "https://github.com/${{ github.repository }}/releases/download/uboot-mainline/uboot.bin"
+        ls -l uboot/uboot.bin
+
     - name: Prepare release
       id: tag
       run: |
@@ -200,14 +207,16 @@ jobs:
         echo "release_name=SY108 华为5G通讯壳 OpenWrt 固件 (UDX710) $TAG" >> $GITHUB_OUTPUT
         : > release.txt
         for d in firmware/*/; do
+          [ -d "$d" ] || continue
           p=$(basename "$d" | sed -E 's/^SY108_firmware_//; s/_[0-9]{12}$//')
           for f in "$d"*; do
             mv "$f" "firmware/${p}-$(basename "$f")"
           done
           rmdir "$d" 2>/dev/null || true
         done
+        find uboot -name uboot.bin -exec cp {} firmware/ \; 2>/dev/null || true
         cd firmware
-        ls | grep -vE '^(main|recovery)-(boot\.bin|rootfs\.squashfs|sysupgrade\.bin|build\.json|openwrt\.config|openwrt-sprd-udx710-(main|recovery)\.manifest)$' | xargs -r rm -f
+        ls | grep -vE '^(uboot\.bin|(main|recovery)-(boot\.bin|rootfs\.squashfs|sysupgrade\.bin|build\.json|openwrt\.config|openwrt-sprd-udx710-(main|recovery)\.manifest))$' | xargs -r rm -f || true
         sha256sum * > sha256sums.txt
         cd ..
         KVER=$(jq -r '.kernel.version' firmware/main-build.json 2>/dev/null || echo unknown)
@@ -218,13 +227,17 @@ jobs:
         echo "登录账号: root" >> release.txt
         echo "密码: admin" >> release.txt
         echo "" >> release.txt
-        for m in firmware/*.manifest; do
+        for m in firmware/main-*.manifest; do
           [ -f "$m" ] || continue
-          echo "#### $(basename "$m" | cut -d- -f1)" >> release.txt
-          awk '{print $1}' "$m" \
+          P=$(basename "$m" | cut -d- -f1)
+          LIST=$(awk '{print $1}' "$m" \
             | sed -E 's/:.*$//; s/-[0-9][^-]*$//' \
-            | grep -E '^(luci-app|luci-i18n|udx|kmod)-' \
-            | sort -u | sed 's/^/- /' >> release.txt
+            | grep -E '^(luci-app|udx)-' \
+            | sort -u || true)
+          echo "#### $P 插件" >> release.txt
+          if [ -n "$LIST" ]; then
+            printf '%s\n' "$LIST" | sed 's/^/- /' >> release.txt
+          fi
           echo "" >> release.txt
         done
         cat release.txt
