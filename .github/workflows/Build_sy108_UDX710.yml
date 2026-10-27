@@ -196,7 +196,7 @@ jobs:
       run: |
         mkdir -p uboot
         curl -fsSL -o uboot/uboot.bin \
-          "https://github.com/${{ github.repository }}/releases/download/uboot-p50pro/uboot-p50pro.bin"
+          "https://github.com/${{ github.repository }}/releases/download/uboot/uboot-p50pro.bin"
         ls -l uboot/uboot.bin
 
     - name: Prepare release
@@ -253,7 +253,7 @@ jobs:
         artifacts: firmware/*
         artifactErrorsFailBuild: false
         allowUpdates: true
-        makeLatest: false
+        makeLatest: true
         draft: false
         prerelease: false
 
