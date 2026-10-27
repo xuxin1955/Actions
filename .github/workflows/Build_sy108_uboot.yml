@@ -2,42 +2,36 @@ name: Build_sy108_uboot
 
 on:
   workflow_dispatch:
-    inputs:
-      model:
-        description: ' ← 选择机型'
-        required: true
-        default: p50pro
-        type: choice
-        options:
-          - p50pro
-          - m50p
-          - m50rs
 
 env:
   TZ: Asia/Shanghai
   SPL_FILE: splloader.bin
   SML_FILE: sml.bin
+  MODELS: p50pro m50p m50rs
   UBOOT_REPO: https://github.com/jason-liu-4980/sy108-uboot-spl
+  UBOOT_IMAGE: udx710-boot:build
 
 jobs:
   uboot:
     runs-on: ubuntu-latest
-    env:
-      MODEL: ${{ inputs.model }}
-      OEM_DIR: sy108-oem/${{ inputs.model }}
-      UBOOT_TAG: uboot-${{ inputs.model }}
 
     steps:
     - name: Checkout
       uses: actions/checkout@main
 
     - name: Check inputs
+      id: pick
       run: |
-        for f in "$SPL_FILE" "$SML_FILE"; do
-          [ -f "$OEM_DIR/$f" ] || { echo "::error::$OEM_DIR/$f missing"; exit 1; }
-          echo "$OEM_DIR/$f $(stat -c%s "$OEM_DIR/$f") bytes"
-        done
-        python3 - "$OEM_DIR/$SPL_FILE" "$OEM_DIR/$SML_FILE" <<'PYEOF'
+        base=""
+        for m in $MODELS; do
+          dir="sy108-oem/$m"
+          if [ ! -f "$dir/$SPL_FILE" ] || [ ! -f "$dir/$SML_FILE" ]; then
+            echo "::warning::$m skipped: $dir missing $SPL_FILE or $SML_FILE"
+            continue
+          fi
+          [ -n "$base" ] || base=$m
+          echo "== $m"
+          python3 - "$dir/$SPL_FILE" "$dir/$SML_FILE" <<'PYEOF'
         import hashlib, struct, sys
         for path in sys.argv[1:]:
             data = open(path, 'rb').read()
@@ -49,11 +43,15 @@ jobs:
             body = data[offset:offset + size]
             cert = data[cert_offset:cert_offset + cert_size]
             ok = hashlib.sha256(body).digest() == cert[268:300]
-            print('%-40s size=%d payload=%d cert=%d match=%s'
-                  % (path, len(data), size, cert_size, ok))
+            print('   %-16s size=%d payload=%d match=%s'
+                  % (path.split('/')[-1], len(data), size, ok))
             if not ok:
                 raise SystemExit(path + ': payload hash does not match certificate')
         PYEOF
+        done
+        [ -n "$base" ] || { echo "::error::no model directory has $SPL_FILE/$SML_FILE"; exit 1; }
+        echo "base=$base" >> $GITHUB_OUTPUT
+        echo "base model: $base"
 
     - name: Download capsules
       env:
@@ -68,60 +66,80 @@ jobs:
           --pattern '*-boot.bin' --dir capsules --clobber
         ls -l capsules
 
-    - name: Build uboot
+    - name: Clone uboot source
       run: |
         git clone --depth 1 "$UBOOT_REPO" uboot-src
         git -C uboot-src fetch --depth 1 origin oem:oem
-        make -C uboot-src offline LABEL="$MODEL" \
-          SPL_IMAGE="$PWD/$OEM_DIR/$SPL_FILE" \
-          SML_IMAGE="$PWD/$OEM_DIR/$SML_FILE" \
+
+    - name: Build uboot once
+      run: |
+        b="${{ steps.pick.outputs.base }}"
+        make -C uboot-src offline LABEL=base \
+          SPL_IMAGE="$PWD/sy108-oem/$b/$SPL_FILE" \
+          SML_IMAGE="$PWD/sy108-oem/$b/$SML_FILE" \
           MAIN_CAPSULE="$PWD/capsules/main-boot.bin" \
           RECOVERY_CAPSULE="$PWD/capsules/recovery-boot.bin"
-        cp "uboot-src/build/$MODEL/uboot.bin" "uboot-$MODEL.bin"
-        ls -l "uboot-$MODEL.bin"
+        ls -l uboot-src/build/base/uboot/u-boot-dtb.bin uboot-src/build/base/spl-check
 
-    - name: Fingerprint
+    - name: Package and publish per model
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        case "$MODEL" in
-          p50pro) MODEL_NAME="P50 Pro 5G 通信壳" ;;
-          m50p)   MODEL_NAME="Mate50 Pro 5G 通信壳" ;;
-          m50rs)  MODEL_NAME="Mate50 RS 5G 通信壳" ;;
-        esac
-        echo "MODEL_NAME=$MODEL_NAME" >> $GITHUB_ENV
-        echo "U_SHA=$(sha256sum "uboot-$MODEL.bin" | cut -d' ' -f1)" >> $GITHUB_ENV
-        echo "SML_SHA=$(sha256sum "$OEM_DIR/$SML_FILE" | cut -d' ' -f1)" >> $GITHUB_ENV
-        echo "SPL_SHA=$(sha256sum "$OEM_DIR/$SPL_FILE" | cut -d' ' -f1)" >> $GITHUB_ENV
+        failed=0
+        for m in $MODELS; do
+          dir="sy108-oem/$m"
+          [ -f "$dir/$SPL_FILE" ] && [ -f "$dir/$SML_FILE" ] || continue
+          echo "== $m"
+          mkdir -p "out-$m"
+          if ! docker run --rm --platform linux/amd64 --network none \
+              --user "$(id -u):$(id -g)" \
+              -v "$PWD/$dir:/inputs:ro" \
+              -v "$PWD/uboot-src/build/base:/base:ro" \
+              -v "$PWD/out-$m:/out" \
+              --entrypoint /bin/sh "$UBOOT_IMAGE" -c '
+                set -e
+                python3 /opt/boot/envelope.py /base/uboot/u-boot-dtb.bin \
+                  /inputs/sml.bin /out/uboot.bin
+                qemu-aarch64 /base/spl-check /inputs/spl.bin /out/uboot.bin \
+                  0xc0000 0 /inputs/sml.bin
+              '; then
+            echo "::error::$m package failed"
+            failed=1
+            continue
+          fi
+          cp "out-$m/uboot.bin" "uboot-$m.bin"
+          usha=$(sha256sum "uboot-$m.bin" | cut -d' ' -f1)
+          ssha=$(sha256sum "$dir/$SML_FILE" | cut -d' ' -f1)
+          case "$m" in
+            p50pro) title="P50 Pro 5G 通信壳" ;;
+            m50p)   title="Mate50 Pro 5G 通信壳" ;;
+            m50rs)  title="Mate50 RS 5G 通信壳" ;;
+          esac
+          {
+            echo "**支持机型**：P50 Pro / Mate50 Pro / Mate50 RS"
+            echo
+            echo "**文件**：\`uboot-$m.bin\` → 写 \`uboot\` 分区（1280 KiB）"
+            echo
+            echo "uboot sha256: $usha"
+            echo "sml   sha256: $ssha"
+            echo
+            echo "**建议**：优先用自己设备提取的 \`splloader\`、\`sml\` 放进 \`sy108-oem/<机型>/\` 重新编译。"
+          } > "notes-$m.md"
+          gh release view "uboot-$m" >/dev/null 2>&1 \
+            || gh release create "uboot-$m" --title "U-Boot $title" \
+                 --notes-file "notes-$m.md" --prerelease --latest=false
+          gh release edit "uboot-$m" --title "U-Boot $title" --notes-file "notes-$m.md"
+          gh release upload "uboot-$m" "uboot-$m.bin" --clobber
+          ls -l "uboot-$m.bin"
+        done
+        [ "$failed" = 0 ]
 
-    - name: Upload artifact
+    - name: Upload artifacts
+      if: always()
       uses: actions/upload-artifact@main
       with:
-        name: SY108_uboot_${{ inputs.model }}
+        name: SY108_uboot
         path: |
-          uboot-${{ inputs.model }}.bin
-          uboot-src/build/${{ inputs.model }}/offline-report.json
-
-    - name: Publish uboot
-      uses: ncipollo/release-action@main
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        name: U-Boot ${{ env.MODEL_NAME }}
-        tag: ${{ env.UBOOT_TAG }}
-        body: |
-          **支持机型**：P50 Pro / Mate50 Pro / Mate50 RS
-
-          **文件**：`uboot-${{ inputs.model }}.bin` → 写 `uboot` 分区（1280 KiB）
-
-          ```
-          uboot sha256: ${{ env.U_SHA }}
-          sml   sha256: ${{ env.SML_SHA }}
-          ```
-
-          **建议**：优先用自己设备提取的 `splloader`、`sml` 放进 `sy108-oem/<机型>/` 重新编译。
-        artifacts: uboot-${{ inputs.model }}.bin
-        artifactErrorsFailBuild: false
-        allowUpdates: true
-        replacesArtifacts: true
-        makeLatest: false
-        draft: false
-        prerelease: true
+          uboot-*.bin
+          uboot-src/build/base/offline-report.json
+        if-no-files-found: warn
