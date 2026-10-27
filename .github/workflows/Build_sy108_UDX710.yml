@@ -195,9 +195,11 @@ jobs:
       continue-on-error: true
       run: |
         mkdir -p uboot
-        curl -fsSL -o uboot/uboot.bin \
-          "https://github.com/${{ github.repository }}/releases/download/uboot/uboot-p50pro.bin"
-        ls -l uboot/uboot.bin
+        for m in p50pro m50p m50rs; do
+          curl -fsSL -o "uboot/uboot-$m.bin" \
+            "https://github.com/${{ github.repository }}/releases/download/uboot/uboot-$m.bin" || true
+        done
+        ls -l uboot
 
     - name: Prepare release
       id: tag
@@ -214,9 +216,9 @@ jobs:
           done
           rmdir "$d" 2>/dev/null || true
         done
-        find uboot -name uboot.bin -exec cp {} firmware/ \; 2>/dev/null || true
+        find uboot -name 'uboot-*.bin' -exec cp {} firmware/ \; 2>/dev/null || true
         cd firmware
-        ls | grep -vE '^(uboot\.bin|(main|recovery)-(boot\.bin|rootfs\.squashfs|sysupgrade\.bin|build\.json|openwrt\.config|openwrt-sprd-udx710-(main|recovery)\.manifest))$' | xargs -r rm -f || true
+        ls | grep -vE '^(uboot-(p50pro|m50p|m50rs)\.bin|(main|recovery)-(boot\.bin|rootfs\.squashfs|sysupgrade\.bin|build\.json|openwrt\.config|openwrt-sprd-udx710-(main|recovery)\.manifest))$' | xargs -r rm -f || true
         sha256sum * > sha256sums.txt
         cd ..
         KVER=$(jq -r '.kernel.version' firmware/main-build.json 2>/dev/null || echo unknown)

@@ -99,15 +99,9 @@ jobs:
               -v "$PWD/uboot-src/build/base:/base:ro" \
               -v "$PWD/out-$m:/out" \
               -v "$PWD/scripts/sy108:/scripts:ro" \
-              --entrypoint /bin/sh "$UBOOT_IMAGE" -c '
-                set -e
-                echo "[1/2] envelope"
-                python3 /opt/boot/envelope.py /base/uboot/u-boot-dtb.bin \
-                  /inputs/sml.bin /out/uboot.bin
-                echo "[2/2] payload check"
-                python3 /scripts/check-embedded.py /out/uboot.bin /inputs/sml.bin
-                echo "[done]"
-              '; then
+              --entrypoint /bin/sh "$UBOOT_IMAGE" \
+              /scripts/verify-envelope.sh /base/uboot/u-boot-dtb.bin \
+                /inputs/sml.bin /inputs/spl.bin /out/uboot.bin; then
             echo "::error::$m package failed"
             failed=1
             continue
