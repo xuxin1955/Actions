@@ -96,13 +96,14 @@ jobs:
               -v "$PWD/$dir:/inputs:ro" \
               -v "$PWD/uboot-src/build/base:/base:ro" \
               -v "$PWD/out-$m:/out" \
+              -v "$PWD/scripts/sy108:/scripts:ro" \
               --entrypoint /bin/sh "$UBOOT_IMAGE" -c '
                 set -e
                 echo "[1/2] envelope"
                 python3 /opt/boot/envelope.py /base/uboot/u-boot-dtb.bin \
                   /inputs/sml.bin /out/uboot.bin
                 echo "[2/2] payload check"
-                python3 -c "import struct; u=open('/out/uboot.bin','rb').read(); s=open('/inputs/sml.bin','rb').read(); n=struct.unpack_from('<I',s,48)[0]; assert s[512:512+n] in u, 'SML payload not embedded'; print('payload embedded:', n)"
+                python3 /scripts/check-embedded.py /out/uboot.bin /inputs/sml.bin
                 echo "[done]"
               '; then
             echo "::error::$m package failed"
