@@ -101,7 +101,7 @@ jobs:
               -v "$PWD/scripts/sy108:/scripts:ro" \
               --entrypoint /bin/sh "$UBOOT_IMAGE" \
               /scripts/verify-envelope.sh /base/uboot/u-boot-dtb.bin \
-                /inputs/sml.bin /inputs/spl.bin /out/uboot.bin; then
+                "/inputs/$SML_FILE" "/inputs/$SPL_FILE" /out/uboot.bin; then
             echo "::error::$m package failed"
             failed=1
             continue
