@@ -196,7 +196,7 @@ jobs:
       run: |
         mkdir -p uboot
         curl -fsSL -o uboot/uboot.bin \
-          "https://github.com/${{ github.repository }}/releases/download/uboot-mainline/uboot.bin"
+          "https://github.com/${{ github.repository }}/releases/download/uboot-p50pro/uboot-p50pro.bin"
         ls -l uboot/uboot.bin
 
     - name: Prepare release

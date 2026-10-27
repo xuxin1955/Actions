@@ -2,18 +2,30 @@ name: Build_sy108_uboot
 
 on:
   workflow_dispatch:
+    inputs:
+      model:
+        description: ' ← 选择机型'
+        required: true
+        default: p50pro
+        type: choice
+        options:
+          - p50pro
+          - m50p
+          - m50rs
 
 env:
   TZ: Asia/Shanghai
-  SPL_FILE: splloader-before.bin
-  SML_FILE: sml-full.bin
-  OEM_DIR: sy108-oem
+  SPL_FILE: splloader.bin
+  SML_FILE: sml.bin
   UBOOT_REPO: https://github.com/jason-liu-4980/sy108-uboot-spl
-  UBOOT_TAG: uboot-mainline
 
 jobs:
   uboot:
     runs-on: ubuntu-latest
+    env:
+      MODEL: ${{ inputs.model }}
+      OEM_DIR: sy108-oem/${{ inputs.model }}
+      UBOOT_TAG: uboot-${{ inputs.model }}
 
     steps:
     - name: Checkout
@@ -60,32 +72,53 @@ jobs:
       run: |
         git clone --depth 1 "$UBOOT_REPO" uboot-src
         git -C uboot-src fetch --depth 1 origin oem:oem
-        make -C uboot-src offline LABEL=mainline \
+        make -C uboot-src offline LABEL="$MODEL" \
           SPL_IMAGE="$PWD/$OEM_DIR/$SPL_FILE" \
           SML_IMAGE="$PWD/$OEM_DIR/$SML_FILE" \
           MAIN_CAPSULE="$PWD/capsules/main-boot.bin" \
           RECOVERY_CAPSULE="$PWD/capsules/recovery-boot.bin"
-        ls -l uboot-src/build/mainline/uboot.bin
+        cp "uboot-src/build/$MODEL/uboot.bin" "uboot-$MODEL.bin"
+        ls -l "uboot-$MODEL.bin"
+
+    - name: Fingerprint
+      run: |
+        case "$MODEL" in
+          p50pro) MODEL_NAME="P50 Pro 5G 通信壳" ;;
+          m50p)   MODEL_NAME="Mate50 Pro 5G 通信壳" ;;
+          m50rs)  MODEL_NAME="Mate50 RS 5G 通信壳" ;;
+        esac
+        echo "MODEL_NAME=$MODEL_NAME" >> $GITHUB_ENV
+        echo "U_SHA=$(sha256sum "uboot-$MODEL.bin" | cut -d' ' -f1)" >> $GITHUB_ENV
+        echo "SML_SHA=$(sha256sum "$OEM_DIR/$SML_FILE" | cut -d' ' -f1)" >> $GITHUB_ENV
+        echo "SPL_SHA=$(sha256sum "$OEM_DIR/$SPL_FILE" | cut -d' ' -f1)" >> $GITHUB_ENV
 
     - name: Upload artifact
       uses: actions/upload-artifact@main
       with:
-        name: SY108_uboot
+        name: SY108_uboot_${{ inputs.model }}
         path: |
-          uboot-src/build/mainline/uboot.bin
-          uboot-src/build/mainline/offline-report.json
+          uboot-${{ inputs.model }}.bin
+          uboot-src/build/${{ inputs.model }}/offline-report.json
 
     - name: Publish uboot
       uses: ncipollo/release-action@main
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        name: SY108 U-Boot (UDX710)
+        name: U-Boot ${{ env.MODEL_NAME }}
         tag: ${{ env.UBOOT_TAG }}
         body: |
-          uboot.bin for SY108 mainline boot.
-          Built from sy108-uboot-spl with the SPL/SML stored in this repository.
-        artifacts: uboot-src/build/mainline/uboot.bin
+          **支持机型**：P50 Pro / Mate50 Pro / Mate50 RS
+
+          **文件**：`uboot-${{ inputs.model }}.bin` → 写 `uboot` 分区（1280 KiB）
+
+          ```
+          uboot sha256: ${{ env.U_SHA }}
+          sml   sha256: ${{ env.SML_SHA }}
+          ```
+
+          **建议**：优先用自己设备提取的 `splloader`、`sml` 放进 `sy108-oem/<机型>/` 重新编译。
+        artifacts: uboot-${{ inputs.model }}.bin
         artifactErrorsFailBuild: false
         allowUpdates: true
         replacesArtifacts: true
