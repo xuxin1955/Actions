@@ -26,14 +26,21 @@ jobs:
           echo "$OEM_DIR/$f $(stat -c%s "$OEM_DIR/$f") bytes"
         done
         python3 - "$OEM_DIR/$SPL_FILE" "$OEM_DIR/$SML_FILE" <<'PYEOF'
-        import struct, sys
+        import hashlib, struct, sys
         for path in sys.argv[1:]:
             data = open(path, 'rb').read()
             if len(data) < 512 or data[:8] != b'DHTB\1\0\0\0':
                 raise SystemExit(path + ' is not a DHTB image')
             payload = struct.unpack_from('<I', data, 48)[0]
-            print('%-40s partition=%d payload=%d content_end=%d'
-                  % (path, len(data), payload, 512 + payload + 96 + 564))
+            fields = struct.unpack_from('<8sII10Q', data, 512 + payload)
+            size, offset, cert_size, cert_offset = fields[3:7]
+            body = data[offset:offset + size]
+            cert = data[cert_offset:cert_offset + cert_size]
+            ok = hashlib.sha256(body).digest() == cert[268:300]
+            print('%-40s size=%d payload=%d cert=%d match=%s'
+                  % (path, len(data), size, cert_size, ok))
+            if not ok:
+                raise SystemExit(path + ': payload hash does not match certificate')
         PYEOF
 
     - name: Download capsules
