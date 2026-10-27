@@ -17,7 +17,12 @@ git clone --depth 1 https://github.com/vernesong/OpenClash.git OpenClash
 # QModem
 echo "src-git qmodem https://github.com/FUjr/QModem.git;main" >> "$GITHUB_WORKSPACE/openwrt/feeds.conf.default"
 
-# luci-app-airoha-npu
-if [ ! -d "package/luci-app-airoha-npu" ]; then
-    git clone --depth 1 https://github.com/rchen14b/luci-app-airoha-npu package/luci-app-airoha-npu
+pkg=package/luci-app-airoha-npu
+rm -rf "$pkg"
+git clone --depth 1 https://github.com/rchen14b/luci-app-airoha-npu.git "$pkg" \
+  || git clone --depth 1 https://ghfast.top/https://github.com/rchen14b/luci-app-airoha-npu.git "$pkg"
+if [ -f "$pkg/Makefile" ]; then
+    echo "=== airoha-npu OK: $(ls -A $pkg | tr '\n' ' ')"
+else
+    echo "=== airoha-npu FAILED"; exit 1
 fi
