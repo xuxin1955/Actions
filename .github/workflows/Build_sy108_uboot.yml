@@ -5,11 +5,9 @@ on:
 
 env:
   TZ: Asia/Shanghai
-  REPO_URL: https://github.com/jason-liu-4980/sy108-mainline
-  REPO_BRANCH: main
-  OEM_DIR: sy108-oem
   SPL_FILE: splloader-before.bin
   SML_FILE: sml-full.bin
+  OEM_DIR: sy108-oem
   UBOOT_REPO: https://github.com/jason-liu-4980/sy108-uboot-spl
   UBOOT_TAG: uboot-mainline
 
@@ -21,37 +19,21 @@ jobs:
     - name: Checkout
       uses: actions/checkout@main
 
-    - name: Clone source
-      run: |
-        git clone --depth 1 -b "$REPO_BRANCH" "$REPO_URL" sy108
-
-    - name: Merge OEM inputs
+    - name: Check inputs
       run: |
         for f in "$SPL_FILE" "$SML_FILE"; do
-          if [ ! -f "sy108/$f" ]; then
-            if [ -f "$OEM_DIR/$f" ]; then
-              cp "$OEM_DIR/$f" "sy108/$f"
-            else
-              echo "::error::$f not found in sy108/ or $OEM_DIR/"
-              exit 1
-            fi
-          fi
-          echo "sy108/$f $(stat -c%s "sy108/$f") bytes"
+          [ -f "$OEM_DIR/$f" ] || { echo "::error::$OEM_DIR/$f missing"; exit 1; }
+          echo "$OEM_DIR/$f $(stat -c%s "$OEM_DIR/$f") bytes"
         done
-
-    - name: Validate OEM inputs
-      run: |
-        python3 - "$SPL_FILE" "$SML_FILE" <<'PYEOF'
+        python3 - "$OEM_DIR/$SPL_FILE" "$OEM_DIR/$SML_FILE" <<'PYEOF'
         import struct, sys
-        from pathlib import Path
-        for name, limit in ((sys.argv[1], 0x40000), (sys.argv[2], 0xC0000)):
-            data = Path('sy108', name).read_bytes()
+        for path in sys.argv[1:]:
+            data = open(path, 'rb').read()
             if len(data) < 512 or data[:8] != b'DHTB\1\0\0\0':
-                raise SystemExit(name + ' is not a DHTB image')
+                raise SystemExit(path + ' is not a DHTB image')
             payload = struct.unpack_from('<I', data, 48)[0]
-            need = 512 + payload + 96 + 564
-            print('%-24s partition=%d payload=%d content_end=%d limit=%d'
-                  % (name, len(data), payload, need, limit))
+            print('%-40s partition=%d payload=%d content_end=%d'
+                  % (path, len(data), payload, 512 + payload + 96 + 564))
         PYEOF
 
     - name: Download capsules
@@ -72,8 +54,8 @@ jobs:
         git clone --depth 1 "$UBOOT_REPO" uboot-src
         git -C uboot-src fetch --depth 1 origin oem:oem
         make -C uboot-src offline LABEL=mainline \
-          SPL_IMAGE="$PWD/sy108/$SPL_FILE" \
-          SML_IMAGE="$PWD/sy108/$SML_FILE" \
+          SPL_IMAGE="$PWD/$OEM_DIR/$SPL_FILE" \
+          SML_IMAGE="$PWD/$OEM_DIR/$SML_FILE" \
           MAIN_CAPSULE="$PWD/capsules/main-boot.bin" \
           RECOVERY_CAPSULE="$PWD/capsules/recovery-boot.bin"
         ls -l uboot-src/build/mainline/uboot.bin
@@ -95,10 +77,11 @@ jobs:
         tag: ${{ env.UBOOT_TAG }}
         body: |
           uboot.bin for SY108 mainline boot.
-          Built from sy108-uboot-spl with the SPL/SML stored in the sy108 source tree.
+          Built from sy108-uboot-spl with the SPL/SML stored in this repository.
         artifacts: uboot-src/build/mainline/uboot.bin
         artifactErrorsFailBuild: false
         allowUpdates: true
         replacesArtifacts: true
+        makeLatest: false
         draft: false
-        prerelease: false
+        prerelease: true

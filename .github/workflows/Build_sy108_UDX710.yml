@@ -253,6 +253,7 @@ jobs:
         artifacts: firmware/*
         artifactErrorsFailBuild: false
         allowUpdates: true
+        makeLatest: false
         draft: false
         prerelease: false
 
