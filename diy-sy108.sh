@@ -6,13 +6,13 @@ root="$GITHUB_WORKSPACE/sy108"
 
 [ -d "$overlay" ] || exit 0
 
-if [ -d "$overlay/packages" ]; then
-	cp -a "$overlay/packages/." "$root/packages/"
-fi
-
-if [ -d "$overlay/integration/openwrt/target/linux/sprd" ]; then
-	cp -a "$overlay/integration/openwrt/target/linux/sprd/." ./target/linux/sprd/
-fi
+for dir in "$overlay"/*/; do
+	[ -d "$dir" ] || continue
+	name=$(basename "$dir")
+	[ "$name" = configs ] && continue
+	[ -d "$root/$name" ] || continue
+	cp -a "$dir." "$root/$name/"
+done
 
 for frag in "$overlay"/configs/*.append; do
 	[ -f "$frag" ] || continue
