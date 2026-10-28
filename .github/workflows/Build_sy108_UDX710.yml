@@ -113,7 +113,7 @@ jobs:
 
     - name: Restore package cache
       id: dcache
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v5.1.0
       with:
         path: |
           dl
@@ -133,7 +133,7 @@ jobs:
     - name: Save package cache
       continue-on-error: true
       if: steps.dcache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v5.1.0
       with:
         path: |
           dl
