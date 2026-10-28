@@ -1,0 +1,72 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Watchdog for the USB management link.
+#
+# The gadget can lose its host connection while the controller stays up.  The
+# symptom is a short cycle of "uncm0 link down" followed by "uncm0 link up",
+# each cycle forcing the host to renegotiate the NCM function.  Left alone the
+# cycle repeats until the controller stops answering enumeration altogether and
+# the host shows an unknown USB device.
+#
+# This watchdog counts those cycles.  When the same link keeps flapping it asks
+# the platform to cycle the controller's soft connect, which forces a clean
+# re-enumeration on the host side without touching the gadget configuration.
+. /usr/lib/udx-usb/gadget.sh
+
+INTERVAL=${UDX_USB_WATCH_INTERVAL:-10}
+THRESHOLD=${UDX_USB_WATCH_THRESHOLD:-3}
+COOLDOWN=${UDX_USB_WATCH_COOLDOWN:-300}
+STATE=$UDX_RUN/watchdog
+
+umask 077
+mkdir -p "$UDX_RUN" || exit 1
+
+log() {
+	printf 'udx-usb: watchdog: %s\n' "$*" >> "$UDX_RUN/watchdog.log"
+	[ -w /dev/kmsg ] && printf '<14>udx-usb: watchdog: %s\n' "$*" > /dev/kmsg
+	return 0
+}
+
+link_state() {
+	local dev
+	for dev in /sys/class/net/uncm*; do
+		[ -e "$dev" ] || continue
+		[ "$(cat "$dev/carrier" 2>/dev/null)" = 1 ] && { echo up; return 0; }
+	done
+	echo down
+	return 1
+}
+
+[ "$(uci -q get udx-usb.main.enabled)" = 1 ] || exit 0
+[ "$(uci -q get udx-usb.main.watchdog)" = 1 ] || exit 0
+
+flaps=0
+last_recovery=0
+previous=unknown
+
+while :; do
+	sleep "$INTERVAL"
+	current=$(link_state)
+	if [ "$current" = up ] && [ "$previous" = down ]; then
+		flaps=$((flaps + 1))
+		log "link recovered (cycle $flaps)"
+	else
+		[ "$current" = "$previous" ] || flaps=0
+	fi
+	previous=$current
+	printf 'flaps=%s\nprevious=%s\n' "$flaps" "$previous" > "$STATE"
+
+	[ "$flaps" -ge "$THRESHOLD" ] || continue
+	now=$(cat /proc/uptime | cut -d. -f1)
+	[ $((now - last_recovery)) -ge "$COOLDOWN" ] || continue
+	last_recovery=$now
+	flaps=0
+	# A soft connect cycle re-enumerates the function on the host.  It does
+	# not rebuild the gadget, so the applied profile and identity survive.
+	log "flapping detected, cycling the controller soft connect"
+	if g_reset; then
+		log "soft connect cycle completed"
+	else
+		log "soft connect cycle failed"
+	fi
+done

@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>UDX710 · 信号看板</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230ea5e9'/%3E%3Cg stroke='white' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 15v3M10 12v6M14 9v9M18 6v12'/%3E%3C/g%3E%3C/svg%3E">
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0b1220;
+  --panel: #111c30;
+  --panel-2: #16233a;
+  --line: #24344f;
+  --line-soft: #1c2a42;
+  --fg: #e6edf7;
+  --fg-dim: #93a4bd;
+  --fg-faint: #64748b;
+  --accent: #38bdf8;
+  --good: #34d399;
+  --warn: #fbbf24;
+  --bad: #fb7185;
+}
+* { box-sizing: border-box; }
+html, body { margin:0; padding:0; background:var(--bg); color:var(--fg); }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Hiragino Sans GB", "Microsoft YaHei", Roboto, sans-serif;
+  font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased;
+  padding: 18px 20px 40px;
+}
+.wrap { max-width: 1180px; margin: 0 auto; }
+
+.head { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
+.head h1 { font-size:19px; font-weight:600; margin:0; letter-spacing:.2px; }
+.head .sub { color:var(--fg-faint); font-size:12px; }
+.head .spacer { flex:1 1 auto; }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--fg-faint); display:inline-block; margin-right:6px; vertical-align:1px; }
+.dot.live { background:var(--good); box-shadow:0 0 0 3px rgba(52,211,153,.15); }
+.dot.err  { background:var(--bad);  box-shadow:0 0 0 3px rgba(251,113,133,.15); }
+.dot.wait { background:var(--warn); box-shadow:0 0 0 3px rgba(251,191,36,.15); }
+.btn {
+  appearance:none; border:1px solid var(--line); background:var(--panel-2);
+  color:var(--fg); border-radius:7px; padding:6px 12px; font-size:12.5px; cursor:pointer;
+}
+.btn:hover { border-color:var(--accent); color:var(--accent); }
+
+.card {
+  background:var(--panel); border:1px solid var(--line); border-radius:12px;
+  padding:14px 16px; margin-bottom:14px;
+}
+.card > h2 {
+  font-size:12px; font-weight:600; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--fg-faint); margin:0 0 12px;
+}
+.grid { display:grid; gap:12px; }
+.g2 { grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); }
+.g4 { grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); }
+
+.stat { background:var(--panel-2); border:1px solid var(--line-soft); border-radius:10px; padding:11px 13px; }
+.stat .k { color:var(--fg-faint); font-size:11.5px; letter-spacing:.02em; }
+.stat .v { font-size:21px; font-weight:600; margin-top:3px; font-variant-numeric:tabular-nums; }
+.stat .v small { font-size:12px; font-weight:400; color:var(--fg-dim); margin-left:3px; }
+.stat .v.na { color:var(--fg-faint); font-size:15px; font-weight:400; }
+.stat.good .v { color:var(--good); }
+.stat.warn .v { color:var(--warn); }
+.stat.bad  .v { color:var(--bad); }
+.stat.accent .v { color:var(--accent); }
+.stat .sub { color:var(--fg-faint); font-size:11px; margin-top:4px; word-break:break-all; }
+
+.meter { height:7px; border-radius:4px; background:#22314a; overflow:hidden; margin-top:8px; }
+.meter > i { display:block; height:100%; background:var(--accent); transition:width .5s ease; }
+.meter.good > i { background:var(--good); }
+.meter.warn > i { background:var(--warn); }
+.meter.bad  > i { background:var(--bad); }
+.meter.empty > i { background:transparent; }
+
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th {
+  text-align:left; font-weight:500; color:var(--fg-faint); font-size:11.5px;
+  text-transform:uppercase; letter-spacing:.05em;
+  padding:7px 9px; border-bottom:1px solid var(--line);
+}
+td { padding:8px 9px; border-bottom:1px solid var(--line-soft); font-variant-numeric:tabular-nums; }
+tr:last-child td { border-bottom:none; }
+tr.serving td { background:rgba(56,189,248,.07); }
+td.na, span.na { color:var(--fg-faint); }
+.pill {
+  display:inline-block; padding:1px 8px; border-radius:999px; font-size:11.5px;
+  border:1px solid var(--line); color:var(--fg-dim); background:rgba(100,116,139,.10);
+}
+.pill.serving { color:var(--accent); border-color:rgba(56,189,248,.4); background:rgba(56,189,248,.12); }
+.pill.lte { color:var(--good); border-color:rgba(52,211,153,.4); background:rgba(52,211,153,.12); }
+.pill.nr  { color:var(--accent); border-color:rgba(56,189,248,.4); background:rgba(56,189,248,.12); }
+
+.empty-state { text-align:center; padding:44px 20px; }
+.empty-state .icon { font-size:38px; line-height:1; margin-bottom:14px; opacity:.75; }
+.empty-state h3 { font-size:17px; font-weight:600; margin:0 0 8px; color:var(--fg); }
+.empty-state p { color:var(--fg-dim); margin:0 auto 6px; max-width:560px; font-size:13.5px; }
+.empty-state .hint {
+  display:inline-block; margin-top:14px; padding:8px 14px; border-radius:8px;
+  background:var(--panel-2); border:1px solid var(--line); color:var(--fg-dim); font-size:12.5px;
+}
+.empty-state code {
+  background:var(--panel-2); border:1px solid var(--line); border-radius:4px;
+  padding:1px 6px; color:var(--accent); font-size:12px;
+}
+
+.banner {
+  display:flex; align-items:flex-start; gap:10px;
+  background:rgba(251,191,36,.09); border:1px solid rgba(251,191,36,.3);
+  border-radius:10px; padding:11px 14px; margin-bottom:14px; font-size:13px;
+}
+.banner.err { background:rgba(251,113,133,.09); border-color:rgba(251,113,133,.32); }
+.banner .ic { flex:0 0 auto; }
+.banner .body { color:var(--fg-dim); }
+.banner .body b { color:var(--fg); font-weight:600; }
+
+.foot { color:var(--fg-faint); font-size:11.5px; margin-top:18px; text-align:center; }
+.foot code { color:var(--fg-dim); }
+@media (max-width:640px) {
+  body { padding:14px; }
+  .head h1 { font-size:17px; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="head">
+    <h1>信号看板</h1>
+    <span class="sub">UDX710 · 实时蜂窝状态</span>
+    <span class="spacer"></span>
+    <span class="sub"><span id="statusDot" class="dot"></span><span id="statusText">连接中…</span></span>
+    <button class="btn" id="refreshBtn" type="button">刷新</button>
+    <button class="btn" id="autoBtn" type="button">自动刷新：关</button>
+  </div>
+
+  <div id="banner"></div>
+  <div id="root"></div>
+
+  <div class="foot">数据来源 · ubus <code>udx.cellular status</code> · 每 10 秒刷新</div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var UBUS_URL = "/cgi-bin/luci/admin/ubus";
+  var REFRESH_MS = 10000;
+
+  function num(v) {
+    if (v === null || v === undefined || v === "") return null;
+    var n = Number(v);
+    return isFinite(n) ? n : null;
+  }
+  function esc(s) {
+    return String(s === null || s === undefined ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+  function el(id) { return document.getElementById(id); }
+
+  function csqToDbm(csq) {
+    if (csq === null || csq === 99 || csq < 0) return null;
+    return -113 + 2 * csq;
+  }
+
+  function ubus(object, method, args) {
+    var payload = {
+      jsonrpc: "2.0", id: 1, method: "call",
+      params: ["00000000000000000000000000000000", object, method, args || {}]
+    };
+    return fetch(UBUS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify(payload)
+    }).then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function (j) {
+      if (!j || !j.result) {
+        var msg = (j && j.error && j.error.message) || "ubus 调用失败";
+        throw new Error(msg);
+      }
+      if (j.result[0] !== 0) throw new Error("ubus 返回 rc=" + j.result[0]);
+      return j.result[1] || {};
+    });
+  }
+
+  var RAT_LABEL = { lte: "LTE", nr: "NR", "5g": "NR", umts: "UMTS", gsm: "GSM" };
+
+  function normCells(cells) {
+    var list = Array.isArray(cells) ? cells : [];
+    var rows = list.map(function (c) {
+      var rat = String(c.rat || "").toLowerCase();
+      return {
+        serving: c.serving === true,
+        tech: RAT_LABEL[rat] || (c.rat ? String(c.rat).toUpperCase() : "—"),
+        band: c.band || "—",
+        arfcn: num(c.arfcn),
+        pci: num(c.pci),
+        rsrp: num(c.rsrp),
+        rsrq: num(c.rsrq),
+        sinr: num(c.sinr),
+        tac: c.tac || null,
+        cellId: c.cell_id || null
+      };
+    });
+    if (rows.length && !rows.some(function (r) { return r.serving; })) rows[0].serving = true;
+    return rows;
+  }
+
+  function normNetwork(st) {
+    var reg = st.registration || {};
+    var nr = st.nr_registration || {};
+    var op = st.operator || {};
+    var BRAND = {
+      china_mobile: "中国移动", china_unicom: "中国联通",
+      china_telecom: "中国电信", china_broadnet: "中国广电"
+    };
+    var brand = String(op.brand || "");
+    var homeBrand = String(op.home_brand || "");
+    var plmn = String(op.plmn || "");
+    var operator = BRAND[brand] || BRAND[homeBrand] ||
+      (plmn && /^\d{5,6}$/.test(plmn) ? plmn : (op.name || null));
+
+    var imsi = String(st.imsi || "");
+    var code = num(nr.status !== undefined ? nr.status : reg.status);
+    var registered = reg.registered === true || nr.registered === true;
+    var roaming = reg.roaming === true || nr.roaming === true;
+
+    var status = "unknown";
+    if (code === 1) status = "registered";
+    else if (code === 5) status = "registered-roaming";
+    else if (code === 2) status = "searching";
+    else if (code === 3) status = "denied";
+    else if (code === 0) status = "not-registered";
+    if (!registered && code === null) status = "unknown";
+
+    return {
+      operator: operator,
+      plmn: plmn || null,
+      imsi: imsi || null,
+      mcc: /^\d{3}/.test(imsi) ? imsi.slice(0, 3) : null,
+      mnc: imsi.length >= 5 ? imsi.slice(3, 5) : null,
+      status: status,
+      roaming: roaming,
+      technology: (function (m) {
+        if (!m) return null;
+        var T = { lte_only: "LTE only", nr_only: "NR only", nr_lte: "NR + LTE",
+                  "nr_lte_wcdma_gsm": "NR + LTE + WCDMA/GSM", sa_nsa: "SA + NSA",
+                  nsa: "NSA", sa: "SA", custom: "自定义" };
+        return T[String(m).toLowerCase()] || String(m);
+      })(st.mode || (st.nr_capability || {}).mode || null),
+      apn: (st.profile || {}).apn || null,
+      pdpState: st.pdp_state || st.state || null
+    };
+  }
+
+  function normSignal(st, serving) {
+    var sig = st.signal || {};
+    var csq = num(sig.csq);
+    var dbm = null;
+    var strength = null;
+    if (csq !== null && csq !== 99 && csq > 0) {
+      dbm = csqToDbm(csq);
+      strength = Math.round(csq / 31 * 100);
+    } else if (serving && serving.rsrp !== null && serving.rsrp !== undefined) {
+      dbm = num(serving.rsrp);
+      strength = Math.round(Math.max(0, Math.min(100, (dbm + 120) * 100 / 60)));
+    }
+    return { strength: strength, dbm: dbm, csq: csq };
+  }
+
+  function rsrpTone(v) {
+    if (v === null || v === undefined) return "";
+    if (v >= -80) return "good";
+    if (v >= -90) return "";
+    if (v >= -100) return "warn";
+    return "bad";
+  }
+  function strengthTone(pct) {
+    if (pct === null) return "";
+    if (pct >= 75) return "good";
+    if (pct >= 50) return "";
+    if (pct >= 25) return "warn";
+    return "bad";
+  }
+  function rsrpBar(v) {
+    if (v === null || v === undefined) return 0;
+    return Math.max(0, Math.min(100, (v + 120) * 100 / 60));
+  }
+
+  var REG_TEXT = {
+    "registered": "已注册",
+    "registered-roaming": "已注册（漫游）",
+    "searching": "搜网中",
+    "denied": "注册被拒",
+    "not-registered": "未注册",
+    "unknown": "未知"
+  };
+  var REG_TONE = {
+    "registered": "good", "registered-roaming": "warn",
+    "searching": "warn", "denied": "bad", "not-registered": "bad", "unknown": ""
+  };
+
+  function statTile(k, v, unit, tone, meterPct, meterTone) {
+    var h = '<div class="stat' + (tone ? " " + tone : "") + '">';
+    h += '<div class="k">' + esc(k) + '</div>';
+    if (v === null || v === undefined || v === "") {
+      h += '<div class="v na">—</div>';
+    } else {
+      h += '<div class="v">' + esc(v) + (unit ? "<small>" + esc(unit) + "</small>" : "") + '</div>';
+    }
+    if (meterPct !== undefined && meterPct !== null) {
+      h += '<div class="meter ' + (meterTone || "") + (meterPct ? "" : " empty") + '"><i style="width:' +
+           meterPct + '%"></i></div>';
+    }
+    return h + '</div>';
+  }
+
+  function renderCells(rows) {
+    if (!rows.length) {
+      return '<div class="card"><h2>服务小区与邻区</h2>' +
+             '<p style="color:var(--fg-faint);margin:0">暂无小区信息。设备注册到网络后这里会列出服务小区与邻区。</p></div>';
+    }
+    var h = '<div class="card"><h2>服务小区与邻区（' + rows.length + '）</h2><table><thead><tr>' +
+      '<th>类型</th><th>制式</th><th>频段</th><th>ARFCN</th><th>PCI</th>' +
+      '<th>RSRP</th><th>RSRQ</th><th>SINR</th><th>TAC</th><th>Cell ID</th>' +
+      '</tr></thead><tbody>';
+    rows.forEach(function (r) {
+      h += '<tr' + (r.serving ? ' class="serving"' : '') + '>';
+      h += '<td>' + (r.serving ? '<span class="pill serving">服务小区</span>' : '<span class="pill">邻区</span>') + '</td>';
+      h += '<td><span class="pill ' + (String(r.tech).toUpperCase() === "NR" ? "nr" : "lte") + '">' + esc(r.tech) + '</span></td>';
+      h += '<td>' + esc(r.band) + '</td>';
+      h += '<td' + (r.arfcn === null ? ' class="na"' : '') + '>' + (r.arfcn === null ? "—" : r.arfcn) + '</td>';
+      h += '<td' + (r.pci === null ? ' class="na"' : '') + '>' + (r.pci === null ? "—" : r.pci) + '</td>';
+      h += '<td' + (r.rsrp === null ? ' class="na"' : '') + '>' + (r.rsrp === null ? "—" : r.rsrp) + '</td>';
+      h += '<td' + (r.rsrq === null ? ' class="na"' : '') + '>' + (r.rsrq === null ? "—" : r.rsrq) + '</td>';
+      h += '<td' + (r.sinr === null ? ' class="na"' : '') + '>' + (r.sinr === null ? "—" : r.sinr) + '</td>';
+      h += '<td' + (r.tac === null ? ' class="na"' : '') + '>' + (r.tac === null ? "—" : esc(r.tac)) + '</td>';
+      h += '<td' + (r.cellId === null ? ' class="na"' : '') + '>' + (r.cellId === null ? "—" : esc(r.cellId)) + '</td>';
+      h += '</tr>';
+    });
+    return h + '</tbody></table></div>';
+  }
+
+  function renderNoSim(st) {
+    var err = st.sim_error || st.info_errors || {};
+    var detail = "";
+    if (typeof err === "object") {
+      var keys = Object.keys(err);
+      if (keys.length) detail = keys.map(function (k) { return esc(k) + "：" + esc(err[k]); }).join("　");
+    } else if (err) {
+      detail = esc(err);
+    }
+    var h = '<div class="card"><div class="empty-state">';
+    h += '<div class="icon">📡</div>';
+    h += '<h3>尚未检测到 SIM 卡</h3>';
+    h += '<p>模块已上电，但 SIM 卡槽为空或未被识别，因此没有运营商、信号强度和小区信息。</p>';
+    if (detail) h += '<p style="font-size:12.5px;color:var(--fg-faint)">模块回应：' + detail + '</p>';
+    h += '<div class="hint">插入 SIM 卡并启用后，本页会自动出现运营商、RSRP/SINR 与小区列表。数据每 10 秒自动刷新一次。</div>';
+    h += '</div></div>';
+    return h;
+  }
+
+  function render(st) {
+    var cells = normCells(st.cells);
+    var serving = cells.filter(function (c) { return c.serving; })[0] || cells[0] || null;
+    var net = normNetwork(st);
+    var sig = normSignal(st, serving);
+    var simState = String((st.sim || {}).state || "");
+    var hasSim = simState && simState !== "NOT_READY" && simState !== "ABSENT";
+
+    var h = "";
+
+    h += '<div class="card"><h2>网络概览</h2><div class="grid g4">';
+    h += statTile("运营商", net.operator, null, net.operator ? "accent" : "");
+    h += statTile("注册状态", REG_TEXT[net.status] || net.status, null, REG_TONE[net.status]);
+    h += statTile("制式", net.technology, null, "");
+    h += statTile("漫游", net.roaming ? "是" : "否", null, net.roaming ? "warn" : "");
+    h += '</div>';
+
+    if (net.plmn || net.imsi) {
+      h += '<div class="grid g4" style="margin-top:12px">';
+      h += statTile("PLMN", net.plmn, null, "");
+      h += statTile("MCC/MNC", net.mcc ? net.mcc + "/" + (net.mnc || "") : null, null, "");
+      h += statTile("IMSI", net.imsi, null, "");
+      h += statTile("APN", net.apn, null, "");
+      h += '</div>';
+    }
+    h += '</div>';
+
+    var rsrp = serving && serving.rsrp !== null ? serving.rsrp : sig.dbm;
+    h += '<div class="card"><h2>信号质量</h2><div class="grid g4">';
+    h += statTile("RSRP", rsrp, "dBm", rsrpTone(rsrp), rsrpBar(rsrp), rsrpTone(rsrp));
+    h += statTile("RSRQ", serving ? serving.rsrq : null, "dB", "", null, "");
+    h += statTile("SINR", serving ? serving.sinr : null, "dB", "", null, "");
+    h += statTile("信号强度", sig.strength, "%", strengthTone(sig.strength), sig.strength, strengthTone(sig.strength));
+    h += '</div>';
+
+    if (rsrp === null) {
+      h += '<p style="color:var(--fg-faint);font-size:12.5px;margin:12px 0 0">信号数值将在模块注册到网络并上报测量值后出现。' +
+           'RSRP 参考：优秀 ≥ -80 dBm，良好 ≥ -90 dBm，一般 ≥ -100 dBm，差 &lt; -110 dBm。</p>';
+    }
+    h += '</div>';
+
+    if (!hasSim) {
+      h += renderNoSim(st);
+    } else if (net.status === "not-registered" || net.status === "denied") {
+      h += '<div class="banner"><span class="ic">⚠</span><div class="body"><b>未注册到网络</b>　' +
+           'SIM 已识别，但网络注册未成功。可检查 SIM 状态、是否欠费、信号覆盖与漫游设置。</div></div>';
+    } else if (net.status === "searching") {
+      h += '<div class="banner"><span class="ic">🔍</span><div class="body"><b>正在搜索网络</b>　' +
+           '模块已上电，正在尝试注册驻网网络。</div></div>';
+    }
+
+    h += renderCells(cells);
+
+    return h;
+  }
+
+  var timer = null;
+  var auto = false;
+
+  function setStatus(kind, text) {
+    el("statusDot").className = "dot " + kind;
+    el("statusText").textContent = text;
+  }
+
+  function showBanner(kind, html) {
+    var b = el("banner");
+    if (!html) { b.innerHTML = ""; return; }
+    b.innerHTML = '<div class="banner' + (kind === "err" ? " err" : "") + '">' +
+                  '<span class="ic">' + (kind === "err" ? "⚠" : "ℹ") + '</span>' +
+                  '<div class="body">' + html + '</div></div>';
+  }
+
+  function load() {
+    return ubus("udx.cellular", "status").then(function (st) {
+      var age = num(st.snapshot_age_seconds);
+      var stale = st.stale === true;
+      if (stale) {
+        setStatus("wait", "数据陈旧（" + (age === null ? "?" : age.toFixed(0) + "s") + " 前）");
+        showBanner("", '<b>数据可能已过期</b>　模块响应较慢，显示的是 ' +
+               (age === null ? "若干" : age.toFixed(0)) + ' 秒前的快照。');
+      } else {
+        setStatus("live", "实时");
+        showBanner("", "");
+      }
+      el("root").innerHTML = render(st);
+    }).catch(function (e) {
+      setStatus("err", "读取失败");
+      showBanner("err", '<b>无法读取蜂窝状态</b>　' + esc(e.message || e));
+      el("root").innerHTML = "";
+    });
+  }
+
+  function schedule() {
+    if (timer) clearInterval(timer);
+    timer = setInterval(load, REFRESH_MS);
+  }
+
+  el("refreshBtn").addEventListener("click", load);
+  el("autoBtn").addEventListener("click", function () {
+    auto = !auto;
+    this.textContent = "自动刷新：" + (auto ? "开" : "关");
+    if (auto) schedule(); else if (timer) { clearInterval(timer); timer = null; }
+  });
+
+  load();
+})();
+</script>
+</body>
+</html>

@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         profile: [main, recovery]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       PROFILE: ${{ matrix.profile }}
 
@@ -143,6 +143,15 @@ jobs:
       uses: WarpBuilds/action-debugger@master
       if: ${{ inputs.ssh || contains(github.event.action, 'ssh') }}
 
+    - name: 自动上传最新源码生成.config编译配置
+      uses: actions/upload-artifact@main
+      with:
+       name: build-config
+       path: |
+         ${{ env.SY108_OUT }}/openwrt-build/.config
+         ${{ env.SY108_OUT }}/openwrt-build/feeds.conf
+       include-hidden-files: true
+
     - name: Compile the SY108 firmware
       id: compile
       working-directory: ./sy108
@@ -154,15 +163,6 @@ jobs:
 
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
-
-    - name: 自动上传最新源码生成.config编译配置
-      uses: actions/upload-artifact@main
-      with:
-       name: build-config
-       path: |
-         ${{ env.SY108_OUT }}/openwrt-build/.config
-         ${{ env.SY108_OUT }}/openwrt-build/feeds.conf
-       include-hidden-files: true
 
     - name: Organize files
       id: organize
@@ -182,7 +182,7 @@ jobs:
 
   release:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
     - name: Download firmware
@@ -190,16 +190,6 @@ jobs:
       with:
         pattern: SY108_firmware_*
         path: firmware
-
-    - name: Download uboot
-      continue-on-error: true
-      run: |
-        mkdir -p uboot
-        for m in p50pro m50p m50rs; do
-          curl -fsSL -o "uboot/uboot-$m.bin" \
-            "https://github.com/${{ github.repository }}/releases/download/uboot/uboot-$m.bin" || true
-        done
-        ls -l uboot
 
     - name: Prepare release
       id: tag
@@ -216,9 +206,8 @@ jobs:
           done
           rmdir "$d" 2>/dev/null || true
         done
-        find uboot -name 'uboot-*.bin' -exec cp {} firmware/ \; 2>/dev/null || true
         cd firmware
-        ls | grep -vE '^(uboot-(p50pro|m50p|m50rs)\.bin|(main|recovery)-(boot\.bin|rootfs\.squashfs|sysupgrade\.bin|build\.json|openwrt\.config|openwrt-sprd-udx710-(main|recovery)\.manifest))$' | xargs -r rm -f || true
+        ls | grep -vE '^((main|recovery)-(boot\.bin|rootfs\.squashfs|sysupgrade\.bin|build\.json|openwrt\.config|openwrt-sprd-udx710-(main|recovery)\.manifest))$' | xargs -r rm -f || true
         sha256sum * > sha256sums.txt
         cd ..
         KVER=$(jq -r '.kernel.version' firmware/main-build.json 2>/dev/null || echo unknown)

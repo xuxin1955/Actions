@@ -1,0 +1,81 @@
+#!/bin/sh
+# Only dedicated USB sections are created; an existing root-builder policy wins.
+# No modification of LAN/WLAN/WAN or their routing.
+set -e
+. /usr/lib/udx-usb/gadget.sh
+if [ "$(uci -q get udx-usb.main.profile_initialized)" != 1 ]; then
+	uci -q set udx-usb.main.profile='rndis'
+	uci -q set udx-usb.main.profile_initialized='1'
+	uci -q commit udx-usb
+fi
+
+g_load_config
+g_validate
+if ! uci -q get network.usbmgmt >/dev/null; then
+	uci set network.usbmgmt=interface
+	uci set network.usbmgmt.proto=static
+	uci set network.usbmgmt.device=br-usb
+	uci set network.usbmgmt.ipaddr=192.168.66.1
+	uci set network.usbmgmt.netmask=255.255.255.0
+	uci set network.usbmgmt.delegate=0
+	uci set network.usbmgmt.defaultroute=0
+	uci set network.usbmgmt.peerdns=0
+fi
+usb_bridge=$(uci -q get network.usbmgmt.device)
+usb_section=
+for section in $(uci -q show network | sed -n 's/^network\.\([^=]*\)=device$/\1/p'); do
+	if [ "$(uci -q get "network.$section.name")" = "$usb_bridge" ]; then
+		usb_section=$section
+		break
+	fi
+done
+if [ -z "$usb_section" ]; then
+	usb_section=usbmgmt_device
+	uci set "network.$usb_section=device"
+	uci set "network.$usb_section.name=$usb_bridge"
+	uci set "network.$usb_section.type=bridge"
+	uci set "network.$usb_section.bridge_empty=1"
+	uci set "network.$usb_section.stp=0"
+	uci set "network.$usb_section.macaddr=$DEV_MAC"
+fi
+# An existing concrete bridge address is a user/root-builder override.
+if ! uci -q get "network.$usb_section.macaddr" >/dev/null; then
+	uci set "network.$usb_section.macaddr=$DEV_MAC"
+fi
+[ "$(uci -q get "network.$usb_section.type")" = bridge ] || {
+	echo 'udx-usb: usbmgmt must reference its dedicated bridge' >&2
+	exit 1
+}
+for port in uncm0; do
+	case " $(uci -q get "network.$usb_section.ports" || true) " in
+		*" $port "*) ;;
+		*) uci add_list "network.$usb_section.ports=$port";;
+	esac
+done
+if ! uci -q get dhcp.usbmgmt >/dev/null; then
+	uci set dhcp.usbmgmt=dhcp
+	uci set dhcp.usbmgmt.interface=usbmgmt
+	uci set dhcp.usbmgmt.start=2
+	uci set dhcp.usbmgmt.limit=20
+	uci set dhcp.usbmgmt.leasetime=1h
+	uci set dhcp.usbmgmt.ignore=0
+	uci set dhcp.usbmgmt.force=1
+	# Empty options suppress dnsmasq's implicit router and DNS advertisements.
+	uci add_list dhcp.usbmgmt.dhcp_option=3
+	uci add_list dhcp.usbmgmt.dhcp_option=6
+	uci set dhcp.usbmgmt.ra=disabled
+	uci set dhcp.usbmgmt.dhcpv6=disabled
+	uci set dhcp.usbmgmt.ndp=disabled
+fi
+if ! uci -q get firewall.usbmgmt >/dev/null; then
+	uci set firewall.usbmgmt=zone
+	uci set firewall.usbmgmt.name=usbmgmt
+	uci add_list firewall.usbmgmt.network=usbmgmt
+	uci set firewall.usbmgmt.input=ACCEPT
+	uci set firewall.usbmgmt.output=ACCEPT
+	uci set firewall.usbmgmt.forward=REJECT
+fi
+uci commit network
+uci commit dhcp
+uci commit firewall
+exit 0

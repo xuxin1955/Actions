@@ -1,0 +1,13 @@
+config gadget 'main'
+	option enabled '1'
+	option profile 'rndis'
+	option acm '0'
+	# auto derives from this unit's bootloader-provided factory product serial.
+	# A concrete value is an explicit per-field override, including legacy values.
+	option serial 'auto'
+	option vid '0x1d6b'
+	option dev_mac 'auto'
+	option host_mac 'auto'
+	# Recovers the management link when the gadget keeps renegotiating with
+	# the host.  Set to 0 to keep the link exactly as the platform leaves it.
+	option watchdog '1'

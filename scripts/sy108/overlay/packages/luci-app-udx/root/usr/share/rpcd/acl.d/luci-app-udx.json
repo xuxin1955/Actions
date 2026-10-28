@@ -1,0 +1,106 @@
+{
+ "luci-app-udx": {
+  "description": "UDX710 device status and typed management",
+  "read": {
+   "ubus": {
+    "udx": [
+     "status",
+     "frequency_status"
+    ],
+    "system": [
+     "info",
+     "board"
+    ],
+    "udx.cellular": [
+     "status",
+     "operation_status",
+     "sms_status",
+     "sms_history_status",
+     "apn_status",
+     "sms_receipt"
+    ],
+    "network.interface.wan": [
+     "status"
+    ],
+    "network.interface.wan6": [
+     "status"
+    ],
+    "network.device": [
+     "status"
+    ]
+   },
+   "uci": [
+    "udx-usb"
+   ]
+  },
+  "write": {
+   "ubus": {
+    "udx": [
+     "usb",
+     "frequency_apply"
+    ],
+    "udx.cellular": [
+     "imei_read",
+     "imei_write",
+     "slot",
+     "operator_catalog",
+     "operators_scan",
+     "operator_auto",
+     "operator_select",
+     "plmn",
+     "advanced_refresh",
+     "at_debug",
+     "command",
+     "apn",
+     "apn",
+     "apn_select",
+     "mode",
+     "apn_template_delete",
+     "apn_template_save",
+     "id",
+     "apn_templates",
+     "band_lock",
+     "lte",
+     "cell_lock",
+     "rat",
+     "cells_refresh",
+     "serving_refresh",
+     "neighbors_refresh",
+     "signal_refresh",
+     "qos_refresh",
+     "connect",
+     "disconnect",
+     "modem_info",
+     "network_mode",
+     "network_configure",
+     "mode",
+     "network_preset",
+     "nr_capability",
+     "physical_slot",
+     "policy",
+     "automatic_connect",
+     "radio",
+     "radio_options",
+     "refresh",
+     "sms_delete_batch",
+     "sms_delete",
+     "index",
+     "sms_delete_history",
+     "folder",
+     "sms_history",
+     "sms_mark_read",
+     "sms_refresh",
+     "sms_send",
+     "number",
+     "sms_settings",
+     "max_count",
+     "id",
+     "unlock"
+    ]
+   },
+   "uci": [
+    "udx-usb"
+   ]
+  }
+ }
+}

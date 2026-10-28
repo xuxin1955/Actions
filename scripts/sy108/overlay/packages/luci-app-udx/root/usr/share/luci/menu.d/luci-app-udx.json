@@ -1,0 +1,62 @@
+{
+ "admin/udx": {
+  "title": "SY108",
+  "order": 35,
+  "action": {
+   "type": "firstchild"
+  },
+  "depends": {
+   "acl": [
+    "luci-app-udx"
+   ]
+  }
+ },
+ "admin/udx/overview": {
+  "title": "Overview and network control",
+  "order": 10,
+  "action": {
+   "type": "view",
+   "path": "udx/overview"
+  }
+ },
+ "admin/udx/cellular": {
+  "title": "Bands, cells and APN",
+  "order": 20,
+  "action": {
+   "type": "view",
+   "path": "udx/cellular"
+  }
+ },
+ "admin/udx/sms": {
+  "title": "SMS management",
+  "order": 30,
+  "action": {
+   "type": "view",
+   "path": "udx/sms"
+  }
+ },
+ "admin/udx/at": {
+  "title": "AT terminal and IMEI",
+  "order": 40,
+  "action": {
+   "type": "view",
+   "path": "udx/at"
+  }
+ },
+ "admin/udx/hardware": {
+  "title": "Hardware and platform",
+  "order": 50,
+  "action": {
+   "type": "view",
+   "path": "udx/hardware"
+  }
+ },
+ "admin/udx/signal": {
+  "title": "Signal dashboard",
+  "order": 60,
+  "action": {
+   "type": "view",
+   "path": "udx/signal"
+  }
+ }
+}

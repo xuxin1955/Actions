@@ -1,0 +1,56 @@
+#!/bin/sh /etc/rc.common
+# shellcheck disable=SC2034
+START=50
+# shellcheck disable=SC2034
+STOP=20
+# shellcheck disable=SC2034
+USE_PROCD=1
+
+console_instance() {
+	. /usr/lib/udx-usb/gadget.sh
+	[ -f "$UDX_RUN/applied" ] || return 0
+	g_state_load "$UDX_RUN/applied" || return 1
+	[ "$ACM" = 1 ] || return 0
+	g_console_reason >/dev/null || return 0
+	procd_open_instance console
+	procd_set_param command /usr/libexec/udx-usb-console
+	procd_set_param respawn 3600 5 0
+	procd_set_param term_timeout 3
+	procd_close_instance
+}
+
+watchdog_instance() {
+	. /usr/lib/udx-usb/gadget.sh
+	[ "$(uci -q get udx-usb.main.enabled)" = 1 ] || return 0
+	[ "$(uci -q get udx-usb.main.watchdog)" = 1 ] || return 0
+	procd_open_instance watchdog
+	procd_set_param command /usr/libexec/udx-usb-watchdog
+	# The watchdog must survive its own soft connect cycle: a respawn would
+	# restart the counter and lose the flap history it depends on.
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+start_service() {
+	/usr/libexec/udx-usb-gadget start || return $?
+	console_instance
+	watchdog_instance
+}
+
+reload_service() {
+	# Never turn an arbitrary UCI change or netifd event into USB re-enumeration.
+	procd_open_service udx-usb /etc/init.d/udx-usb
+	console_instance
+	watchdog_instance
+	procd_close_service
+}
+
+status_service() {
+	/usr/sbin/udx-usbctl status
+}
+
+stop_service() {
+	/usr/libexec/udx-usb-gadget stop
+}

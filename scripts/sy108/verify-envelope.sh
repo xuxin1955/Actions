@@ -1,5 +1,4 @@
 #!/bin/sh
-# Wrap one model's capsule and run the original SPL signature verification.
 set -eu
 uboot=$1
 sml=$2

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Verify that a built uboot.bin embeds the SML payload it was wrapped with."""
 import struct
 import sys
 

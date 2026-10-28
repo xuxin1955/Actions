@@ -1,0 +1,54 @@
+#!/bin/sh
+. /usr/lib/udx-usb/gadget.sh
+[ "$(id -u)" = 0 ] || { g_error 'root maintenance access is required'; exit 77; }
+case "${1:-status}" in
+	status) g_status; exit 0;;
+	start) exec /usr/libexec/udx-usb-gadget start;;
+	switch)
+		[ "$#" -ge 2 ] && [ "$#" -le 3 ] || exit 64
+		g_load_config || exit 1
+		PROFILE=$2
+		case "${3:-keep}" in keep) ;; acm) ACM=1;; no-acm) ACM=0;; *) exit 64;; esac
+		g_profile && g_lock || exit $?
+		request="switch $PROFILE $ACM"
+		command="[\"/usr/libexec/udx-usb-gadget\",\"apply\",\"switch\",\"$PROFILE\",\"$ACM\"]"
+		;;
+	reset)
+		[ "$#" = 1 ] || exit 64
+		g_lock || exit $?
+		request=reset
+		command='["/usr/libexec/udx-usb-gadget","apply","reset"]'
+		;;
+	stop)
+		g_lock || exit $?
+		request=stop
+		command='["/usr/libexec/udx-usb-gadget","apply","stop"]'
+		;;
+	cancel-pending)
+		# Cannot cancel a running mutation: g_lock refuses while apply owns it.
+		g_lock || exit $?
+		ubus call service delete '{"name":"udx-usb-apply"}' >/dev/null 2>&1 || true
+		rm -f "$UDX_RUN/pending"
+		exit 0
+		;;
+	*)
+		echo 'usage: udx-usbctl status | start | switch {ncm|ncm-software|ecm|rndis} [acm|no-acm] | reset | stop | cancel-pending' >&2
+		exit 64;;
+esac
+if [ "$request" = reset ] && [ -f "$UDX_RUN/pending" ] && [ "$(g_read "$UDX_RUN/pending")" = reset ]; then
+	echo "queued=reset"
+	exit 0
+fi
+[ ! -e "$UDX_RUN/pending" ] || { g_error 'a request is queued; inspect status or cancel-pending'; exit 75; }
+printf '%s\n' "$request" > "$UDX_RUN/pending" || exit 1
+# procd owns the operation independently of the SSH/ACM connection it changes.
+# No respawn: a failed profile is never retried in a re-enumeration loop.
+ubus call service delete '{"name":"udx-usb-apply"}' >/dev/null 2>&1 || true
+# stdout capture injects libsetlbf.so, which splits shell printf writes to
+# configfs attributes. This worker reports errors on stderr; leave stdout alone.
+if ! ubus call service add "{\"name\":\"udx-usb-apply\",\"instances\":{\"apply\":{\"command\":$command,\"stderr\":true}}}" >/dev/null; then
+	rm -f "$UDX_RUN/pending"
+	exit 1
+fi
+echo "queued=$request"
+[ "$request" = reset ] || echo 'Changing NCM processing mode restarts the device; other USB changes reconnect it. Check udx-usbctl status after reconnection.'
