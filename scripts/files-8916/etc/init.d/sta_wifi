@@ -1,65 +1,210 @@
 #!/bin/sh /etc/rc.common
 
-START=99
+START=19
+STOP=10
+
+MODE=auto
+[ -r /etc/sta_wifi.mode ] && MODE="$(cat /etc/sta_wifi.mode 2>/dev/null)"
+
+HT_MODE=auto
+[ -r /etc/sta_wifi.htmode ] && HT_MODE="$(cat /etc/sta_wifi.htmode 2>/dev/null)"
+
+SELF=/etc/init.d/sta_wifi
+
+PHY_WAIT=20
+STA_WAIT=15
+AP_WAIT=15
+AP_RETRY_WAIT=12
+
+STA_SEC=""
+AP_SEC=""
+AP_DEV=""
+
+log() { logger -t sta_wifi "$*"; }
+
+ifname_of() {
+	iw dev 2>/dev/null | awk -v t="$1" '
+		$1 == "Interface" { n = $2 }
+		$1 == "type" && $2 == t { print n; exit }
+	'
+}
+
+sta_ifname() { ifname_of managed; }
+ap_ifname()  { ifname_of AP; }
+
+carrier_up() {
+	[ -n "$1" ] || return 1
+	[ -r "/sys/class/net/$1/carrier" ] || return 1
+	[ "$(cat "/sys/class/net/$1/carrier" 2>/dev/null)" = "1" ]
+}
+
+sta_chan() {
+	iw dev "$1" info 2>/dev/null | awk '/channel/ { print $2; exit }'
+}
+
+find_sections() {
+	STA_SEC=""
+	AP_SEC=""
+	AP_DEV=""
+	for s in $(uci show wireless 2>/dev/null | sed -n 's/^wireless\.\(.*\)=wifi-iface$/\1/p'); do
+		m="$(uci -q get "wireless.$s.mode")"
+		if [ "$m" = "sta" ] && [ -z "$STA_SEC" ]; then STA_SEC="$s"; fi
+		if [ "$m" = "ap" ] && [ -z "$AP_SEC" ]; then AP_SEC="$s"; fi
+	done
+	[ -n "$AP_SEC" ] && AP_DEV="$(uci -q get "wireless.$AP_SEC.device")"
+}
+
+fix_htmode() {
+	[ "$HT_MODE" = "20" ] || return 0
+	[ -n "$AP_DEV" ] || return 0
+	b="$(uci -q get "wireless.$AP_DEV.band")"
+	[ -z "$b" ] && b="$(uci -q get "wireless.$AP_DEV.hwmode")"
+	case "$b" in
+		2g|11b|11g|"")
+			cur="$(uci -q get "wireless.$AP_DEV.htmode")"
+			case "$cur" in
+				HT20) ;;
+				*) uci set "wireless.$AP_DEV.htmode=HT20"; log "force HT20 (was ${cur:-unset})" ;;
+			esac
+			;;
+	esac
+	return 0
+}
+
+wait_ap() {
+	i=0
+	while [ "$i" -lt "$1" ]; do
+		[ -n "$(ap_ifname)" ] && return 0
+		i=$((i + 1))
+		sleep 1
+	done
+	return 1
+}
 
 start() {
-    (
-        sta_section=""
-        ap_section=""
+	set -f
+	find_sections
+	log "preset begin mode=$MODE ht=$HT_MODE sta=$STA_SEC ap=$AP_SEC dev=$AP_DEV"
 
-        for s in $(uci show wireless 2>/dev/null | grep "=wifi-iface" | cut -d. -f2 | cut -d= -f1); do
-            mode="$(uci -q get wireless.$s.mode)"
-            if [ "$mode" = "sta" ] && [ -z "$sta_section" ]; then
-                sta_section="$s"
-            elif [ "$mode" = "ap" ] && [ -z "$ap_section" ]; then
-                ap_section="$s"
-            fi
-        done
+	case "$MODE" in
+	ap)
+		[ -z "$AP_SEC" ] && { log "preset: no ap section"; return 1; }
+		[ -n "$STA_SEC" ] && uci set "wireless.$STA_SEC.disabled=1"
+		uci set "wireless.$AP_SEC.disabled=0"
+		uci commit wireless
+		log "preset: pure ap, sta off, htmode=$(uci -q get "wireless.$AP_DEV.htmode")"
+		return 0
+		;;
+	sta)
+		[ -z "$STA_SEC" ] && { log "preset: no sta section"; return 1; }
+		[ -n "$AP_SEC" ] && uci set "wireless.$AP_SEC.disabled=1"
+		uci set "wireless.$STA_SEC.disabled=0"
+		uci commit wireless
+		log "preset: pure sta, ap off"
+		return 0
+		;;
+	esac
 
-        [ -z "$sta_section" ] && exit 0
-        [ -z "$ap_section" ] && exit 0
+	if [ -z "$STA_SEC" ]; then
+		log "preset: no sta section, ap left to netifd"
+		[ -n "$AP_SEC" ] && uci set "wireless.$AP_SEC.disabled=0"
+		uci commit wireless
+		return 0
+	fi
 
-        sta_ifname="$(iw dev 2>/dev/null | awk '/Interface/{name=$2} /type managed/{print name; exit}')"
-        [ -z "$sta_ifname" ] && sta_ifname="phy0-sta0"
+	uci set "wireless.$STA_SEC.disabled=0"
+	[ -n "$AP_SEC" ] && uci set "wireless.$AP_SEC.disabled=1"
+	fix_htmode
+	uci commit wireless
+	log "preset: sta only at boot, ap deferred to stage2"
 
-        uci set wireless.$sta_section.disabled='0'
-        uci commit wireless
+	if [ -n "$AP_SEC" ]; then
+		case "$0" in
+			*/rc.common|"") ;;
+			/*) [ -f "$0" ] && SELF="$0" ;;
+		esac
+		setsid sh "$SELF" --stage2 >/dev/null 2>&1 &
+		log "preset: stage2 launched via $SELF"
+	else
+		log "preset: no ap section, stage2 skipped"
+	fi
+}
 
-        i=0
-        while [ $i -lt 10 ]; do
-            iw dev 2>/dev/null | grep -q "$sta_ifname" && break
-            sleep 1
-            i=$((i + 1))
-        done
+stage2_main() {
+	export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+	set -f
 
-        uci set wireless.$ap_section.disabled='1'
-        uci commit wireless
-        wifi reload
+	i=0
+	while [ "$i" -lt "$PHY_WAIT" ]; do
+		[ -e /sys/class/ieee80211/phy0 ] && break
+		i=$((i + 1))
+		sleep 1
+	done
 
-        i=0
-        while [ $i -lt 10 ]; do
-            if iw dev "$sta_ifname" link 2>/dev/null | grep -q "Connected"; then
-                break
-            fi
-            sleep 2
-            i=$((i + 1))
-        done
+	find_sections
+	if [ -z "$AP_SEC" ] || [ -z "$AP_DEV" ]; then
+		log "stage2: no ap section, nothing to do"
+		return 0
+	fi
+	log "stage2: start sta=$STA_SEC ap=$AP_SEC dev=$AP_DEV"
 
-        if iw dev "$sta_ifname" link 2>/dev/null | grep -q "Connected"; then
-            logger -t sta_wifi "STA connected"
-            uci set wireless.$ap_section.disabled='0'
-            uci commit wireless
-            wifi reload
-        else
-            logger -t sta_wifi "STA failed, AP standalone"
-            uci set wireless.$sta_section.disabled='1'
-            uci set wireless.$ap_section.disabled='0'
-            uci commit wireless
-            wifi reload
-        fi
-    ) &
+	sif=""
+	i=0
+	while [ "$i" -lt "$STA_WAIT" ]; do
+		sif="$(sta_ifname)"
+		carrier_up "$sif" && break
+		i=$((i + 1))
+		sleep 1
+	done
+
+	if carrier_up "$sif"; then
+		log "stage2: sta up $sif after $((i + 1))s"
+		ch="$(sta_chan "$sif")"
+		if [ -n "$ch" ]; then
+			uci set "wireless.$AP_DEV.channel=$ch"
+			log "stage2: ap follows sta ch=$ch"
+		fi
+	else
+		log "stage2: sta not up in ${STA_WAIT}s, add ap anyway"
+	fi
+
+	uci set "wireless.$AP_SEC.disabled=0"
+	uci commit wireless
+	wifi reload >/dev/null 2>&1 || true
+	log "stage2: ap requested"
+
+	if wait_ap "$AP_WAIT"; then
+		log "stage2: AP up $(ap_ifname)"
+	else
+		log "stage2: ap slow, radio reset"
+		wifi down >/dev/null 2>&1
+		sleep 1
+		wifi up >/dev/null 2>&1
+		if wait_ap "$AP_RETRY_WAIT"; then
+			log "stage2: AP up after reset $(ap_ifname)"
+		else
+			log "stage2: AP STILL DOWN"
+			logread 2>/dev/null | grep -iE "hostapd|wcn36xx|AP-ENABLED" | tail -n 6 | while read -r l; do
+				log "err: $l"
+			done
+		fi
+	fi
+
+	sleep 2
+	if [ -n "$(ap_ifname)" ] && carrier_up "$(sta_ifname)"; then
+		log "RESULT=sta+ap"
+	elif [ -n "$(ap_ifname)" ]; then
+		log "RESULT=ap-only"
+	else
+		log "RESULT=fail"
+	fi
+	log "stage2: done"
 }
 
 stop() {
-    :
+	log "stop"
 }
+
+case "$1" in
+--stage2) stage2_main; exit 0 ;;
+esac
