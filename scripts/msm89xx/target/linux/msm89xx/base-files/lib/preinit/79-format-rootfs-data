@@ -4,24 +4,24 @@
 
 ROOTFS_DATA="/dev/mmcblk0p15"
 
-has_valid_ext4() {
+has_valid_f2fs() {
     local magic
-    magic=$(dd if="$1" bs=1 skip=1080 count=2 2>/dev/null | hexdump -e '1/2 "%04x"')
+    magic=$(dd if="$1" bs=1 skip=1024 count=4 2>/dev/null | hexdump -e '1/4 "%08x"')
 
-    [ "$magic" = "ef53" ]
+    [ "$magic" = "f2f52010" ]
 }
 
 preinit_format_rootfs_data() {
     [ -b "$ROOTFS_DATA" ] || return 0
 
-    if has_valid_ext4 "$ROOTFS_DATA"; then
-        echo "rootfs_data: valid ext4 filesystem detected" > /dev/kmsg
+    if has_valid_f2fs "$ROOTFS_DATA"; then
+        echo "rootfs_data: valid f2fs filesystem detected" > /dev/kmsg
         return 0
     fi
 
     echo "rootfs_data: no valid filesystem, formatting..." > /dev/kmsg
 
-    if mkfs.ext4 -F -O has_journal -L rootfs_data "$ROOTFS_DATA"; then
+    if mkfs.f2fs -f -l rootfs_data "$ROOTFS_DATA"; then
         echo "rootfs_data: format complete, rebooting..." > /dev/kmsg
         sync
         sleep 2
