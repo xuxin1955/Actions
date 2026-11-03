@@ -2,9 +2,6 @@ name: Build_bootloader_msm8916
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - '.github/workflows/Build_bootloader_msm8916.yml'
 
 env:
   LK2ND_REPO: https://github.com/msm8916-mainline/lk2nd.git
