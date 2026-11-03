@@ -1,0 +1,63 @@
+name: Build_bootloader_msm8916
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/Build_bootloader_msm8916.yml'
+
+env:
+  LK2ND_REPO: https://github.com/msm8916-mainline/lk2nd.git
+  QTESTSIGN_REPO: https://github.com/msm8916-mainline/qtestsign.git
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            gcc-arm-none-eabi \
+            device-tree-compiler \
+            libfdt-dev \
+            python3-cryptography
+
+      - name: source
+        run: |
+          git clone --depth 1 "$LK2ND_REPO" lk2nd
+          git clone --depth 1 "$QTESTSIGN_REPO" qtestsign
+
+      - name: build
+        run: |
+          cd lk2nd
+          echo 'DEFINES += USE_TARGET_HS200_CAPS=1' >> project/lk1st-msm8916.mk
+          make -j"$(nproc)" \
+            TOOLCHAIN_PREFIX=arm-none-eabi- \
+            LK2ND_BUNDLE_DTB=msm8916-512mb-mtp.dtb \
+            lk1st-msm8916
+          make -j"$(nproc)" \
+            TOOLCHAIN_PREFIX=arm-none-eabi- \
+            lk2nd-msm8916
+
+      - name: sign
+        run: |
+          mkdir -p out
+          python3 qtestsign/qtestsign.py aboot \
+            lk2nd/build-lk1st-msm8916/emmc_appsboot.mbn \
+            -o out/aboot.bin
+          cp lk2nd/build-lk2nd-msm8916/lk2nd.img out/lk2nd.img
+          file out/aboot.bin | grep -q 'ELF 32-bit'
+          file out/lk2nd.img | grep -q 'Android bootimg'
+          cd out
+          sha256sum aboot.bin lk2nd.img > sha256sums.txt
+          ls -lh
+
+      - name: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: msm8916-bootloader
+          path: out/
+          if-no-files-found: error
