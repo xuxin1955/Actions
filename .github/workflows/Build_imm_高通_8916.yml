@@ -356,7 +356,7 @@ jobs:
     needs: build
     permissions:
       contents: write
-    if: env.UPLOAD_RELEASE == 'true' && !cancelled() && needs.build.result == 'success'
+    if: needs.build.result == 'success' && !cancelled()
     steps:
 
     - name: Collect firmware artifacts
