@@ -1,598 +1,458 @@
 #!/bin/sh /etc/rc.common
 
-START=19
-STOP=10
+START=21
+USE_PROCD=1
 
-MODE=auto
-[ -r /etc/sta_wifi.mode ] && MODE="$(cat /etc/sta_wifi.mode 2>/dev/null)"
-
-HT_MODE=auto
-[ -r /etc/sta_wifi.htmode ] && HT_MODE="$(cat /etc/sta_wifi.htmode 2>/dev/null)"
-
-WD_ENABLE=1
-[ -r /etc/sta_wifi.wd ] && WD_ENABLE="$(cat /etc/sta_wifi.wd 2>/dev/null)"
-
-SELF=/etc/init.d/sta_wifi
-PIDF=/var/run/sta_wifi.pid
-EMG=/etc/sta_wifi.emergency
-HIST=/etc/sta_wifi_hist.log
-BEAT=/tmp/sta_wifi.beat
-
-PHY_WAIT=20
-STA_WAIT=15
-AP_WAIT=15
-AP_RETRY_WAIT=12
-STALL_LIMIT=4
-APFAIL_LIMIT=4
-GUARD_GAP=900
-
-TO=""
-command -v timeout >/dev/null 2>&1 && TO="timeout 45"
-
-STA_SEC=""
-AP_SEC=""
-AP_DEV=""
-
-log() { logger -t sta_wifi "$*"; }
-
-hist() {
-	echo "$(date '+%F %T') $*" >> "$HIST"
-	sync
-}
-
-hist_rot() {
-	[ -f "$HIST" ] || return 0
-	n="$(wc -c < "$HIST" 2>/dev/null)"
-	[ -n "$n" ] || return 0
-	[ "$n" -gt 262144 ] || return 0
-	tail -c 131072 "$HIST" > "$HIST.t" 2>/dev/null
-	mv "$HIST.t" "$HIST"
-}
-
-ifname_of() {
-	iw dev 2>/dev/null | awk -v t="$1" '
-		$1 == "Interface" { n = $2 }
-		$1 == "type" && $2 == t { print n; exit }
-	'
-}
-
-sta_ifname() { ifname_of managed; }
-ap_ifname()  { ifname_of AP; }
-
-carrier_up() {
-	[ -n "$1" ] || return 1
-	[ -r "/sys/class/net/$1/carrier" ] || return 1
-	[ "$(cat "/sys/class/net/$1/carrier" 2>/dev/null)" = "1" ]
-}
-
-sta_chan() {
-	[ -n "$1" ] || return 0
-	iw dev "$1" info 2>/dev/null | awk '/channel/ { print $2; exit }'
-}
-
-sta_sig() {
-	[ -n "$1" ] || return 0
-	iw dev "$1" station dump 2>/dev/null | awk '/signal:/ { print $2; exit }'
-}
-
-ap_tx() {
-	[ -n "$1" ] || return 0
-	cat "/sys/class/net/$1/statistics/tx_packets" 2>/dev/null
-}
-
-find_sections() {
-	STA_SEC=""
-	AP_SEC=""
-	AP_DEV=""
-	for s in $(uci show wireless 2>/dev/null | sed -n 's/^wireless\.\(.*\)=wifi-iface$/\1/p'); do
-		m="$(uci -q get "wireless.$s.mode")"
-		if [ "$m" = "sta" ] && [ -z "$STA_SEC" ]; then STA_SEC="$s"; fi
-		if [ "$m" = "ap" ] && [ -z "$AP_SEC" ]; then AP_SEC="$s"; fi
-	done
-	[ -n "$AP_SEC" ] && AP_DEV="$(uci -q get "wireless.$AP_SEC.device")"
-}
-
-ap_vif_on() {
-	[ -n "$AP_SEC" ] || return 1
-	[ "$(uci -q get "wireless.$AP_SEC.disabled")" = "1" ] && return 1
-	return 0
-}
-
-ap_present() {
-	[ -n "$(ap_ifname)" ] || return 1
-	return 0
-}
-
-fix_htmode() {
-	[ "$HT_MODE" = "20" ] || return 0
-	[ -n "$AP_DEV" ] || return 0
-	b="$(uci -q get "wireless.$AP_DEV.band")"
-	[ -z "$b" ] && b="$(uci -q get "wireless.$AP_DEV.hwmode")"
-	case "$b" in
-		2g|11b|11g|"")
-			cur="$(uci -q get "wireless.$AP_DEV.htmode")"
-			case "$cur" in
-				HT20) ;;
-				*) uci set "wireless.$AP_DEV.htmode=HT20"; log "force HT20 (was ${cur:-unset})" ;;
+start_service() {
+	procd_open_instance
+	procd_set_param command /bin/sh -c '
+		L=/etc/apfirst.log
+		F=/etc/apfirst.rebooted
+		G=/etc/apfirst.gate
+		RB=0
+		lg() {
+			echo "t=$(cut -d. -f1 /proc/uptime) $*" >> "$L"
+			if [ "$(wc -l < "$L" 2>/dev/null)" -gt 600 ]; then
+				tail -n 350 "$L" > "$L.n"
+				mv "$L.n" "$L"
+			fi
+		}
+		now() {
+			cut -d. -f1 /proc/uptime
+		}
+		aif() {
+			for d in /sys/class/net/*; do
+				case "${d##*/}" in *-ap*) echo "${d##*/}"; return 0 ;; esac
+			done
+			N=$(iw dev 2>/dev/null | awk "\$1 == \"Interface\" { n = \$2 } \$1 == \"type\" && \$2 == \"AP\" { print n; exit }")
+			[ -n "$N" ] && { echo "$N"; return 0; }
+			return 1
+		}
+		sif() {
+			iw dev 2>/dev/null | awk "\$1 == \"Interface\" { n = \$2 } \$1 == \"type\" && \$2 == \"managed\" { print n; exit }"
+		}
+		hok() {
+			pidof hostapd >/dev/null 2>&1 && return 0
+			pidof wpad >/dev/null 2>&1 && return 0
+			return 1
+		}
+		aok() {
+			C=0
+			for d in /sys/class/net/*; do
+				case "${d##*/}" in
+				*-ap*)
+					C=$((C + 1))
+					case "$(cat "$d/operstate" 2>/dev/null)" in
+					up|dormant) ;;
+					*) return 1 ;;
+					esac
+					;;
+				esac
+			done
+			[ "$C" -gt 0 ] && return 0
+			AI=$(iw dev 2>/dev/null | awk "\$1 == \"Interface\" { n = \$2 } \$1 == \"type\" && \$2 == \"AP\" { print n; exit }")
+			[ -n "$AI" ] || return 1
+			[ "$(cat "/sys/class/net/$AI/operstate" 2>/dev/null)" = "up" ] || return 1
+			return 0
+		}
+		sstate() {
+			S=$(sif)
+			[ -n "$S" ] || { echo none; return 0; }
+			wpa_cli -i "$S" status 2>/dev/null | sed -n "s/^wpa_state=//p" | head -n 1
+		}
+		sok() {
+			S=$(sif)
+			[ -n "$S" ] || return 1
+			iw dev "$S" link 2>/dev/null | grep -q "Connected to" || return 1
+			case "$(wpa_cli -i "$S" status 2>/dev/null | sed -n "s/^wpa_state=//p" | head -n 1)" in
+			COMPLETED|"") return 0 ;;
+			*) return 1 ;;
 			esac
-			;;
-	esac
-	return 0
-}
-
-wait_ap() {
-	i=0
-	while [ "$i" -lt "$1" ]; do
-		[ -n "$(ap_ifname)" ] && return 0
-		i=$((i + 1))
-		sleep 1
-	done
-	return 1
-}
-
-grab_forensics() {
-	hist_rot
-	{
-		echo "=== $(date '+%F %T') $1"
-		echo "-- uptime $(cat /proc/uptime 2>/dev/null)"
-		echo "-- load $(cat /proc/loadavg 2>/dev/null)"
-		echo "-- mem $(free 2>/dev/null | awk '/Mem:/ { print "total="$2" free="$4" avail="$6 }')"
-		echo "-- hostapd $(pidof hostapd 2>/dev/null) wpad $(pidof wpad 2>/dev/null) supp $(pidof wpa_supplicant 2>/dev/null)"
-		echo "-- iw dev"
-		iw dev 2>/dev/null
-		echo "-- sta link"
-		iw dev "$(sta_ifname)" link 2>/dev/null
-		echo "-- sta stat"
-		iw dev "$(sta_ifname)" station dump 2>/dev/null | head -n 8
-		echo "-- ap stat"
-		iw dev "$(ap_ifname)" station dump 2>/dev/null | head -n 12
-		echo "-- ps"
-		ps 2>/dev/null | grep -E "hostapd|wpad|wpa_supp|netifd|sta_wifi" | grep -v grep
-		echo "-- logread"
-		logread 2>/dev/null | tail -n 60
-		echo
-	} >> "$HIST" 2>/dev/null
-	sync
-}
-
-beat() {
-	sif="$(sta_ifname)"
-	aif="$(ap_ifname)"
-	atx="$(ap_tx "$aif")"
-	echo "$(date '+%F %T') ap=${aif:-none} tx=${atx:-0} sta=${sif:-none} carrier=$(cat "/sys/class/net/$sif/carrier" 2>/dev/null) ch=$(sta_chan "$aif") sig=$(sta_sig "$sif") hp=$(pidof hostapd 2>/dev/null | wc -w) mem=$(free 2>/dev/null | awk '/Mem:/ { print $4 }') up=$(cut -d. -f1 /proc/uptime 2>/dev/null)" >> "$BEAT"
-	n="$(wc -c < "$BEAT" 2>/dev/null)"
-	[ -n "$n" ] && [ "$n" -gt 102400 ] && { tail -c 51200 "$BEAT" > "$BEAT.t" 2>/dev/null; mv "$BEAT.t" "$BEAT"; }
-	return 0
-}
-
-ap_tx_grow() {
-	t1="$(ap_tx "$(ap_ifname)")"
-	[ -n "$t1" ] || return 1
-	sleep 4
-	t2="$(ap_tx "$(ap_ifname)")"
-	[ -n "$t2" ] || return 1
-	[ "$t2" != "$t1" ]
-}
-
-recover_ap() {
-	log "wd: ap L1 hup"
-	killall -HUP hostapd 2>/dev/null
-	sleep 5
-	ap_tx_grow && { log "wd: ap back L1"; return 0; }
-
-	log "wd: ap L2 reload"
-	$TO wifi reload >/dev/null 2>&1
-	wait_ap 20
-	ap_tx_grow && { log "wd: ap back L2"; return 0; }
-
-	log "wd: ap L3 vif rebuild"
-	uci set "wireless.$AP_SEC.disabled=1" 2>/dev/null
-	uci commit wireless 2>/dev/null
-	$TO wifi reload >/dev/null 2>&1
-	sleep 3
-	uci set "wireless.$AP_SEC.disabled=0" 2>/dev/null
-	uci commit wireless 2>/dev/null
-	$TO wifi reload >/dev/null 2>&1
-	wait_ap 20
-	ap_tx_grow && { log "wd: ap back L3"; return 0; }
-
-	log "wd: ap L4 radio reset"
-	$TO wifi down >/dev/null 2>&1
-	sleep 2
-	$TO wifi up >/dev/null 2>&1
-	wait_ap 18
-	ap_tx_grow && { log "wd: ap back L4"; return 0; }
-
-	log "wd: ap ALL LEVELS FAILED"
-	return 1
-}
-
-follow_chan() {
-	sif="$1"
-	ch="$(sta_chan "$sif")"
-	[ -n "$ch" ] || return 0
-	aif="$(ap_ifname)"
-	[ -n "$aif" ] || return 0
-	ach="$(sta_chan "$aif")"
-	[ -n "$ach" ] || return 0
-	[ "$ch" = "$ach" ] && return 0
-	log "wd: ap ch $ach -> $ch"
-	uci set "wireless.$AP_DEV.channel=$ch"
-	uci commit wireless
-	$TO wifi reload >/dev/null 2>&1
-	return 0
-}
-
-emergency_reboot() {
-	n=0
-	nowt="$(date +%s 2>/dev/null)"
-	if [ -f /etc/sta_wifi.reboots ]; then
-		n="$(cat /etc/sta_wifi.reboots 2>/dev/null)"
-		last="$(stat -c %Y /etc/sta_wifi.reboots 2>/dev/null)"
-		if [ -n "$last" ] && [ -n "$nowt" ] && [ $((nowt - last)) -gt 1800 ]; then
-			n=0
-		fi
-	fi
-	n=$((n + 1))
-	echo "$n" > /etc/sta_wifi.reboots
-	sync
-	if [ "$n" -ge 3 ]; then
-		log "$1 (reboot count $n, hold ap)"
-		if [ "$n" -eq 3 ]; then
-			hist "$1 skip-reboot n=$n"
-			grab_forensics "reboot-limit"
-		fi
-		return 0
-	fi
-	log "$1"
-	hist "$1"
-	grab_forensics "before-reboot"
-	sync
-	echo "$(date '+%F %T') $1" > "$EMG"
-	sync
-	sleep 2
-	reboot
-}
-
-guard_main() {
-	export PATH=/usr/sbin:/usr/bin:/sbin:/bin
-	set -f
-	[ "$WD_ENABLE" = "1" ] || return 0
-	[ -f /etc/sta_wifi.paused ] && return 0
-	now="$(date +%s 2>/dev/null)"
-	[ -n "$now" ] || return 0
-	if [ -f "$BEAT" ]; then
-		last="$(stat -c %Y "$BEAT" 2>/dev/null)"
-		[ -n "$last" ] || return 0
-		gap=$((now - last))
-		[ "$gap" -gt "$GUARD_GAP" ] || return 0
-		hist "guard: watchdog silent ${gap}s"
-		grab_forensics "guard-stall"
-		emergency_reboot "guard reboot stalled=${gap}s"
-		return 0
-	fi
-	up="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
-	[ -n "$up" ] && [ "$up" -gt 600 ] || return 0
-	hist "guard: no beat file uptime=${up}s"
-	emergency_reboot "guard reboot no-beat uptime=${up}s"
-}
-
-watchdog_main() {
-	export PATH=/usr/sbin:/usr/bin:/sbin:/bin
-	set -f
-
-	echo $$ > "$PIDF"
-	down=0
-	apfail=0
-	stall=0
-	lasttx=""
-	cur=15
-	scanned=0
-	tick=0
-	beat
-	log "wd: start interval=${cur}s"
-	log "wd: hist=$HIST beat=$BEAT"
-
-	while :; do
-		sleep "$cur"
-		tick=$((tick + 1))
-		[ $((tick % 8)) -eq 0 ] && beat
-
-		find_sections
-		sif="$(sta_ifname)"
-		aif="$(ap_ifname)"
-		st_ok=0
-		carrier_up "$sif" && st_ok=1
-
-		if ap_vif_on; then
-			bad=0
-			ap_present || bad=1
-			tx="$(ap_tx "$aif")"
-			if [ -n "$tx" ]; then
-				if [ -n "$lasttx" ] && [ "$tx" = "$lasttx" ]; then
-					stall=$((stall + 1))
-				else
-					stall=0
-				fi
-				lasttx="$tx"
-				[ "$stall" -ge "$STALL_LIMIT" ] && bad=1
+		}
+		pick() {
+			for s in $(uci show wireless 2>/dev/null | sed -n "s/^wireless\.\([^.]*\)=wifi-iface$/\1/p"); do
+				[ "$(uci -q get "wireless.$s.mode")" = "$1" ] && { echo "$s"; return 0; }
+			done
+			return 1
+		}
+		pickon() {
+			for s in $(uci show wireless 2>/dev/null | sed -n "s/^wireless\.\([^.]*\)=wifi-iface$/\1/p"); do
+				[ "$(uci -q get "wireless.$s.mode")" = "$1" ] || continue
+				[ "$(uci -q get "wireless.$s.disabled")" != "1" ] && { echo "$s"; return 0; }
+			done
+			return 1
+		}
+		devof() {
+			for s in "$@"; do
+				[ -n "$s" ] || continue
+				d=$(uci -q get "wireless.$s.device")
+				[ -n "$d" ] && { echo "$d"; return 0; }
+			done
+			echo radio0
+		}
+		ifoff() {
+			[ -n "$1" ] || return 0
+			[ -n "$(uci -q get "wireless.$1.mode")" ] || return 0
+			uci set "wireless.$1.disabled=1" 2>/dev/null
+			uci commit wireless 2>/dev/null
+			sync
+		}
+		ifon() {
+			[ -n "$1" ] || return 0
+			[ -n "$(uci -q get "wireless.$1.mode")" ] || return 0
+			uci set "wireless.$1.disabled=0" 2>/dev/null
+			uci commit wireless 2>/dev/null
+			sync
+		}
+		wup() {
+			if [ "$MULTI" = "1" ]; then
+				timeout 45 wifi up >/dev/null 2>&1
 			else
-				bad=1
+				timeout 45 wifi up "$DEV" >/dev/null 2>&1
 			fi
-
-			if [ "$bad" = "1" ]; then
-				apfail=$((apfail + 1))
-				log "wd: ap bad n=$apfail if=${aif:-none} tx=${tx:-none} stall=$stall sta=$st_ok"
-				[ "$apfail" -eq 1 ] && grab_forensics "ap-abnormal"
-				if recover_ap; then
-					apfail=0
-					stall=0
-					lasttx=""
-					[ "$st_ok" = "1" ] && follow_chan "$(sta_ifname)"
-					cur=15
-					continue
+		}
+		apkick() {
+			if [ "$MULTI" = "1" ]; then
+				timeout 45 wifi up >/dev/null 2>&1
+			else
+				ubus call network.wireless up "{\"device\":\"$DEV\"}" >/dev/null 2>&1
+			fi
+			sleep 6
+			aok && return 0
+			timeout 45 wifi reload >/dev/null 2>&1
+			sleep 8
+			aok && return 0
+			wup
+			sleep 8
+		}
+		aheal() {
+			case "$1" in
+			1)
+				lg "ap L1 up $DEV"
+				wup
+				sleep 20
+				;;
+			2)
+				lg "ap L2 ungated up $DEV"
+				ifon "$ASP"
+				apkick
+				sleep 10
+				;;
+			3)
+				if [ "$MULTI" = "1" ]; then
+					lg "ap L3 skip, multi-radio"
+					sleep 10
+					return
 				fi
-				if [ "$apfail" -ge "$APFAIL_LIMIT" ]; then
-					emergency_reboot "emergency reboot apfail=$apfail"
-					exit 0
+				STG=0
+				if [ "$STA_ON" = "1" ] && [ -n "$STP" ]; then
+					lg "ap L3 pause sta $STP"
+					echo "$STP" > "$G"
+					sync
+					ifoff "$STP"
+					STG=1
 				fi
-				cur=30
-				continue
-			fi
-
-			apfail=0
-		fi
-
-		if [ "$st_ok" = "1" ]; then
-			if [ "$down" -gt 0 ]; then
-				log "wd: sta recovered after $down checks"
-				follow_chan "$sif"
-			fi
-			down=0
-			cur=15
-			scanned=0
-			continue
-		fi
-
-		down=$((down + 1))
-		[ "$down" -le 6 ] && log "wd: sta down check=$down"
-
-		if [ "$down" -eq 2 ]; then
-			log "wd: action=hup supplicant"
-			killall -HUP wpa_supplicant 2>/dev/null || true
-		elif [ "$down" -eq 4 ]; then
-			log "wd: action=wifi reload"
-			$TO wifi reload >/dev/null 2>&1 || true
-		elif [ "$down" -eq 6 ]; then
-			log "wd: action=radio reset"
-			$TO wifi down >/dev/null 2>&1
-			sleep 1
-			$TO wifi up >/dev/null 2>&1
-		fi
-
-		[ "$down" -ge 6 ] && cur=60
-
-		if [ "$down" -ge 12 ] && [ "$scanned" -eq 0 ]; then
-			scanned=1
-			ssid="$(uci -q get "wireless.$STA_SEC.ssid")"
-			if [ -n "$ssid" ] && [ -n "$sif" ]; then
-				if iw dev "$sif" scan 2>/dev/null | grep -F "SSID: $ssid" >/dev/null; then
-					log "wd: scan found $ssid, force retry"
-					$TO wifi reload >/dev/null 2>&1 || true
+				lg "ap L3 radio reset"
+				timeout 45 wifi down >/dev/null 2>&1
+				sleep 2
+				wup
+				sleep 25
+				if [ "$STG" = "1" ]; then
+					ifon "$STP"
+					rm -f "$G"
+					sync
+					ubus call network.wireless up "{\"device\":\"$DEV\"}" >/dev/null 2>&1
+					if aok; then
+						lg "ap L3 sta back $STP"
+					else
+						lg "ap L3 failed, sta restored $STP"
+					fi
+				fi
+				sleep 5
+				;;
+			*)
+				if [ -z "$ASP" ]; then
+					lg "ap L4 skip no-section"
+					sleep 60
+				elif [ "$RB" != "1" ]; then
+					lg "ap L4 reboot disabled, stay"
+					sleep 60
+				elif [ -f "$F" ]; then
+					lg "ap L4 skip rebooted"
+					sleep 60
 				else
-					log "wd: scan no $ssid nearby, slow down"
-					cur=120
+					lg "ap L4 reboot"
+					touch "$F"
+					sync
+					reboot
 				fi
-			fi
-		fi
-
-		if [ "$down" -ge 20 ]; then
-			down=1
-			scanned=0
-		fi
-	done
-}
-
-emg_main() {
-	export PATH=/usr/sbin:/usr/bin:/sbin:/bin
-	set -f
-	echo $$ > "$PIDF"
-	find_sections
-	i=0
-	while [ "$i" -lt "$PHY_WAIT" ]; do
-		[ -e /sys/class/ieee80211/phy0 ] && break
-		i=$((i + 1))
-		sleep 1
-	done
-	log "emg: ap first sta=$STA_SEC ap=$AP_SEC"
-	$TO wifi reload >/dev/null 2>&1
-	if wait_ap 25; then
-		log "emg: ap up $(ap_ifname)"
-	else
-		log "emg: ap slow, radio reset"
-		$TO wifi down >/dev/null 2>&1
-		sleep 1
-		$TO wifi up >/dev/null 2>&1
-		wait_ap 18 && log "emg: ap up after reset" || log "emg: AP STILL DOWN"
-	fi
-	beat
-	log "emg: hold ap 60s"
-	sleep 60
-	if [ -n "$STA_SEC" ]; then
-		uci set "wireless.$STA_SEC.disabled=0"
-		uci commit wireless
-		$TO wifi reload >/dev/null 2>&1
+				apstage=0
+				;;
+			esac
+		}
+		sheal() {
+			SIF=$(sif)
+			[ -n "$SIF" ] || return 0
+			case "$1" in
+			1)
+				lg "sta L1 reassoc $SIF"
+				wpa_cli -i "$SIF" reassociate >/dev/null 2>&1
+				sleep 8
+				;;
+			2)
+				lg "sta L2 reconnect $SIF"
+				wpa_cli -i "$SIF" disconnect >/dev/null 2>&1
+				sleep 2
+				wpa_cli -i "$SIF" reconnect >/dev/null 2>&1
+				sleep 3
+				wpa_cli -i "$SIF" reassociate >/dev/null 2>&1
+				sleep 7
+				;;
+			*)
+				lg "sta L3 reconf $SIF"
+				wpa_cli -i "$SIF" reconfigure >/dev/null 2>&1
+				sleep 10
+				;;
+			esac
+		}
 		i=0
-		while [ "$i" -lt "$STA_WAIT" ]; do
-			carrier_up "$(sta_ifname)" && break
+		while [ "$i" -lt 20 ]; do
+			ubus list network.wireless >/dev/null 2>&1 && break
 			i=$((i + 1))
 			sleep 1
 		done
-		carrier_up "$(sta_ifname)" && follow_chan "$(sta_ifname)"
-		log "emg: sta released"
-	fi
-	[ "$WD_ENABLE" = "1" ] && watchdog_main
-}
-
-start() {
-	set -f
-	rm -f /etc/sta_wifi.paused
-	up="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
-	if [ -n "$up" ] && [ "$up" -gt 1800 ]; then
-		rm -f /etc/sta_wifi.reboots
-	fi
-	[ -f "$PIDF" ] && { kill "$(cat "$PIDF")" 2>/dev/null; rm -f "$PIDF"; }
-	find_sections
-	log "preset begin mode=$MODE ht=$HT_MODE wd=$WD_ENABLE sta=$STA_SEC ap=$AP_SEC dev=$AP_DEV"
-
-	if [ -f "$EMG" ]; then
-		rm -f "$EMG"
-		sync
-		log "preset: emergency flag found, ap first"
-		[ -n "$STA_SEC" ] && uci set "wireless.$STA_SEC.disabled=1"
-		[ -n "$AP_SEC" ] && uci set "wireless.$AP_SEC.disabled=0"
-		uci commit wireless
-		[ -n "$AP_SEC" ] && setsid sh "$SELF" --emg >/dev/null 2>&1 &
-		return 0
-	fi
-
-	case "$MODE" in
-	ap)
-		[ -z "$AP_SEC" ] && { log "preset: no ap section"; return 1; }
-		[ -n "$STA_SEC" ] && uci set "wireless.$STA_SEC.disabled=1"
-		uci set "wireless.$AP_SEC.disabled=0"
-		uci commit wireless
-		log "preset: pure ap, sta off, htmode=$(uci -q get "wireless.$AP_DEV.htmode")"
-		if [ "$WD_ENABLE" = "1" ]; then
-			setsid sh "$SELF" --watchdog >/dev/null 2>&1 &
-			log "preset: watchdog launched"
+		i=0
+		PHY=""
+		while [ "$i" -lt 30 ]; do
+			PHY=$(ls /sys/class/ieee80211/ 2>/dev/null | head -n 1)
+			[ -n "$PHY" ] && break
+			i=$((i + 1))
+			sleep 1
+		done
+		lg "boot: phy=${PHY:-none} after ${i}s"
+		ASPANY=$(pick ap)
+		STANY=$(pick sta)
+		DEV=$(devof "$STANY" "$ASPANY")
+		if [ -f "$G" ]; then
+			GS=$(cat "$G" 2>/dev/null)
+			if [ -n "$GS" ]; then
+				ifon "$GS"
+				lg "boot: stale gate $GS released"
+			fi
+			rm -f "$G"
+			sync
 		fi
-		return 0
-		;;
-	sta)
-		[ -z "$STA_SEC" ] && { log "preset: no sta section"; return 1; }
-		[ -n "$AP_SEC" ] && uci set "wireless.$AP_SEC.disabled=1"
-		uci set "wireless.$STA_SEC.disabled=0"
-		uci commit wireless
-		log "preset: pure sta, ap off"
-		if [ "$WD_ENABLE" = "1" ]; then
-			setsid sh "$SELF" --watchdog >/dev/null 2>&1 &
-			log "preset: watchdog launched"
+		ASP=$(pickon ap)
+		STP=$(pickon sta)
+		AP_ON=0
+		STA_ON=0
+		[ -n "$ASP" ] && AP_ON=1
+		[ -n "$STP" ] && STA_ON=1
+		MULTI=0
+		ADS=$(uci -q get "wireless.$ASP.device")
+		SDS=$(uci -q get "wireless.$STP.device")
+		if [ -n "$ADS" ] && [ -n "$SDS" ] && [ "$ADS" != "$SDS" ]; then
+			MULTI=1
+			lg "boot: multi-radio ap=$ADS sta=$SDS, no ordering"
 		fi
-		return 0
-		;;
-	esac
-
-	if [ -z "$STA_SEC" ]; then
-		log "preset: no sta section, ap left to netifd"
-		[ -n "$AP_SEC" ] && uci set "wireless.$AP_SEC.disabled=0"
-		uci commit wireless
-		return 0
-	fi
-
-	uci set "wireless.$STA_SEC.disabled=0"
-	[ -n "$AP_SEC" ] && uci set "wireless.$AP_SEC.disabled=1"
-	fix_htmode
-	uci commit wireless
-	log "preset: sta only at boot, ap deferred to stage2"
-
-	if [ -n "$AP_SEC" ]; then
-		case "$0" in
-			*/rc.common|"") ;;
-			/*) [ -f "$0" ] && SELF="$0" ;;
-		esac
-		setsid sh "$SELF" --stage2 >/dev/null 2>&1 &
-		log "preset: stage2 launched via $SELF"
-	else
-		log "preset: no ap section, stage2 skipped"
-	fi
-}
-
-stage2_main() {
-	export PATH=/usr/sbin:/usr/bin:/sbin:/bin
-	set -f
-	echo $$ > "$PIDF"
-
-	i=0
-	while [ "$i" -lt "$PHY_WAIT" ]; do
-		[ -e /sys/class/ieee80211/phy0 ] && break
-		i=$((i + 1))
-		sleep 1
-	done
-
-	find_sections
-	if [ -z "$AP_SEC" ] || [ -z "$AP_DEV" ]; then
-		log "stage2: no ap section, nothing to do"
-		return 0
-	fi
-	log "stage2: start sta=$STA_SEC ap=$AP_SEC dev=$AP_DEV"
-
-	sif=""
-	i=0
-	while [ "$i" -lt "$STA_WAIT" ]; do
-		sif="$(sta_ifname)"
-		carrier_up "$sif" && break
-		i=$((i + 1))
-		sleep 1
-	done
-
-	if carrier_up "$sif"; then
-		log "stage2: sta up $sif after $((i + 1))s"
-		ch="$(sta_chan "$sif")"
-		if [ -n "$ch" ]; then
-			uci set "wireless.$AP_DEV.channel=$ch"
-			log "stage2: ap follows sta ch=$ch"
-		fi
-	else
-		log "stage2: sta not up in ${STA_WAIT}s, add ap anyway"
-	fi
-
-	uci set "wireless.$AP_SEC.disabled=0"
-	uci commit wireless
-	$TO wifi reload >/dev/null 2>&1 || true
-	log "stage2: ap requested"
-
-	if wait_ap "$AP_WAIT"; then
-		log "stage2: AP up $(ap_ifname)"
-	else
-		log "stage2: ap slow, radio reset"
-		$TO wifi down >/dev/null 2>&1
-		sleep 1
-		$TO wifi up >/dev/null 2>&1
-		if wait_ap "$AP_RETRY_WAIT"; then
-			log "stage2: AP up after reset $(ap_ifname)"
+		if [ "$AP_ON" = "1" ]; then
+			if [ "$MULTI" = "1" ]; then
+				lg "boot: ap=$ASP on $ADS"
+			else
+				lg "boot: ap=$ASP on dev=$DEV"
+			fi
+		elif [ -n "$ASPANY" ]; then
+			lg "boot: ap=$ASPANY disabled by user, skip"
 		else
-			log "stage2: AP STILL DOWN"
-			grab_forensics "stage2-ap-down"
+			lg "boot: no ap section"
 		fi
-	fi
-
-	sleep 2
-	if [ -n "$(ap_ifname)" ] && carrier_up "$(sta_ifname)"; then
-		log "RESULT=sta+ap"
-	elif [ -n "$(ap_ifname)" ]; then
-		log "RESULT=ap-only"
-	else
-		log "RESULT=fail"
-	fi
-	beat
-	log "stage2: done"
-
-	if [ "$WD_ENABLE" = "1" ]; then
-		watchdog_main
-	fi
+		if [ "$STA_ON" = "1" ]; then
+			lg "boot: sta=$STP on net=$(uci -q get wireless.$STP.network)"
+		elif [ -n "$STANY" ]; then
+			lg "boot: sta=$STANY disabled by user, skip"
+		else
+			lg "boot: no sta section"
+		fi
+		if [ "$AP_ON" = "0" ] && [ "$STA_ON" = "0" ]; then
+			lg "boot: nothing enabled, idle"
+		fi
+		if [ "$(uci -q get "wireless.$DEV.disabled")" = "1" ]; then
+			if [ "$AP_ON" = "1" ] || [ "$STA_ON" = "1" ]; then
+				uci set "wireless.$DEV.disabled=0" 2>/dev/null
+				uci commit wireless 2>/dev/null
+				sync
+				lg "boot: radio $DEV enabled"
+			fi
+		fi
+		if [ "$MULTI" = "1" ]; then
+			lg "boot: step1 all radios up"
+			timeout 60 wifi up >/dev/null 2>&1
+		elif [ "$STA_ON" = "1" ]; then
+			if [ "$AP_ON" = "1" ]; then
+				echo "$ASP" > "$G"
+				sync
+				ifoff "$ASP"
+				lg "boot: step1 ap off, sta first"
+			else
+				lg "boot: step1 sta only, no ap"
+			fi
+			timeout 45 wifi up "$DEV" >/dev/null 2>&1
+			i=0
+			while [ "$i" -lt 25 ]; do
+				if sok; then
+					lg "boot: sta ok after ${i}s"
+					break
+				fi
+				[ $((i % 5)) -eq 0 ] && lg "boot: sta wait ${i}s st=$(sstate) if=$(sif)"
+				i=$((i + 1))
+				sleep 1
+			done
+			sok || lg "boot: step2 sta timeout 25s, st=$(sstate) if=$(sif)"
+			if [ "$AP_ON" = "1" ]; then
+				ifon "$ASP"
+				rm -f "$G"
+				sync
+				lg "boot: step3 ap on"
+				apkick
+			fi
+		elif [ "$AP_ON" = "1" ]; then
+			lg "boot: step1 ap direct"
+			timeout 45 wifi up "$DEV" >/dev/null 2>&1
+		fi
+		if [ "$AP_ON" = "1" ]; then
+			i=0
+			while [ "$i" -lt 20 ]; do
+				if aok; then
+					lg "boot: ap ready after ${i}x2s"
+					break
+				fi
+				i=$((i + 1))
+				sleep 2
+			done
+		fi
+		if [ "$AP_ON" = "1" ]; then
+			aok || lg "boot: ap not ready, enter loop"
+		fi
+		apfail=0
+		apstage=0
+		apcool=0
+		apcoolon=0
+		stfail=0
+		ststage=0
+		sback=0
+		stcool=0
+		sbust=0
+		sup=0
+		tick=0
+		while :; do
+			tick=$((tick + 1))
+			if [ "$apcoolon" = "1" ] && [ "$(now)" -ge "$apcool" ]; then
+				apcoolon=0
+				lg "ap cool over, retry"
+			fi
+			if [ "$AP_ON" = "1" ] && [ "$apcoolon" = "0" ] && ! aok; then
+				apfail=$((apfail + 1))
+				A=$(aif)
+				[ "$apfail" -eq 1 ] && lg "ap bad if=${A:-none} hd=$(hok && echo 1 || echo 0)"
+				if [ "$apfail" -lt 2 ]; then
+					sleep 15
+					continue
+				fi
+				apfail=0
+				apstage=$((apstage + 1))
+				ASTAGE=$apstage
+				aheal "$apstage"
+				if [ "$apstage" -ge 3 ]; then
+					apcool=$(( $(now) + 600 ))
+					apcoolon=1
+					apstage=0
+				fi
+				sleep 5
+				if aok; then
+					lg "ap healed stage=$ASTAGE"
+					[ -f "$F" ] && rm -f "$F"
+					apstage=0
+					apcoolon=0
+					apcool=0
+				fi
+				sleep 15
+				continue
+			fi
+			if [ "$AP_ON" = "1" ] && aok; then
+				[ "$apstage" != "0" ] && lg "ap ok stage=$apstage"
+				[ -f "$F" ] && rm -f "$F"
+				apfail=0
+				apstage=0
+				apcool=0
+				apcoolon=0
+			fi
+			if [ -f "$G" ] && [ "$STA_ON" = "1" ] && [ "$(uci -q get "wireless.$STP.disabled")" = "1" ]; then
+				if [ "$AP_ON" = "0" ] || aok; then
+					ifon "$STP"
+					rm -f "$G"
+					sync
+					ubus call network.wireless up "{\"device\":\"$DEV\"}" >/dev/null 2>&1
+					lg "sta regated $STP"
+				fi
+			fi
+			if [ "$STA_ON" = "1" ] && [ "$tick" -ge "$stcool" ]; then
+				ST=$(sstate)
+				if sok; then
+					[ "$sup" != "1" ] && lg "sta up st=$ST"
+					sup=1
+					stfail=0
+					ststage=0
+					sback=0
+					sbust=0
+				elif [ "$ST" = "SCANNING" ] || [ "$ST" = "ASSOCIATING" ] || [ "$ST" = "AUTHENTICATING" ] || [ "$ST" = "ASSOCIATED" ] || [ "$ST" = "4WAY_HANDSHAKE" ] || [ "$ST" = "GROUP_HANDSHAKE" ]; then
+					sup=0
+					if [ "$sbust" = "0" ]; then
+						sbust=$tick
+						lg "sta busy st=$ST"
+					elif [ $((tick - sbust)) -ge 4 ]; then
+						sbust=0
+						stfail=$((stfail + 1))
+						lg "sta stuck st=$ST n=$stfail"
+					fi
+				else
+					sup=0
+					sbust=0
+					stfail=$((stfail + 1))
+					[ "$stfail" -eq 1 ] && lg "sta bad st=$ST stage=$ststage"
+				fi
+				if [ "$stfail" -ge 3 ]; then
+					if [ "$AP_ON" = "1" ] && ! aok; then
+						[ "$stfail" -lt 9 ] && lg "sta held, ap not ok"
+						stfail=9
+					else
+						stfail=0
+						ststage=$((ststage + 1))
+						[ "$ststage" -gt 3 ] && ststage=3
+						sheal "$ststage"
+						if [ "$ststage" -eq 3 ]; then
+							sback=$((sback + 1))
+							[ "$sback" -gt 4 ] && sback=4
+							case "$sback" in
+							1) stcool=$((tick + 4)) ;;
+							2) stcool=$((tick + 8)) ;;
+							3) stcool=$((tick + 16)) ;;
+							4) stcool=$((tick + 40)) ;;
+							esac
+						fi
+						sleep 5
+						if sok; then
+							lg "sta healed stage=$ststage"
+							ststage=0
+							stfail=0
+							sback=0
+							stcool=0
+							sbust=0
+						fi
+					fi
+				fi
+			fi
+			sleep 15
+		done'
+	procd_set_param respawn 3600 5 5
+	procd_close_instance
 }
-
-stop() {
-	[ -f "$PIDF" ] && kill "$(cat "$PIDF")" 2>/dev/null
-	rm -f "$PIDF"
-	touch /etc/sta_wifi.paused
-	log "stop"
-}
-
-case "$1" in
---stage2) stage2_main; exit 0 ;;
---watchdog) watchdog_main; exit 0 ;;
---emg) emg_main; exit 0 ;;
---guard) guard_main; exit 0 ;;
-esac

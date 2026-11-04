@@ -1,0 +1,69 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+USE_PROCD=1
+
+led_probe() {
+	for n in blue:wan blue:4g blue:lte blue:net green:wan blue:wlan led:blue; do
+		[ -d "/sys/class/leds/$n" ] && { echo "$n"; return 0; }
+	done
+	for d in /sys/class/leds/*; do
+		[ -d "$d" ] || continue
+		n=${d##*/}
+		case "$n" in
+			*wlan*|*wifi*) continue ;;
+			*blue*|*4g*|*lte*|*net*) echo "$n"; return 0 ;;
+		esac
+	done
+	for d in /sys/class/leds/*; do
+		[ -d "$d" ] || continue
+		case "${d##*/}" in *blue*) echo "${d##*/}"; return 0 ;; esac
+	done
+	for d in /sys/class/leds/*; do
+		[ -d "$d" ] || continue
+		case "${d##*/}" in
+			*green*|*wlan*|*wifi*) continue ;;
+			*wan*|*4g*|*lte*|*net*) echo "${d##*/}"; return 0 ;;
+		esac
+	done
+	return 1
+}
+
+start_service() {
+	N=$(led_probe)
+	[ -n "$N" ] || { logger -t led4g "no 4G led found"; return 1; }
+	logger -t led4g "using led $N"
+
+	procd_open_instance
+	procd_set_param command /bin/sh -c '
+		L=/sys/class/leds/'"$N"'
+		[ -d "$L" ] || exit 1
+		mode=""
+		while :; do
+			out=$(timeout 5 mmcli -m 0 --output-keyvalue 2>/dev/null)
+			sim=$(echo "$out" | grep "^modem.generic.sim " | awk "{print \$NF}")
+			st=$(echo "$out" | grep "3gpp.registration-state" | awk "{print \$NF}")
+			if [ -z "$sim" ] || [ "$sim" = "--" ]; then
+				want=off
+			elif [ "$st" = "home" ] || [ "$st" = "roaming" ]; then
+				want=on
+			elif [ "$st" = "searching" ]; then
+				want=slow
+			else
+				want=fast
+			fi
+			if [ "$want" != "$mode" ]; then
+				case "$want" in
+					off)  echo none > "$L/trigger"; echo 0 > "$L/brightness" ;;
+					on)   echo none > "$L/trigger" ;;
+					slow) echo timer > "$L/trigger"; echo 500 > "$L/delay_on"; echo 500 > "$L/delay_off" ;;
+					fast) echo timer > "$L/trigger"; echo 150 > "$L/delay_on"; echo 150 > "$L/delay_off" ;;
+				esac
+				mode="$want"
+			fi
+			[ "$want" = "on" ] && echo 1 > "$L/brightness"
+			sleep 10
+		done'
+	procd_set_param respawn 3600 5 5
+	procd_close_instance
+}

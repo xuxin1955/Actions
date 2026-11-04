@@ -2,9 +2,11 @@
 
 [ -f /etc/init.d/sta_wifi ] || exit 1
 [ -f /etc/init.d/sync_all ] || exit 1
+[ -f /etc/init.d/led4g ] || exit 1
 
-chmod 755 /etc/init.d/sync_all /etc/init.d/sta_wifi
+chmod 755 /etc/init.d/sync_all /etc/init.d/sta_wifi /etc/init.d/led4g
 /etc/init.d/sync_all enable
 /etc/init.d/sta_wifi enable
+/etc/init.d/led4g enable
 
 exit 0
