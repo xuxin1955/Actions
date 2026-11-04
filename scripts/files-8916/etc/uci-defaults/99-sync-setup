@@ -1,0 +1,10 @@
+#!/bin/sh
+
+[ -f /etc/init.d/sta_wifi ] || exit 1
+[ -f /etc/init.d/sync_all ] || exit 1
+
+chmod 755 /etc/init.d/sync_all /etc/init.d/sta_wifi
+/etc/init.d/sync_all enable
+/etc/init.d/sta_wifi enable
+
+exit 0

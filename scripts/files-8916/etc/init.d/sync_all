@@ -1,0 +1,46 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=10
+USE_PROCD=1
+
+LOCK=/var/run/sync_all.lock
+
+sync_now() {
+	mkdir -p /var/run 2>/dev/null
+	if command -v flock >/dev/null 2>&1; then
+		exec 9>"$LOCK"
+		flock -n 9 || return 0
+	fi
+	if command -v timeout >/dev/null 2>&1; then
+		timeout 50 sync
+		rc=$?
+	else
+		sync
+		rc=0
+	fi
+	[ "$rc" = "124" ] && logger -t sync_all "sync timeout after 50s"
+	return 0
+}
+
+start_service() {
+	procd_open_instance
+	procd_set_param command /bin/sh /etc/init.d/sync_all --loop
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 0
+	procd_set_param stderr 0
+	procd_close_instance
+}
+
+case "$1" in
+--loop)
+	while :; do
+		sync_now
+		sleep 60
+	done
+	;;
+--once)
+	sync_now
+	exit 0
+	;;
+esac
