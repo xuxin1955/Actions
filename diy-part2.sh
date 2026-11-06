@@ -11,7 +11,7 @@ sed -i "s/ucidef_set_interface_lan 'eth0'/ucidef_set_interface_lan 'br-lan'/" pa
 sed -i 's/luci-theme-material/luci-theme-argon/g' feeds/luci/collections/luci/Makefile
 
 # DbusSmsForwardCPlus
-git clone https://github.com/lkiuyu/DbusSmsForwardCPlus package/DbusSmsForwardCPlus
+# git clone https://github.com/lkiuyu/DbusSmsForwardCPlus package/DbusSmsForwardCPlus
 
 # 北大源
 cp -r "$GITHUB_WORKSPACE/scripts/files-8916" "$GITHUB_WORKSPACE/openwrt/files"
