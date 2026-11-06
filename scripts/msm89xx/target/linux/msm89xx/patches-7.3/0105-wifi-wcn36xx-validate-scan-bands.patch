@@ -1,0 +1,39 @@
+wifi: wcn36xx: validate scan bands against radio capabilities
+
+WCN3620 only registers a 2.4 GHz band, but its firmware can report scan
+results with rf_band values that select the 5 GHz channel mapping. The
+resulting receive status references an unsupported band. This causes a
+NULL dereference in the survey update called by wcn36xx_rx_skb(), with a
+reported frequency of 5280 MHz, and panics as a fatal exception in
+interrupt context.
+
+Only use the 5 GHz mapping when that band is registered. Otherwise
+interpret the descriptor's channel as a 2.4 GHz channel. Reject
+frequencies absent from the registered channel tables before updating
+survey data or delivering the frame to mac80211.
+
+Link: https://github.com/msm8916-mainline/linux/commit/0be2d63a476e83c757d9caafc22eae00bcfd1df8
+
+--- a/drivers/net/wireless/ath/wcn36xx/txrx.c
++++ b/drivers/net/wireless/ath/wcn36xx/txrx.c
+@@ -367,7 +367,9 @@
+ 		 */
+ 		u8 hwch = (bd->reserved0 << 4) + bd->rx_ch;
+ 
+-		if (bd->rf_band != 1 && hwch <= sizeof(ab_rx_ch_map) && hwch >= 1) {
++		/* WCN3620 can report a 5 GHz band for 2.4 GHz scan results. */
++		if (wcn->hw->wiphy->bands[NL80211_BAND_5GHZ] &&
++		    bd->rf_band != 1 && hwch <= sizeof(ab_rx_ch_map) && hwch >= 1) {
+ 			status.band = NL80211_BAND_5GHZ;
+ 			status.freq = ieee80211_channel_to_frequency(ab_rx_ch_map[hwch - 1],
+ 								     status.band);
+@@ -375,6 +377,9 @@
+ 			status.band = NL80211_BAND_2GHZ;
+ 			status.freq = ieee80211_channel_to_frequency(hwch, status.band);
+ 		}
++
++		if (!ieee80211_get_channel(wcn->hw->wiphy, status.freq))
++			goto drop;
+ 	} else {
+ 		status.band = WCN36XX_BAND(wcn);
+ 		status.freq = WCN36XX_CENTER_FREQ(wcn);

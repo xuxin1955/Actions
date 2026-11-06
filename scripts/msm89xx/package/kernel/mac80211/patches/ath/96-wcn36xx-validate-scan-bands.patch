@@ -1,0 +1,53 @@
+wifi: wcn36xx: validate scan bands against radio capabilities
+
+WCN3620 registers only the 2.4 GHz band, but scan RX descriptors can
+carry rf_band values that select the 5 GHz channel mapping. The receive
+status then references an unsupported band and wcn36xx_update_survey()
+dereferences a NULL supported-band pointer (sband->channels) from RX
+interrupt context, producing "Fatal exception in interrupt".
+
+Three guards, all no-ops on dual-band hardware:
+  * only use the 5 GHz mapping when that band is actually registered;
+  * reject frequencies absent from the registered channel tables before
+    updating survey data or delivering the frame to mac80211;
+  * bail out of survey update when the selected band is not registered.
+
+Based on the upstream wireless postings (Alexander Vernel, 2026-10-13,
+"validate scan bands against radio capabilities"; Zhaoyang Li, 2026-10-19,
+"validate band and frequency in survey updates"), rebased onto the
+backports-v7.2 txrx.c layout.
+
+Link: https://github.com/msm8916-mainline/linux/commit/0be2d63a476e83c757d9caafc22eae00bcfd1df8
+Fixes: 8a27ca394782 ("wcn36xx: Correct band/freq reporting on RX")
+diff --git a/drivers/net/wireless/ath/wcn36xx/txrx.c b/drivers/net/wireless/ath/wcn36xx/txrx.c
+--- a/drivers/net/wireless/ath/wcn36xx/txrx.c
++++ b/drivers/net/wireless/ath/wcn36xx/txrx.c
+@@ -286,6 +286,8 @@
+ 		idx = wcn->hw->wiphy->bands[NL80211_BAND_2GHZ]->n_channels;
+ 
+ 	sband = wcn->hw->wiphy->bands[band];
++	if (!sband)
++		return;
+ 	channel = sband->channels;
+ 
+ 	for (i = 0; i < sband->n_channels; i++, channel++) {
+@@ -367,7 +369,8 @@
+ 		 */
+ 		u8 hwch = (bd->reserved0 << 4) + bd->rx_ch;
+ 
+-		if (bd->rf_band != 1 && hwch <= sizeof(ab_rx_ch_map) && hwch >= 1) {
++		if (wcn->hw->wiphy->bands[NL80211_BAND_5GHZ] &&
++		    bd->rf_band != 1 && hwch <= sizeof(ab_rx_ch_map) && hwch >= 1) {
+ 			status.band = NL80211_BAND_5GHZ;
+ 			status.freq = ieee80211_channel_to_frequency(ab_rx_ch_map[hwch - 1],
+ 								     status.band);
+@@ -375,6 +378,9 @@
+ 			status.band = NL80211_BAND_2GHZ;
+ 			status.freq = ieee80211_channel_to_frequency(hwch, status.band);
+ 		}
++
++		if (!ieee80211_get_channel(wcn->hw->wiphy, status.freq))
++			goto drop;
+ 	} else {
+ 		status.band = WCN36XX_BAND(wcn);
+ 		status.freq = WCN36XX_CENTER_FREQ(wcn);
