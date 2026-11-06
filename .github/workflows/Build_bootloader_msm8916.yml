@@ -14,9 +14,10 @@ jobs:
 
     steps:
       - name: deps
-        timeout-minutes: 8
+        timeout-minutes: 12
         run: |
           echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
+          sudo find /etc/apt -maxdepth 2 -type f \( -name 'apt-mirrors.txt' -o -name '*.list' -o -name '*.sources' -o -name 'sources.list' \) -exec sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' {} + || true
           printf 'Acquire::http::Timeout "15";\nAcquire::https::Timeout "15";\nAcquire::Retries "1";\n' | sudo tee /etc/apt/apt.conf.d/99timeout
           sudo apt-get -y -qq install --no-install-recommends gcc-arm-none-eabi device-tree-compiler libfdt-dev python3-cryptography || {
             sudo apt-get -y -qq update

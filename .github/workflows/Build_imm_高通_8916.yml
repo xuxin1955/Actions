@@ -83,11 +83,12 @@ jobs:
         tools-cache: true
 
     - name: Initialization environment
-      timeout-minutes: 8
+      timeout-minutes: 12
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
         echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
+        sudo find /etc/apt -maxdepth 2 -type f \( -name 'apt-mirrors.txt' -o -name '*.list' -o -name '*.sources' -o -name 'sources.list' \) -exec sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' {} + || true
         printf 'Acquire::http::Timeout "15";\nAcquire::https::Timeout "15";\nAcquire::Retries "1";\n' | sudo tee /etc/apt/apt.conf.d/99timeout
         DEPS=$(curl -fsSL --retry 2 --max-time 30 https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt)
         [ -n "$DEPS" ] || { echo "::error::依赖列表拉取失败"; exit 1; }
