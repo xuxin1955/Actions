@@ -83,10 +83,19 @@ jobs:
         tools-cache: true
 
     - name: Initialization environment
+      timeout-minutes: 8
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        sudo -E apt-get -y update && sudo -E apt-get -y install --no-install-recommends $(curl -fsSL https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt)
+        echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
+        printf 'Acquire::http::Timeout "15";\nAcquire::https::Timeout "15";\nAcquire::Retries "1";\n' | sudo tee /etc/apt/apt.conf.d/99timeout
+        DEPS=$(curl -fsSL --retry 2 --max-time 30 https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt)
+        [ -n "$DEPS" ] || { echo "::error::依赖列表拉取失败"; exit 1; }
+        sudo -E apt-get -y install --no-install-recommends $DEPS || {
+          sudo -E apt-get -y update
+          sudo -E apt-get -y install --no-install-recommends $DEPS
+        }
+
 
     - name: Cache mkbootimg deb
       uses: actions/cache@v5
