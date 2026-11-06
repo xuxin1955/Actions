@@ -57,16 +57,20 @@ jobs:
 
     - name: Initialization environment
       id: init
-      timeout-minutes: 25
+      timeout-minutes: 8
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=15 -o Acquire::ForceIPv4=true"
-        sudo -E apt-get $APT_OPTS -y update
-        PKGS=$(curl -fsSL https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt | tr ' ' '\n' | grep -vE '^(gcc-multilib|g\+\+-multilib|libc6-dev-i386)$' | tr '\n' ' ')
-        sudo -E apt-get $APT_OPTS -y install --no-install-recommends $PKGS
+        echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
+        printf 'Acquire::http::Timeout "15";\nAcquire::https::Timeout "15";\nAcquire::Retries "1";\n' | sudo tee /etc/apt/apt.conf.d/99timeout
+        PKGS=$(curl -fsSL --retry 2 --max-time 30 https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt | tr ' ' '\n' | grep -vE '^(gcc-multilib|g\+\+-multilib|libc6-dev-i386)$' | tr '\n' ' ')
+        [ -n "$PKGS" ] || { echo "::error::依赖列表拉取失败"; exit 1; }
+        sudo -E apt-get -y install --no-install-recommends $PKGS || {
+          sudo -E apt-get -y update
+          sudo -E apt-get -y install --no-install-recommends $PKGS
+        }
         sudo timedatectl set-timezone "${TZ}"
-        echo "status=success" >> ${GITHUB_OUTPUT}
+        echo "status=success" >> "$GITHUB_OUTPUT"
 
     - name: Clone source code
       id: codes

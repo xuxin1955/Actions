@@ -14,13 +14,14 @@ jobs:
 
     steps:
       - name: deps
+        timeout-minutes: 8
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            gcc-arm-none-eabi \
-            device-tree-compiler \
-            libfdt-dev \
-            python3-cryptography
+          echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
+          printf 'Acquire::http::Timeout "15";\nAcquire::https::Timeout "15";\nAcquire::Retries "1";\n' | sudo tee /etc/apt/apt.conf.d/99timeout
+          sudo apt-get -y -qq install --no-install-recommends gcc-arm-none-eabi device-tree-compiler libfdt-dev python3-cryptography || {
+            sudo apt-get -y -qq update
+            sudo apt-get -y -qq install --no-install-recommends gcc-arm-none-eabi device-tree-compiler libfdt-dev python3-cryptography
+          }
 
       - name: source
         run: |
