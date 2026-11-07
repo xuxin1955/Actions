@@ -1,6 +1,6 @@
 --- a/include/linux/netdevice.h
 +++ b/include/linux/netdevice.h
-@@ -2374,9 +2374,7 @@
+@@ -2377,9 +2377,7 @@
  #if IS_ENABLED(CONFIG_TIPC)
  	struct tipc_bearer __rcu *tipc_ptr;
  #endif

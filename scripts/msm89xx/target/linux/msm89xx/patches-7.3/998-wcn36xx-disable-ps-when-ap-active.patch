@@ -1,6 +1,7 @@
 --- a/drivers/net/wireless/ath/wcn36xx/main.c
 +++ b/drivers/net/wireless/ath/wcn36xx/main.c
-@@ -1426,7 +1426,6 @@ static int wcn36xx_init_ieee80211(struct wcn36xx *wcn)
+@@ -1437,7 +1437,6 @@
+ 
  	ieee80211_hw_set(wcn->hw, TIMING_BEACON_ONLY);
  	ieee80211_hw_set(wcn->hw, AMPDU_AGGREGATION);
 -	ieee80211_hw_set(wcn->hw, SUPPORTS_PS);

@@ -26,12 +26,11 @@ Signed-off-by: Stephan Gerhold <stephan@gerhold.net>
  create mode 100644 drivers/soc/qcom/memshare_qmi_msg.h
 
 diff --git a/drivers/soc/qcom/Kconfig b/drivers/soc/qcom/Kconfig
-index 2caadbbcf8307f..c669b2baa72169 100644
 --- a/drivers/soc/qcom/Kconfig
 +++ b/drivers/soc/qcom/Kconfig
-@@ -62,6 +62,14 @@ config QCOM_MDT_LOADER
- 	tristate
- 	select QCOM_SCM
+@@ -67,6 +67,14 @@
+ 	  SDM845. This provides interfaces to clients that use the LLCC.
+ 	  Say yes here to enable LLCC slice driver.
  
 +config QCOM_MEMSHARE_QMI_SERVICE
 +       select QCOM_QMI_HELPERS
@@ -43,12 +42,11 @@ index 2caadbbcf8307f..c669b2baa72169 100644
 +
  config QCOM_OCMEM
  	tristate "Qualcomm On Chip Memory (OCMEM) driver"
- 	depends on ARCH_QCOM
+ 	select QCOM_SCM
 diff --git a/drivers/soc/qcom/Makefile b/drivers/soc/qcom/Makefile
-index b7f1d2a5736748..b580b1c617d8c2 100644
 --- a/drivers/soc/qcom/Makefile
 +++ b/drivers/soc/qcom/Makefile
-@@ -6,6 +6,8 @@ obj-$(CONFIG_QCOM_GENI_SE) +=	qcom-geni-se.o
+@@ -6,6 +6,8 @@
  obj-$(CONFIG_QCOM_COMMAND_DB) += cmd-db.o
  obj-$(CONFIG_QCOM_GSBI)	+=	qcom_gsbi.o
  obj-$(CONFIG_QCOM_MDT_LOADER)	+= mdt_loader.o
@@ -59,7 +57,6 @@ index b7f1d2a5736748..b580b1c617d8c2 100644
  obj-$(CONFIG_QCOM_PDR_HELPERS)	+= pdr_interface.o
 diff --git a/drivers/soc/qcom/memshare.c b/drivers/soc/qcom/memshare.c
 new file mode 100644
-index 00000000000000..e8648fe2f68fea
 --- /dev/null
 +++ b/drivers/soc/qcom/memshare.c
 @@ -0,0 +1,502 @@
@@ -567,7 +564,6 @@ index 00000000000000..e8648fe2f68fea
 +MODULE_LICENSE("GPL v2");
 diff --git a/drivers/soc/qcom/memshare_qmi_msg.c b/drivers/soc/qcom/memshare_qmi_msg.c
 new file mode 100644
-index 00000000000000..0cbccaaa799495
 --- /dev/null
 +++ b/drivers/soc/qcom/memshare_qmi_msg.c
 @@ -0,0 +1,370 @@
@@ -943,7 +939,6 @@ index 00000000000000..0cbccaaa799495
 +};
 diff --git a/drivers/soc/qcom/memshare_qmi_msg.h b/drivers/soc/qcom/memshare_qmi_msg.h
 new file mode 100644
-index 00000000000000..c436330a0713a6
 --- /dev/null
 +++ b/drivers/soc/qcom/memshare_qmi_msg.h
 @@ -0,0 +1,228 @@

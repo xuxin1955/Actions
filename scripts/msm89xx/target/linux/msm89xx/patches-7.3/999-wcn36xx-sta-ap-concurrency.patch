@@ -1,8 +1,9 @@
 --- a/drivers/net/wireless/ath/wcn36xx/main.c
 +++ b/drivers/net/wireless/ath/wcn36xx/main.c
-@@ -185,6 +185,26 @@ static const struct wiphy_wowlan_support wowlan_support = {
+@@ -184,6 +184,26 @@
+ 
  #endif
-
+ 
 +static const struct ieee80211_iface_limit wcn36xx_iface_limits[] = {
 +	{
 +		.max = 1,
@@ -26,13 +27,10 @@
  static inline u8 get_sta_index(struct ieee80211_vif *vif,
  			       struct wcn36xx_sta *sta_priv)
  {
- 	return NL80211_IFTYPE_STATION == vif->type ?
-@@ -1435,8 +1455,13 @@ static int wcn36xx_init_ieee80211(struct wcn36xx *wcn)
- 	wcn->hw->wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION) |
- 		BIT(NL80211_IFTYPE_AP) |
+@@ -1447,6 +1467,11 @@
  		BIT(NL80211_IFTYPE_ADHOC) |
  		BIT(NL80211_IFTYPE_MESH_POINT);
-
+ 
 +	wcn->hw->wiphy->iface_combinations = wcn36xx_iface_combinations;
 +	wcn->hw->wiphy->n_iface_combinations =
 +		ARRAY_SIZE(wcn36xx_iface_combinations);
