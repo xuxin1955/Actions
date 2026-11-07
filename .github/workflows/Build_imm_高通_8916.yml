@@ -23,6 +23,7 @@ concurrency:
 
 env:
   ALL_DEVICES: "jz02v10 ufi001c ufi001b ufi103s qrzl903 w001 ufi003 uz801 mf32 mf601 wf2 sp970v11 sp970v10"
+  BASE_CONFIG: config/jz02v10.config
   REPO_URL: https://github.com/immortalwrt/immortalwrt
   REPO_BRANCH: master
   FEEDS_CONF: feeds.conf.default
@@ -36,35 +37,15 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 350
     permissions:
        contents: write
        actions: write
 
-    strategy:
-      fail-fast: false
-      matrix:
-        device:
-          - jz02v10
-          - ufi001c
-          - ufi001b
-          - ufi103s
-          - qrzl903
-          - w001
-          - ufi003
-          - uz801
-          - mf32
-          - mf601
-          - wf2
-          - sp970v11
-          - sp970v10
     steps:
 
     - name: Checkout
       uses: actions/checkout@main
-
-    - name: 记录当前编译型号
-      run: |
-        echo "CONFIG_FILE=config/${{ matrix.device }}.config" >> $GITHUB_ENV
 
     - name: Show hardware info
       run: |
@@ -96,7 +77,6 @@ jobs:
           sudo -E apt-get -y update
           sudo -E apt-get -y install --no-install-recommends $DEPS
         }
-
 
     - name: Cache mkbootimg deb
       uses: actions/cache@v5
@@ -148,6 +128,8 @@ jobs:
         ln -sf /mnt/openwrt $GITHUB_WORKSPACE/openwrt
         echo "===== 源码最近更新 (最后 10 条) ====="
         git -C /mnt/openwrt log -10 --oneline --no-merges
+        echo "===== generic 补丁目录 ====="
+        ls -d /mnt/openwrt/target/linux/generic/hack-* 2>/dev/null || true
 
     - name: Load custom DIY_P1_SH
       run: |
@@ -182,10 +164,32 @@ jobs:
 
     - name: Load custom DIY_P2_SH
       run: |
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        cp $BASE_CONFIG openwrt/.config
         chmod +x $DIY_P2_SH
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
+
+    - name: 转 multi-profile（13 机型一次出）
+      run: |
+        cd openwrt
+
+        sed -i '/^CONFIG_TARGET_PROFILE=/d' .config
+        sed -i '/^CONFIG_TARGET_msm89xx_msm8916_DEVICE_openstick-.*=y$/d' .config
+        sed -i '/^CONFIG_DEFAULT_qcom-msm8916-.*openstick-.*=y$/d' .config
+        sed -i '/^CONFIG_PACKAGE_qcom-msm8916-.*openstick-.*=y$/d' .config
+
+        if grep -q '^# CONFIG_TARGET_MULTI_PROFILE is not set' .config; then
+          sed -i 's|^# CONFIG_TARGET_MULTI_PROFILE is not set|CONFIG_TARGET_MULTI_PROFILE=y|' .config
+        fi
+        grep -q '^CONFIG_TARGET_MULTI_PROFILE=y' .config || echo 'CONFIG_TARGET_MULTI_PROFILE=y' >> .config
+        grep -q '^CONFIG_TARGET_PER_DEVICE_ROOTFS=y' .config || echo 'CONFIG_TARGET_PER_DEVICE_ROOTFS=y' >> .config
+
+        for d in $ALL_DEVICES; do
+          echo "CONFIG_TARGET_DEVICE_msm89xx_msm8916_DEVICE_openstick-$d=y" >> .config
+        done
+
+        echo "===== 追加后设备数 ====="
+        grep -c '^CONFIG_TARGET_DEVICE_msm89xx_msm8916_DEVICE_openstick-' .config
 
     - name: SSH 调试有效时间6h! 连接后输入q 输入exit即可退出，自动继续后续编译流程
       uses: WarpBuilds/action-debugger@master
@@ -229,7 +233,7 @@ jobs:
     - name: 自动上传最新源码生成.config编译配置
       uses: actions/upload-artifact@main
       with:
-       name: build-config-${{ matrix.device }}
+       name: build-config-multi-profile
        path: |
          ${{ github.workspace }}/openwrt/.config
          ${{ github.workspace }}/openwrt/feeds.conf.default
@@ -288,9 +292,14 @@ jobs:
         fi
 
         echo "status=success" >> $GITHUB_OUTPUT
-        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
-        [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
+        echo "DEVICE_NAME=_multi13" >> $GITHUB_ENV
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+        echo "===== 产物清单 ====="
+        ls -1 bin/targets/msm89xx/msm8916/ 2>/dev/null || true
+        echo "sysupgrade 数量: $(ls -1 bin/targets/msm89xx/msm8916/*squashfs-sysupgrade.bin 2>/dev/null | wc -l)"
+        echo "ccache AFTER"
+        ccache --show-stats
       shell: bash
 
     - name: df -hT
@@ -332,7 +341,7 @@ jobs:
         path: ${{ env.FIRMWARE }}
 
     - name: Delete old workflow runs via GitHub API
-      if: always() && matrix.device == 'jz02v10'
+      if: always()
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         RETAIN_DAYS: 2
