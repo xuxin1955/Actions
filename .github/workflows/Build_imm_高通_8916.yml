@@ -169,7 +169,7 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
 
-    - name: 转 multi-profile（13 机型一次出）
+    - name: 转 multi-profile
       run: |
         cd openwrt
 
