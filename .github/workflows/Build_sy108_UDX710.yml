@@ -365,8 +365,6 @@ jobs:
       run: |
         [ -d firmware ] || exit 0
         cd firmware
-        # main-boot.bin 只是 make offline 的 MAIN_CAPSULE 中间产物，用完即弃，不发布。
-        # recovery.bin 不带 boot 后缀，避免与主系统 boot 分区镜像混淆。
         rm -f main-boot.bin
         rm -f sha256sums.txt
         echo "--- 最终发布文件"
