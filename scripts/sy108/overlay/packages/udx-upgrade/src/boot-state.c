@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #define _GNU_SOURCE
 #include "misc-state.h"
-#define MISC_BYTES (9u * 126976u)
 #include "root-health.h"
 #include <poll.h>
 #include <signal.h>
@@ -70,7 +69,7 @@ static int number(const char *base, const char *name, unsigned long *v)
 	return errno || strcmp(e, "\n") ? -1 : 0;
 }
 
-static int find_volume(const char *name, unsigned lebs, struct volume *out)
+static int find_volume(const char *name, size_t minimum, struct volume *out)
 {
 	glob_t g = {0};
 	char p[320], b[64];
@@ -99,8 +98,8 @@ static int find_volume(const char *name, unsigned lebs, struct volume *out)
 	unsigned long n, l, corrupt, update;
 	snprintf(p, sizeof(p), "%s/type", out->sys);
 	if (text(p, b, sizeof(b)) || strcmp(b, "dynamic\n") ||
-	    number(out->sys, "reserved_ebs", &n) || n != lebs ||
-	    number(out->sys, "usable_eb_size", &l) || l != 126976 ||
+	    number(out->sys, "reserved_ebs", &n) || !n ||
+	    number(out->sys, "usable_eb_size", &l) || !l || n > SIZE_MAX / l || n * l < minimum ||
 	    number(out->sys, "corrupted", &corrupt) || corrupt > 1 ||
 	    number(out->sys, "upd_marker", &update) || update > 1)
 		return -1;
@@ -139,7 +138,7 @@ static int find_volume(const char *name, unsigned lebs, struct volume *out)
 
 int misc_edit(unsigned char *data, size_t size, const char *state)
 {
-	if (size != MISC_BYTES ||
+	if (size < UDX_MISC_ENV_BYTES ||
 	    (strcmp(state, "pending") && strcmp(state, "trial") && strcmp(state, "ready")))
 		return -1;
 	uint32_t expected = (uint32_t)data[0] | (uint32_t)data[1] << 8 | (uint32_t)data[2] << 16 |
@@ -414,16 +413,16 @@ static int boot_accept(char *why, size_t cap)
 	if (boot_management_ready())
 		goto out;
 	failure = "boot-accept-misc";
-	if (find_volume("misc", 9, &misc))
+	if (find_volume("misc", UDX_MISC_ENV_BYTES, &misc))
 		goto out;
-	data = malloc(MISC_BYTES);
-	if (!data || readall(misc.fd, data, MISC_BYTES))
+	data = malloc(misc.capacity);
+	if (!data || readall(misc.fd, data, misc.capacity))
 		goto out;
 	enum udx_upgrade_state state = udx_misc_state(data, UDX_MISC_ENV_BYTES, 0);
 	if (state != UDX_UPGRADE_TRIAL && state != UDX_UPGRADE_READY)
 		goto out;
 	if (state == UDX_UPGRADE_TRIAL &&
-	    (misc_edit(data, MISC_BYTES, "ready") || update(&misc, data, MISC_BYTES)))
+	    (misc_edit(data, misc.capacity, "ready") || update(&misc, data, misc.capacity)))
 		goto out;
 	/* Existing runtime's deadline is boot-specific. This file never survives
 	 * reboot; durable acceptance remains the CRC-protected misc field. */
@@ -471,14 +470,17 @@ int main(int argc, char **argv)
 	if (property("/sys/firmware/devicetree/base/chosen/udx,boot-policy", "openwrt-v1"))
 		return 1;
 	struct volume v = {.fd = -1};
-	unsigned char *data = malloc(MISC_BYTES);
+	unsigned char *data = NULL;
 	int rc = 1;
-	if (!data || find_volume("misc", 9, &v) || readall(v.fd, data, MISC_BYTES))
+	if (find_volume("misc", UDX_MISC_ENV_BYTES, &v))
+		goto done;
+	data = malloc(v.capacity);
+	if (!data || readall(v.fd, data, v.capacity))
 		goto done;
 	if (!strcmp(argv[1], "trial") &&
 	    udx_misc_state(data, UDX_MISC_ENV_BYTES, 0) != UDX_UPGRADE_PENDING)
 		goto done;
-	if (misc_edit(data, MISC_BYTES, argv[1]) || update(&v, data, MISC_BYTES))
+	if (misc_edit(data, v.capacity, argv[1]) || update(&v, data, v.capacity))
 		goto done;
 	rc = 0;
 done:
