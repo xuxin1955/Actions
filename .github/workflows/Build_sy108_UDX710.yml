@@ -215,13 +215,15 @@ jobs:
         cp -f "$SY108_OUT/images/main/build.json" firmware/main-build.json 2>/dev/null || true
         M=$(ls "$SY108_OUT/images/main/"*.manifest 2>/dev/null | head -1)
         [ -n "$M" ] && cp -f "$M" firmware/main.manifest || true
-        cp -f "$SY108_OUT/images/recovery/boot.bin" firmware/recovery-boot.bin 2>/dev/null || true
+        cp -f "$SY108_OUT/images/recovery/boot.bin" firmware/recovery.bin 2>/dev/null || true
         : > release.txt
         KVER=$(jq -r '.kernel.version' firmware/main-build.json 2>/dev/null || echo unknown)
         MISS=""
         [ -f firmware/sysupgrade.bin ] || MISS="$MISS sysupgrade.bin"
-        [ -f firmware/recovery-boot.bin ] || MISS="$MISS boot.bin"
-        echo "> **编译整套固件，待验证**" >> release.txt
+        [ -f firmware/recovery.bin ] || MISS="$MISS recovery.bin"
+        echo "> **编译固件，待验证**" >> release.txt
+        echo ">" >> release.txt
+        echo "> 刷机提前备份原厂整套分区" >> release.txt
         if [ -n "$MISS" ]; then
           echo ">" >> release.txt
           echo "> 本次缺少:$MISS，该部分构建未成功，请勿按完整流程刷机。下载前先看下面 Assets 列表。" >> release.txt
@@ -241,7 +243,7 @@ jobs:
             | sed -E 's/:.*$//; s/-[0-9][^-]*$//' \
             | grep -E '^(luci-app|udx)-' \
             | sort -u || true)
-          echo "#### $P 插件" >> release.txt
+          echo "#### 插件清单" >> release.txt
           if [ -n "$LIST" ]; then
             printf '%s\n' "$LIST" | sed 's/^/- /' >> release.txt
           fi
@@ -281,8 +283,6 @@ jobs:
       run: |
         set +e
         MODELS="${MODELS:-p50pro m50p m50rs}"
-        OUT="${GITHUB_OUTPUT:-/dev/null}"
-        echo "built=0" >> "$OUT"
 
         base=""
         for m in $MODELS; do
@@ -295,7 +295,7 @@ jobs:
           echo "::notice::sy108-oem/ 下没有 splloader.bin + sml.bin，本次跳过 U-Boot"
           exit 0
         fi
-        for f in firmware/main-boot.bin firmware/recovery-boot.bin; do
+        for f in firmware/main-boot.bin firmware/recovery.bin; do
           if [ ! -f "$f" ]; then
             echo "::warning::缺少 $f，本次跳过 U-Boot"
             exit 0
@@ -315,7 +315,7 @@ jobs:
             SPL_IMAGE="$PWD/sy108-oem/$base/splloader.bin" \
             SML_IMAGE="$PWD/sy108-oem/$base/sml.bin" \
             MAIN_CAPSULE="$PWD/firmware/main-boot.bin" \
-            RECOVERY_CAPSULE="$PWD/firmware/recovery-boot.bin"; then
+            RECOVERY_CAPSULE="$PWD/firmware/recovery.bin"; then
           echo "::warning::U-Boot 编译失败，本次不发布 uboot"
           exit 0
         fi
@@ -355,7 +355,6 @@ jobs:
             echo "|---|---|---|---|"
             cat uboot-rows.md
           } >> release.txt
-          echo "built=1" >> "$OUT"
         fi
 
         cat uboot-rows.md 2>/dev/null || true
@@ -366,21 +365,15 @@ jobs:
       run: |
         [ -d firmware ] || exit 0
         cd firmware
+        # main-boot.bin 只是 make offline 的 MAIN_CAPSULE 中间产物，用完即弃，不发布。
+        # recovery.bin 不带 boot 后缀，避免与主系统 boot 分区镜像混淆。
         rm -f main-boot.bin
-        if [ -f recovery-boot.bin ]; then
-          mv -f recovery-boot.bin boot.bin
-        fi
         rm -f sha256sums.txt
-        FILES=$(ls | grep -v '^sha256sums.txt$' || true)
-        if [ -n "$FILES" ]; then
-          sha256sum $FILES > sha256sums.txt
-        fi
         echo "--- 最终发布文件"
         ls -l
-        cat sha256sums.txt 2>/dev/null || true
 
     - name: Upload to release
-      if: always() && !cancelled() && hashFiles('firmware/*.bin') != ''
+      if: always() && !cancelled() && env.UPLOAD_RELEASE == 'true' && hashFiles('firmware/*.bin') != ''
       uses: ncipollo/release-action@main
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
