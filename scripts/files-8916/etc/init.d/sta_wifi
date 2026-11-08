@@ -344,8 +344,48 @@ start_service() {
 		sbust=0
 		sup=0
 		tick=0
+		fbt0=0
+		fbdone=0
 		while :; do
 			tick=$((tick + 1))
+			# sta 兜底：独立按真实秒数计时；掉线满 180s 且 AP 正常才补一次，只试一次
+			if [ "$STA_ON" = "1" ]; then
+				FBDIS=$(uci -q get "wireless.$STP.disabled")
+				if sok && [ "$FBDIS" != "1" ]; then
+					fbt0=0
+					fbdone=0
+				else
+					FBN=$(now)
+					[ "$fbt0" = "0" ] && fbt0=$FBN
+					if [ "$fbdone" = "0" ] && [ $((FBN - fbt0)) -ge 180 ]; then
+						if [ "$AP_ON" = "0" ] || aok; then
+							FBIF=$(sif)
+							if [ "$FBDIS" = "1" ] || [ -z "$FBIF" ]; then
+								fbdone=1
+								if [ "$FBDIS" = "1" ]; then
+									lg "sta fallback: re-enable $STP"
+									ifon "$STP"
+								fi
+								if [ -f "$G" ]; then rm -f "$G"; fi
+								sync
+								lg "sta fallback: wifi reload iface=${FBIF:-none}"
+								timeout 45 wifi reload >/dev/null 2>&1
+								sleep 10
+							else
+								FBST=$(sstate)
+								case "$FBST" in
+								SCANNING|ASSOCIATING|AUTHENTICATING|ASSOCIATED|4WAY_HANDSHAKE|GROUP_HANDSHAKE) ;;
+								*)
+									fbdone=1
+									lg "sta fallback reassoc $FBIF st=$FBST"
+									wpa_cli -i "$FBIF" reassociate >/dev/null 2>&1
+									;;
+								esac
+							fi
+						fi
+					fi
+				fi
+			fi
 			if [ "$apcoolon" = "1" ] && [ "$(now)" -ge "$apcool" ]; then
 				apcoolon=0
 				lg "ap cool over, retry"

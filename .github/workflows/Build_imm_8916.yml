@@ -1,4 +1,4 @@
-name: Build_imm_高通_8916
+name: Build_imm_8916
 
 on:
   schedule:
@@ -340,34 +340,58 @@ jobs:
         name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}
 
-    - name: Delete old workflow runs via GitHub API
-      if: always()
+    - name: Delete old workflow runs (keep newest 1)
+      if: success()
+      continue-on-error: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        RETAIN_DAYS: 2
-        KEEP_MINIMUM_RUNS: 2
+        KEEP_MINIMUM_RUNS: 1
       run: |
-        RUNS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-          "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=100")
-        CUTOFF=$(date -d "-${RETAIN_DAYS} days" +%s)
-        DEL_IDS=$(echo "$RUNS" | jq -r --arg cutoff "$CUTOFF" --argjson keep "$KEEP_MINIMUM_RUNS" '
-          [.workflow_runs[]
-            | select((now - (.created_at | fromdateiso8601)) > ($cutoff | tonumber))
-            | {id, created_at}
-          ]
-          | sort_by(.created_at)
-          | .[:-$keep]
-          | .[].id
-        ')
-        if [[ -z "$DEL_IDS" ]]; then
-          echo "No old runs to delete."
-        else
-          echo "$DEL_IDS" | while read run_id; do
-            echo "Deleting run $run_id"
-            curl -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$run_id"
-          done
+        set -euo pipefail
+        API="https://api.github.com/repos/${{ github.repository }}"
+        AUTH=(-H "Authorization: Bearer $GITHUB_TOKEN"
+              -H "Accept: application/vnd.github+json"
+              -H "X-GitHub-Api-Version: 2022-11-28")
+        KEEP=${KEEP_MINIMUM_RUNS:-1}
+        SELF=${GITHUB_RUN_ID:-0}
+        WF_REF="${{ github.workflow_ref }}"
+        WF_PATH="${WF_REF%%@*}"
+        WF_FILE="${WF_PATH##*/}"
+        LIST=$(mktemp)
+        trap 'rm -f "$LIST"' EXIT
+
+        page=1
+        while :; do
+          BATCH=$(curl -fsS "${AUTH[@]}" \
+            "$API/actions/workflows/$WF_FILE/runs?status=completed&per_page=100&page=$page")
+          N=$(echo "$BATCH" | jq '.workflow_runs | length')
+          [ "$N" -eq 0 ] && break
+          echo "$BATCH" | jq -c --argjson self "$SELF" \
+            '.workflow_runs[] | select(.id != $self) | {id, created_at, ok: (.conclusion == "success")}' >> "$LIST"
+          [ "$N" -lt 100 ] && break
+          page=$((page + 1))
+          [ "$page" -gt 20 ] && break
+        done
+
+        DEL_IDS=$(jq -rs --argjson keep "$KEEP" \
+          'sort_by(.created_at) | reverse | (map(select(.ok)) | .[:$keep] | map(.id)) as $protect | map(select(.id as $i | ($protect | index($i)) == null)) | reverse | .[].id' "$LIST")
+
+        if [ -z "$DEL_IDS" ]; then
+          echo "Nothing to delete (completed=$(wc -l < "$LIST"), keep=$KEEP)."
+          exit 0
         fi
+
+        echo "Will delete $(echo "$DEL_IDS" | wc -w) old/failed run(s), keeping newest $KEEP successful."
+        for id in $DEL_IDS; do
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "${AUTH[@]}" \
+            "$API/actions/runs/$id")
+          case "$CODE" in
+            204) echo "Deleted run $id" ;;
+            404) echo "Run $id already gone" ;;
+            *)   echo "::warning::run $id delete failed (HTTP $CODE)" ;;
+          esac
+          sleep 0.5
+        done
 
   release:
     name: 汇总发布 Release
@@ -445,3 +469,101 @@ jobs:
         allowUpdates: true
         draft: false
         prerelease: false
+    - name: Cleanup old MSM8916 releases (keep newest valid)
+      if: always()
+      continue-on-error: true
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        KEEP_RELEASES: 1
+        THIS_TAG: ${{ steps.tag.outputs.release_tag }}
+      run: |
+        set -euo pipefail
+        KEEP=${KEEP_RELEASES:-1}
+        LIST=$(mktemp)
+        trap 'rm -f "$LIST"' EXIT
+
+        THIS_OK=$(gh api "repos/${{ github.repository }}/releases/tags/${THIS_TAG:-}" \
+          --jq '[.assets[] | select((.size // 0) > 0)] | length' 2>/dev/null || echo 0)
+        if [ -z "${THIS_TAG:-}" ] || [ -z "$THIS_OK" ] || [ "$THIS_OK" = "0" ]; then
+          echo "::warning::本次未产出有效固件(tag=${THIS_TAG:-none}, assets=${THIS_OK:-0})，跳过清理，历史 Release 一律保留"
+          exit 0
+        fi
+        echo "本次 Release 有效: $THIS_TAG (非空 asset=$THIS_OK)"
+
+        page=1
+        while :; do
+          BATCH=$(gh api "repos/${{ github.repository }}/releases?per_page=100&page=$page")
+          N=$(echo "$BATCH" | jq 'length')
+          [ "$N" -eq 0 ] && break
+          echo "$BATCH" | jq -c \
+            '.[] | select(.tag_name | startswith("MSM8916-")) | {tag: .tag_name, created: .created_at, ok: ([.assets[] | select((.size // 0) > 0)] | length > 0)}' \
+            >> "$LIST"
+          [ "$N" -lt 100 ] && break
+          page=$((page + 1))
+          [ "$page" -gt 20 ] && break
+        done
+
+        PROTECT=$(jq -rs --argjson keep "$KEEP" \
+          'sort_by(.created) | reverse | map(select(.ok)) | .[:$keep] | .[].tag' "$LIST")
+        echo "Protecting newest $KEEP valid release(s): ${PROTECT:-none}"
+
+        OLD=$(jq -rs --argjson keep "$KEEP" \
+          'sort_by(.created) | reverse | (map(select(.ok)) | .[:$keep] | map(.tag)) as $protect | map(select(.tag as $t | ($protect | index($t)) == null)) | reverse | .[].tag' "$LIST")
+
+        if [ -z "$OLD" ]; then
+          echo "No old/invalid releases to delete (matched=$(wc -l < "$LIST"), keep=$KEEP)."
+          exit 0
+        fi
+
+        echo "Will delete $(echo "$OLD" | wc -w) old/invalid release(s), keeping newest $KEEP valid."
+        for tag in $OLD; do
+          if gh release delete "$tag" -y --cleanup-tag >/dev/null 2>&1; then
+            echo "Deleted release + tag: $tag"
+          else
+            echo "::warning::failed to delete release $tag"
+          fi
+        done
+        TAGS=$(mktemp)
+        RELS=$(mktemp)
+        trap 'rm -f "$LIST" "$TAGS" "$RELS"' EXIT
+
+        page=1
+        while :; do
+          BATCH=$(gh api "repos/${{ github.repository }}/releases?per_page=100&page=$page")
+          N=$(echo "$BATCH" | jq 'length')
+          [ "$N" -eq 0 ] && break
+          echo "$BATCH" | jq -r '.[].tag_name | select(startswith("MSM8916-"))' >> "$RELS"
+          [ "$N" -lt 100 ] && break
+          page=$((page + 1))
+          [ "$page" -gt 20 ] && break
+        done
+        sort -u -o "$RELS" "$RELS"
+
+        page=1
+        while :; do
+          BATCH=$(gh api "repos/${{ github.repository }}/git/matching-refs/tags/MSM8916-?per_page=100&page=$page")
+          N=$(echo "$BATCH" | jq 'length')
+          [ "$N" -eq 0 ] && break
+          echo "$BATCH" | jq -r \
+            '.[].ref | sub("^refs/tags/"; "") | select(test("^MSM8916-[A-Za-z0-9._-]+$"))' \
+            >> "$TAGS"
+          [ "$N" -lt 100 ] && break
+          page=$((page + 1))
+          [ "$page" -gt 20 ] && break
+        done
+        sort -u -o "$TAGS" "$TAGS"
+
+        ORPHAN=$(comm -23 "$TAGS" "$RELS")
+        if [ -z "$ORPHAN" ]; then
+          echo "No orphan MSM8916 tags to clean."
+        else
+          echo "Will delete $(echo "$ORPHAN" | wc -w) orphan tag(s)."
+          for tag in $ORPHAN; do
+            if gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/$tag" >/dev/null 2>&1; then
+              echo "Deleted orphan tag: $tag"
+            else
+              echo "::warning::failed to delete orphan tag $tag"
+            fi
+            sleep 0.2
+          done
+        fi
