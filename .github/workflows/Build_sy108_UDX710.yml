@@ -23,13 +23,7 @@ env:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        profile: [main, recovery]
     runs-on: ubuntu-24.04
-    env:
-      PROFILE: ${{ matrix.profile }}
 
     steps:
     - name: Checkout
@@ -129,11 +123,15 @@ jobs:
     - name: Download package
       working-directory: ./sy108
       run: |
-        ./tools/python tools/build/firmware.py "$PROFILE" --configure-only
-        KARC=$(jq -r .archive manifests/kernel.json)
-        cd "$SY108_OUT/openwrt-build"
-        make download -j8 LINUX_SOURCE="$KARC" LINUX_SITE=file:///downloads
-        find dl/ -size -1024c -delete
+        mkdir -p "$SY108_OUT/config"
+        for P in main recovery; do
+          ./tools/python tools/build/firmware.py "$P" --configure-only
+          cp "$SY108_OUT/openwrt-build/.config" "$SY108_OUT/config/$P.config"
+          cp "$SY108_OUT/openwrt-build/feeds.conf" "$SY108_OUT/config/$P.feeds.conf"
+          KARC=$(jq -r .archive manifests/kernel.json)
+          ( cd "$SY108_OUT/openwrt-build" && make download -j8 LINUX_SOURCE="$KARC" LINUX_SITE=file:///downloads )
+        done
+        find "$SY108_OUT/openwrt-build/dl" -size -1024c -delete
 
     - name: Save package cache
       continue-on-error: true
@@ -153,37 +151,49 @@ jobs:
       with:
        name: build-config
        path: |
-         ${{ env.SY108_OUT }}/openwrt-build/.config
-         ${{ env.SY108_OUT }}/openwrt-build/feeds.conf
+         ${{ env.SY108_OUT }}/config/main.config
+         ${{ env.SY108_OUT }}/config/recovery.config
+         ${{ env.SY108_OUT }}/config/main.feeds.conf
+         ${{ env.SY108_OUT }}/config/recovery.feeds.conf
        include-hidden-files: true
 
     - name: Compile the SY108 firmware
       id: compile
       working-directory: ./sy108
       run: |
-        if ! ./tools/python tools/build/firmware.py "$PROFILE" --jobs "$JOBS"; then
-            echo "Compile failed, retry with -j2 V=s"
-            V=s ./tools/python tools/build/firmware.py "$PROFILE" --jobs 2
-        fi
-
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
+        rc=0
+        for P in main recovery; do
+          echo "::group::compile $P"
+          ok=1
+          if ! ./tools/python tools/build/firmware.py "$P" --jobs "$JOBS"; then
+            echo "$P failed, retry with -j2 V=s"
+            V=s ./tools/python tools/build/firmware.py "$P" --jobs 2 || ok=0
+          fi
+          if [ "$ok" = 1 ]; then
+            echo "${P}_ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "${P}_ok=false" >> "$GITHUB_OUTPUT"
+            rc=1
+          fi
+          rm -rf "$SY108_OUT/images/$P/packages"
+          echo "::endgroup::"
+        done
+        exit $rc
 
-    - name: Organize files
-      id: organize
-      if: env.UPLOAD_FIRMWARE == 'true' && steps.compile.outputs.status == 'success'
-      run: |
-        cd "$SY108_OUT/images/$PROFILE"
-        rm -rf packages
-        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
-
-    - name: Upload firmware directory
+    - name: Upload main firmware
       uses: actions/upload-artifact@main
-      if: steps.organize.outputs.status == 'success' && !cancelled()
+      if: always() && env.UPLOAD_FIRMWARE == 'true' && steps.compile.outputs.main_ok == 'true' && !cancelled()
       with:
-        name: SY108_firmware_${{ env.PROFILE }}${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE }}/*
+        name: SY108_firmware_main${{ env.FILE_DATE }}
+        path: ${{ env.SY108_OUT }}/images/main/*
+
+    - name: Upload recovery firmware
+      uses: actions/upload-artifact@main
+      if: always() && env.UPLOAD_FIRMWARE == 'true' && steps.compile.outputs.recovery_ok == 'true' && !cancelled()
+      with:
+        name: SY108_firmware_recovery${{ env.FILE_DATE }}
+        path: ${{ env.SY108_OUT }}/images/recovery/*
 
   release:
     needs: build
@@ -211,10 +221,6 @@ jobs:
           done
           rmdir "$d" 2>/dev/null || true
         done
-        cd firmware
-        ls | grep -vE '^((main|recovery)-(boot\.bin|rootfs\.squashfs|sysupgrade\.bin|build\.json|openwrt\.config|openwrt-sprd-udx710-(main|recovery)\.manifest))$' | xargs -r rm -f || true
-        sha256sum * > sha256sums.txt
-        cd ..
         KVER=$(jq -r '.kernel.version' firmware/main-build.json 2>/dev/null || echo unknown)
         echo "源码: $REPO_URL" >> release.txt
         echo "分支: $REPO_BRANCH" >> release.txt
@@ -236,6 +242,10 @@ jobs:
           fi
           echo "" >> release.txt
         done
+        cd firmware
+        ls | grep -vE '^(main-(boot\.bin|sysupgrade\.bin)|recovery-boot\.bin)$' | xargs -r rm -f
+        sha256sum * > sha256sums.txt
+        cd ..
         cat release.txt
 
     - name: Upload to release
