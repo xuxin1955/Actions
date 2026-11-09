@@ -137,13 +137,9 @@ jobs:
         mkdir -p configs
         BAD=""
         for D in $ALL_DEVICES; do
-          case "$D" in
-            *tf*) CFG=config/040-nousb.config ;;
-            *)    CFG=config/040.config ;;
-          esac
           (
             set -e
-            cp -f "$CFG" openwrt/.config
+            cp -f config/nokia_xg-040g-md.config openwrt/.config
             cd openwrt
             sed -i '/CONFIG_TARGET_PROFILE/d' .config
             sed -i '/CONFIG_TARGET_airoha_an7581_DEVICE/d' .config
