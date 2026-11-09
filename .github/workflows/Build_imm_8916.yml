@@ -78,40 +78,19 @@ jobs:
           sudo -E apt-get -y install --no-install-recommends $DEPS
         }
 
-    - name: Cache mkbootimg deb
-      uses: actions/cache@v5
-      with:
-        path: downloads/mkbootimg_34.0.5-12build1_all.deb
-        key: mkbootimg-34.0.5-12build1
-        restore-keys: |
-          mkbootimg-
-
     - name: mkbootimg build
       run: |
-        mkdir -p downloads
-        cd downloads
-
-        if [ ! -f mkbootimg_34.0.5-12build1_all.deb ]; then
-          echo "📥 mkbootimg deb not cached, downloading..."
-          wget https://github.com/xuxin1955/depend_ubuntu2204_openwrt/releases/download/ubuntu_26.04_LTS_mkbootimg/mkbootimg_34.0.5-12build1_all.deb
+        DEB="$GITHUB_WORKSPACE/scripts/mkbootimg_34.0.5-12build1_all.deb"
+        if [ -f "$DEB" ]; then
+          sudo dpkg -i "$DEB"
+          sudo apt-get install -f -y
+          mkbootimg --help || true
         else
-          echo "✅ mkbootimg deb restored from cache"
+          echo "::warning::$DEB 不存在，跳过 mkbootimg"
         fi
-
-        sudo dpkg -i mkbootimg_34.0.5-12build1_all.deb || true
-        sudo apt-get install -f -y
-
-        mkbootimg --help || true
-
-        MKBOOTIMG_PATH=$(which mkbootimg)
-        if [ -n "$MKBOOTIMG_PATH" ]; then
-          echo "✅ mkbootimg found at: $MKBOOTIMG_PATH"
-          file "$MKBOOTIMG_PATH"
-        else
-          echo "❌ mkbootimg not found in PATH!"
-        fi
-
-        sudo timedatectl set-timezone "$TZ"
+        sudo timedatectl set-timezone "${TZ}"
+        echo "status=success" >> ${GITHUB_OUTPUT}
+        
         sudo chmod 777 /mnt
         df -hT
 
@@ -156,11 +135,6 @@ jobs:
       run: |
         cd openwrt
         ./scripts/feeds install -a -f
-
-    - name: remove warning
-      run: |
-        chmod 755 $GITHUB_WORKSPACE/scripts/diy-part.sh
-        $GITHUB_WORKSPACE/scripts/diy-part.sh
 
     - name: Load custom DIY_P2_SH
       run: |

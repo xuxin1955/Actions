@@ -64,21 +64,16 @@ jobs:
         
     - name: mkbootimg build
       run: |
-        wget https://github.com/xuxin1955/depend_ubuntu2204_openwrt/releases/download/ubuntu_26.04_LTS_mkbootimg/mkbootimg_34.0.5-12build1_all.deb
-        sudo dpkg -i mkbootimg_34.0.5-12build1_all.deb
-        sudo apt-get install -f -y
-        # 验证安装
-        mkbootimg --help || true
-        MKBOOTIMG_PATH=$(which mkbootimg)
-        if [ -n "$MKBOOTIMG_PATH" ]; then
-        echo "mkbootimg found at: $MKBOOTIMG_PATH"
-        file "$MKBOOTIMG_PATH"
+        DEB="$GITHUB_WORKSPACE/scripts/mkbootimg_34.0.5-12build1_all.deb"
+        if [ -f "$DEB" ]; then
+          sudo dpkg -i "$DEB"
+          sudo apt-get install -f -y
+          mkbootimg --help || true
         else
-        echo "❌ mkbootimg not found in PATH!"
+          echo "::warning::$DEB 不存在，跳过 mkbootimg"
         fi
-        
         sudo timedatectl set-timezone "${TZ}"
-        
+        echo "status=success" >> ${GITHUB_OUTPUT}
         
     - name: Ensure Python build tools
       run: |
