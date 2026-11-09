@@ -30,7 +30,12 @@ led_probe() {
 }
 
 start_service() {
-	N=$(led_probe)
+	i=0
+	while [ "$i" -lt 10 ]; do
+		N=$(led_probe) && break
+		i=$((i + 1))
+		sleep 2
+	done
 	[ -n "$N" ] || { logger -t led4g "no 4G led found"; return 1; }
 	logger -t led4g "using led $N"
 
@@ -39,29 +44,44 @@ start_service() {
 		L=/sys/class/leds/'"$N"'
 		[ -d "$L" ] || exit 1
 		mode=""
+		fail=0
+		want=off
 		while :; do
-			out=$(timeout 5 mmcli -m 0 --output-keyvalue 2>/dev/null)
+			out=$(timeout 5 mmcli -m any --output-keyvalue 2>/dev/null)
 			sim=$(echo "$out" | grep "^modem.generic.sim " | awk "{print \$NF}")
 			st=$(echo "$out" | grep "3gpp.registration-state" | awk "{print \$NF}")
-			if [ -z "$sim" ] || [ "$sim" = "--" ]; then
+			if [ -z "$out" ]; then
+				fail=$((fail + 1))
+				[ "$fail" -ge 3 ] && want=off
+			elif [ -z "$sim" ] || [ "$sim" = "--" ]; then
+				fail=0
 				want=off
 			elif [ "$st" = "home" ] || [ "$st" = "roaming" ]; then
+				fail=0
 				want=on
 			elif [ "$st" = "searching" ]; then
+				fail=0
 				want=slow
 			else
+				fail=0
 				want=fast
 			fi
-			if [ "$want" != "$mode" ]; then
-				case "$want" in
-					off)  echo none > "$L/trigger"; echo 0 > "$L/brightness" ;;
-					on)   echo none > "$L/trigger" ;;
-					slow) echo timer > "$L/trigger"; echo 500 > "$L/delay_on"; echo 500 > "$L/delay_off" ;;
-					fast) echo timer > "$L/trigger"; echo 150 > "$L/delay_on"; echo 150 > "$L/delay_off" ;;
-				esac
-				mode="$want"
-			fi
-			[ "$want" = "on" ] && echo 1 > "$L/brightness"
+			case "$want" in
+				off)
+					[ "$mode" != "off" ] && { echo none > "$L/trigger"; mode=off; }
+					echo 0 > "$L/brightness"
+					;;
+				on)
+					[ "$mode" != "on" ] && { echo none > "$L/trigger"; mode=on; }
+					echo 1 > "$L/brightness"
+					;;
+				slow)
+					[ "$mode" != "slow" ] && { echo timer > "$L/trigger"; echo 500 > "$L/delay_on"; echo 500 > "$L/delay_off"; mode=slow; }
+					;;
+				fast)
+					[ "$mode" != "fast" ] && { echo timer > "$L/trigger"; echo 150 > "$L/delay_on"; echo 150 > "$L/delay_off"; mode=fast; }
+					;;
+			esac
 			sleep 10
 		done'
 	procd_set_param respawn 3600 5 5
