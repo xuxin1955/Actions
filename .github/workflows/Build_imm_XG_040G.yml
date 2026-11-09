@@ -21,9 +21,9 @@ env:
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
-  ALL_DEVICES: "nokia_xg-040g-md nokia_xg-040g-md-ubi nokia_xg-140g-md nokia_xg-040g-tf nokia_xg-140g-tf"
-  REPO_URL: https://github.com/bingoguo93/immortalwrt
-  REPO_BRANCH: "6.18"
+  ALL_DEVICES: "nokia_xg-040g-md nokia_xg-040g-md-ubi nokia_xg-140g-tf"
+  REPO_URL: https://github.com/immortalwrt/immortalwrt
+  REPO_BRANCH: master
 
 jobs:
   build:
@@ -140,6 +140,7 @@ jobs:
     - name: Prepare configs
       run: |
         mkdir -p configs
+        BAD=""
         for D in $ALL_DEVICES; do
           case "$D" in
             *tf*) CFG=config/040-nousb.config ;;
@@ -157,9 +158,11 @@ jobs:
               "CONFIG_TARGET_PROFILE=\"DEVICE_$D\"" \
               "CONFIG_TARGET_airoha_an7581_DEVICE_$D=y" >> .config
             make defconfig
+            grep -qx "CONFIG_TARGET_PROFILE=\"DEVICE_$D\"" .config || { echo "::error::$D 无对应 Device，defconfig 实际选中 $(grep '^CONFIG_TARGET_PROFILE' .config)"; exit 1; }
             cp .config "$GITHUB_WORKSPACE/configs/$D.config"
-          )
+          ) || BAD="$BAD $D"
         done
+        [ -z "$BAD" ] || { echo "::error::配置生成失败:$BAD"; exit 1; }
 
     - name: Upload build config
       uses: actions/upload-artifact@main
