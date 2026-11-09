@@ -21,7 +21,7 @@ env:
   UPLOAD_FIRMWARE: true
   UPLOAD_RELEASE: true
   TZ: Asia/Shanghai
-  ALL_DEVICES: "nokia_xg-040g-md nokia_xg-040g-md-ubi nokia_xg-140g-tf"
+  ALL_DEVICES: "nokia_xg-040g-md nokia_xg-040g-md-ubi"
   REPO_URL: https://github.com/immortalwrt/immortalwrt
   REPO_BRANCH: master
 
