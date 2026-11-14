@@ -6,4 +6,4 @@
 cat immortalwrt-ramips-mt76x8-hilink_hlk-7628n-squashfs-sysupgrade.bin | ssh root@192.168.100.1 "cat > /tmp/fw.bin && sysupgrade -n /tmp/fw.bin"
 
 保配置推送刷机
-cat immortalwrt-ramips-mt76x8-hilink_hlk-7628n-squashfs-sysupgrade.bin | ssh root@192.168.100.1 "cat > /tmp/fw.bin && sysupgrade /tmp/fw.bin"
+cat immortalwrt-msm89xx-msm8916-openstick-jz02v10-squashfs-sysupgrade.bin | ssh root@192.168.10.1 "cat > /tmp/fw.bin && sysupgrade /tmp/fw.bin"

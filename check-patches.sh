@@ -84,10 +84,5 @@ if [ "$fail" -gt 0 ]; then
 	echo "::error::$fail patch(es) failed on backports-$PKG_VER"
 	exit 1
 fi
-echo "===== dl 目录内核包 ====="
-ls -lh "$OPENWRT_DIR"/dl/linux-*.tar.xz 2>/dev/null
-sha256sum "$OPENWRT_DIR"/dl/linux-*.tar.xz 2>/dev/null
-echo "===== 上游 v7.x 现有内核包 ====="
-curl -s --max-time 30 https://cdn.kernel.org/pub/linux/kernel/v7.x/ | grep -oE 'linux-7\.[0-9]+(\.[0-9]+)?\.tar\.xz' | sort -V | uniq
 
 exit 0
