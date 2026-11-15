@@ -78,19 +78,40 @@ jobs:
           sudo -E apt-get -y install --no-install-recommends $DEPS
         }
 
+    - name: Cache mkbootimg deb
+      uses: actions/cache@v5
+      with:
+        path: downloads/mkbootimg_34.0.5-12build1_all.deb
+        key: mkbootimg-34.0.5-12build1
+        restore-keys: |
+          mkbootimg-
+
     - name: mkbootimg build
       run: |
-        DEB="$GITHUB_WORKSPACE/scripts/mkbootimg_34.0.5-12build1_all.deb"
-        if [ -f "$DEB" ]; then
-          sudo dpkg -i "$DEB"
-          sudo apt-get install -f -y
-          mkbootimg --help || true
+        mkdir -p downloads
+        cd downloads
+
+        if [ ! -f mkbootimg_34.0.5-12build1_all.deb ]; then
+          echo "📥 mkbootimg deb not cached, downloading..."
+          wget https://github.com/xuxin1955/depend_ubuntu2204_openwrt/releases/download/ubuntu_26.04_LTS_mkbootimg/mkbootimg_34.0.5-12build1_all.deb
         else
-          echo "::warning::$DEB 不存在，跳过 mkbootimg"
+          echo "✅ mkbootimg deb restored from cache"
         fi
-        sudo timedatectl set-timezone "${TZ}"
-        echo "status=success" >> ${GITHUB_OUTPUT}
-        
+
+        sudo dpkg -i mkbootimg_34.0.5-12build1_all.deb || true
+        sudo apt-get install -f -y
+
+        mkbootimg --help || true
+
+        MKBOOTIMG_PATH=$(which mkbootimg)
+        if [ -n "$MKBOOTIMG_PATH" ]; then
+          echo "✅ mkbootimg found at: $MKBOOTIMG_PATH"
+          file "$MKBOOTIMG_PATH"
+        else
+          echo "❌ mkbootimg not found in PATH!"
+        fi
+
+        sudo timedatectl set-timezone "$TZ"
         sudo chmod 777 /mnt
         df -hT
 
@@ -135,6 +156,11 @@ jobs:
       run: |
         cd openwrt
         ./scripts/feeds install -a -f
+
+    - name: remove warning
+      run: |
+        chmod 755 $GITHUB_WORKSPACE/scripts/diy-part.sh
+        $GITHUB_WORKSPACE/scripts/diy-part.sh
 
     - name: Load custom DIY_P2_SH
       run: |
@@ -314,57 +340,19 @@ jobs:
         name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}
 
-    - name: Delete old workflow runs (keep newest 1)
+    - name: Cleanup old workflow runs
       if: success()
       continue-on-error: true
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        KEEP_MINIMUM_RUNS: 1
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        set -euo pipefail
-        API="https://api.github.com/repos/${{ github.repository }}"
-        AUTH=(-H "Authorization: Bearer $GITHUB_TOKEN"
-              -H "Accept: application/vnd.github+json"
-              -H "X-GitHub-Api-Version: 2022-11-28")
-        KEEP=${KEEP_MINIMUM_RUNS:-1}
-        SELF=${GITHUB_RUN_ID:-0}
-        WF_REF="${{ github.workflow_ref }}"
-        WF_PATH="${WF_REF%%@*}"
-        WF_FILE="${WF_PATH##*/}"
-        LIST=$(mktemp)
-        trap 'rm -f "$LIST"' EXIT
-
-        page=1
-        while :; do
-          BATCH=$(curl -fsS "${AUTH[@]}" \
-            "$API/actions/workflows/$WF_FILE/runs?status=completed&per_page=100&page=$page")
-          N=$(echo "$BATCH" | jq '.workflow_runs | length')
-          [ "$N" -eq 0 ] && break
-          echo "$BATCH" | jq -c --argjson self "$SELF" \
-            '.workflow_runs[] | select(.id != $self) | {id, created_at, ok: (.conclusion == "success")}' >> "$LIST"
-          [ "$N" -lt 100 ] && break
-          page=$((page + 1))
-          [ "$page" -gt 20 ] && break
-        done
-
-        DEL_IDS=$(jq -rs --argjson keep "$KEEP" \
-          'sort_by(.created_at) | reverse | (map(select(.ok)) | .[:$keep] | map(.id)) as $protect | map(select(.id as $i | ($protect | index($i)) == null)) | reverse | .[].id' "$LIST")
-
-        if [ -z "$DEL_IDS" ]; then
-          echo "Nothing to delete (completed=$(wc -l < "$LIST"), keep=$KEEP)."
-          exit 0
-        fi
-
-        echo "Will delete $(echo "$DEL_IDS" | wc -w) old/failed run(s), keeping newest $KEEP successful."
-        for id in $DEL_IDS; do
-          CODE=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "${AUTH[@]}" \
-            "$API/actions/runs/$id")
-          case "$CODE" in
-            204) echo "Deleted run $id" ;;
-            404) echo "Run $id already gone" ;;
-            *)   echo "::warning::run $id delete failed (HTTP $CODE)" ;;
-          esac
-          sleep 0.5
+        WF="${GITHUB_WORKFLOW_REF%%@*}"; WF="${WF##*/}"
+        gh run list -w "$WF" --status=completed --limit=1000 \
+          --json databaseId --jq ".[].databaseId | select(. != $GITHUB_RUN_ID)" |
+        while read -r id; do
+          gh run delete "$id" >/dev/null 2>&1 \
+            && echo "Deleted run $id" \
+            || echo "::warning::run $id delete failed"
         done
 
   release:
@@ -443,101 +431,37 @@ jobs:
         allowUpdates: true
         draft: false
         prerelease: false
-    - name: Cleanup old MSM8916 releases (keep newest valid)
+    - name: Cleanup old releases (keep current only)
       if: always()
       continue-on-error: true
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        KEEP_RELEASES: 1
-        THIS_TAG: ${{ steps.tag.outputs.release_tag }}
+        SELF_TAG: ${{ steps.tag.outputs.release_tag }}
       run: |
-        set -euo pipefail
-        KEEP=${KEEP_RELEASES:-1}
-        LIST=$(mktemp)
-        trap 'rm -f "$LIST"' EXIT
-
-        THIS_OK=$(gh api "repos/${{ github.repository }}/releases/tags/${THIS_TAG:-}" \
-          --jq '[.assets[] | select((.size // 0) > 0)] | length' 2>/dev/null || echo 0)
-        if [ -z "${THIS_TAG:-}" ] || [ -z "$THIS_OK" ] || [ "$THIS_OK" = "0" ]; then
-          echo "::warning::本次未产出有效固件(tag=${THIS_TAG:-none}, assets=${THIS_OK:-0})，跳过清理，历史 Release 一律保留"
+        R="$GITHUB_REPOSITORY"
+        OK=$(gh api "repos/$R/releases/tags/$SELF_TAG" \
+          --jq '[.assets[]|select(.size>0)]|length' 2>/dev/null || echo 0)
+        if [ -z "$SELF_TAG" ] || [ "${OK:-0}" = "0" ]; then
+          echo "::warning::本次未产出有效固件(tag=${SELF_TAG:-none})，跳过清理，历史 Release 一律保留"
           exit 0
         fi
-        echo "本次 Release 有效: $THIS_TAG (非空 asset=$THIS_OK)"
+        echo "本次 Release 有效: $SELF_TAG，开始清理旧 Release"
 
-        page=1
-        while :; do
-          BATCH=$(gh api "repos/${{ github.repository }}/releases?per_page=100&page=$page")
-          N=$(echo "$BATCH" | jq 'length')
-          [ "$N" -eq 0 ] && break
-          echo "$BATCH" | jq -c \
-            '.[] | select(.tag_name | startswith("MSM8916-")) | {tag: .tag_name, created: .created_at, ok: ([.assets[] | select((.size // 0) > 0)] | length > 0)}' \
-            >> "$LIST"
-          [ "$N" -lt 100 ] && break
-          page=$((page + 1))
-          [ "$page" -gt 20 ] && break
+        gh api "repos/$R/releases?per_page=100" --paginate \
+          --jq ".[]|select(.tag_name|startswith(\"MSM8916-\"))|select(.tag_name!=\"$SELF_TAG\")|.tag_name" |
+        while read -r tag; do
+          gh release delete "$tag" --yes >/dev/null 2>&1 \
+            || { echo "::warning::release $tag delete failed"; continue; }
+          echo "Deleted release: $tag"
+          gh api -X DELETE "repos/$R/git/refs/tags/$tag" >/dev/null 2>&1 \
+            || echo "::warning::tag $tag left (release removed)"
         done
 
-        PROTECT=$(jq -rs --argjson keep "$KEEP" \
-          'sort_by(.created) | reverse | map(select(.ok)) | .[:$keep] | .[].tag' "$LIST")
-        echo "Protecting newest $KEEP valid release(s): ${PROTECT:-none}"
-
-        OLD=$(jq -rs --argjson keep "$KEEP" \
-          'sort_by(.created) | reverse | (map(select(.ok)) | .[:$keep] | map(.tag)) as $protect | map(select(.tag as $t | ($protect | index($t)) == null)) | reverse | .[].tag' "$LIST")
-
-        if [ -z "$OLD" ]; then
-          echo "No old/invalid releases to delete (matched=$(wc -l < "$LIST"), keep=$KEEP)."
-          exit 0
-        fi
-
-        echo "Will delete $(echo "$OLD" | wc -w) old/invalid release(s), keeping newest $KEEP valid."
-        for tag in $OLD; do
-          if gh release delete "$tag" -y --cleanup-tag >/dev/null 2>&1; then
-            echo "Deleted release + tag: $tag"
-          else
-            echo "::warning::failed to delete release $tag"
-          fi
+        comm -23 \
+          <(gh api "repos/$R/git/matching-refs/tags/MSM8916-" --paginate \
+              --jq '.[].ref|sub("^refs/tags/";"")' | sort -u) \
+          <(gh api "repos/$R/releases?per_page=100" --paginate --jq '.[].tag_name' | sort -u) |
+        while read -r tag; do
+          gh api -X DELETE "repos/$R/git/refs/tags/$tag" >/dev/null 2>&1 \
+            && echo "Deleted orphan tag: $tag"
         done
-        TAGS=$(mktemp)
-        RELS=$(mktemp)
-        trap 'rm -f "$LIST" "$TAGS" "$RELS"' EXIT
-
-        page=1
-        while :; do
-          BATCH=$(gh api "repos/${{ github.repository }}/releases?per_page=100&page=$page")
-          N=$(echo "$BATCH" | jq 'length')
-          [ "$N" -eq 0 ] && break
-          echo "$BATCH" | jq -r '.[].tag_name | select(startswith("MSM8916-"))' >> "$RELS"
-          [ "$N" -lt 100 ] && break
-          page=$((page + 1))
-          [ "$page" -gt 20 ] && break
-        done
-        sort -u -o "$RELS" "$RELS"
-
-        page=1
-        while :; do
-          BATCH=$(gh api "repos/${{ github.repository }}/git/matching-refs/tags/MSM8916-?per_page=100&page=$page")
-          N=$(echo "$BATCH" | jq 'length')
-          [ "$N" -eq 0 ] && break
-          echo "$BATCH" | jq -r \
-            '.[].ref | sub("^refs/tags/"; "") | select(test("^MSM8916-[A-Za-z0-9._-]+$"))' \
-            >> "$TAGS"
-          [ "$N" -lt 100 ] && break
-          page=$((page + 1))
-          [ "$page" -gt 20 ] && break
-        done
-        sort -u -o "$TAGS" "$TAGS"
-
-        ORPHAN=$(comm -23 "$TAGS" "$RELS")
-        if [ -z "$ORPHAN" ]; then
-          echo "No orphan MSM8916 tags to clean."
-        else
-          echo "Will delete $(echo "$ORPHAN" | wc -w) orphan tag(s)."
-          for tag in $ORPHAN; do
-            if gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/$tag" >/dev/null 2>&1; then
-              echo "Deleted orphan tag: $tag"
-            else
-              echo "::warning::failed to delete orphan tag $tag"
-            fi
-            sleep 0.2
-          done
-        fi
