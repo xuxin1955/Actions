@@ -41,4 +41,26 @@ patch -p1 --fuzz=2 <<'EOF'
 EOF
 grep -q 'graph_child_address' include/image.mk && echo "FAIL: image.mk 未修复" || echo "OK: image.mk DTC 参数已修复"
 
+# 补丁FW4验证
+FW4_SRC=$GITHUB_WORKSPACE/scripts/msm89xx/package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch
+FW4_PATCH=package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch
+FW4_VER=$(sed -n 's/^PKG_SOURCE_VERSION:=//p' package/network/config/firewall4/Makefile)
+echo "firewall4 pin: ${FW4_VER:-unknown}"
 
+if [ "$FW4_VER" = "bac1d656e09b48e542f860844fe91cbba82abae2" ] || git show "HEAD:$FW4_PATCH" 2>/dev/null | grep -q '^ # Uncomment this line to disable ipv6'; then
+        if cp -f "$FW4_SRC" "$FW4_PATCH"; then
+                echo "firewall4: local fullcone patch applied"
+        else
+                echo "::error::firewall4: local patch missing at $FW4_SRC"
+                exit 1
+        fi
+else
+        git checkout -- "$FW4_PATCH" 2>/dev/null || true
+        echo "firewall4: pin changed, upstream patch restored"
+fi
+
+if grep -q "zone.dflags.helper = false;" "$FW4_PATCH" 2>/dev/null && ! grep -q '^ # Uncomment this line to disable ipv6' "$FW4_PATCH"; then
+        echo "firewall4 patch verify: OK"
+else
+        echo "::warning::firewall4 patch verify: failed"
+fi
