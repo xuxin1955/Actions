@@ -6,19 +6,68 @@ USE_PROCD=1
 start_service() {
 	procd_open_instance
 	procd_set_param command /bin/sh -c '
-		L=/etc/apfirst.log
+		L=/tmp/apfirst.log
 		F=/etc/apfirst.rebooted
 		G=/etc/apfirst.gate
 		RB=0
+		RUN=/var/run/sta_guard
+		SCANIV=120
+		MINRSSI=-80
+		MISS=3
+		RELOADCD=600
+		SETTLE=25
+		mkdir -p "$RUN"
 		lg() {
 			echo "t=$(cut -d. -f1 /proc/uptime) $*" >> "$L"
-			if [ "$(wc -l < "$L" 2>/dev/null)" -gt 600 ]; then
-				tail -n 350 "$L" > "$L.n"
+			if [ "$(wc -l < "$L" 2>/dev/null)" -gt 3000 ]; then
+				tail -n 2000 "$L" > "$L.n"
 				mv "$L.n" "$L"
 			fi
 		}
 		now() {
 			cut -d. -f1 /proc/uptime
+		}
+		jget() {
+			jsonfilter -e "$1" 2>/dev/null
+		}
+		JOK=0
+		JQN=none
+		[ "$(printf "{\"a\":1}" | jget "@.a")" = "1" ] && JOK=1
+		[ "$JOK" = "1" ] || JQN=$(command -v jsonfilter 2>/dev/null || echo none)
+		stamp() {
+			cat "$RUN/$1" 2>/dev/null || echo 0
+		}
+		mark() {
+			echo "$2" > "$RUN/$1"
+		}
+		dbm() {
+			case "$1" in
+			-*) ;;
+			*) return 1 ;;
+			esac
+			case "${1#-}" in
+			"" | *[!0-9]*) return 1 ;;
+			esac
+			[ "$1" -ge -100 ] && [ "$1" -le -5 ]
+		}
+		sta_list() {
+			for q in $(uci show wireless 2>/dev/null | sed -n "s/^wireless\.\([^.]*\)=wifi-iface$/\1/p"); do
+				[ "$(uci -q get "wireless.$q.mode")" = "sta" ] && echo "$q"
+			done
+		}
+		scan_of() {
+			if [ "$1" != "$SC_DEV" ]; then
+				SC_DEV=$1
+				SC_S=$(timeout 20 ubus call iwinfo scan "{\"device\":\"$1\"}" 2>/dev/null)
+			fi
+			[ -n "$SC_S" ]
+		}
+		peer_sig() {
+			if [ -n "$1" ]; then
+				printf "%s" "$SC_S" | jget "@.results[@.bssid=\"$1\"].signal"
+			else
+				printf "%s" "$SC_S" | jget "@.results[@.ssid=\"$2\"].signal"
+			fi
 		}
 		aif() {
 			for d in /sys/class/net/*; do
@@ -58,16 +107,45 @@ start_service() {
 		sstate() {
 			S=$(sif)
 			[ -n "$S" ] || { echo none; return 0; }
-			wpa_cli -i "$S" status 2>/dev/null | sed -n "s/^wpa_state=//p" | head -n 1
+			if iw dev "$S" link 2>/dev/null | grep -q "Connected to"; then
+				echo COMPLETED
+			else
+				echo DISCONNECTED
+			fi
 		}
 		sok() {
 			S=$(sif)
 			[ -n "$S" ] || return 1
 			iw dev "$S" link 2>/dev/null | grep -q "Connected to" || return 1
-			case "$(wpa_cli -i "$S" status 2>/dev/null | sed -n "s/^wpa_state=//p" | head -n 1)" in
-			COMPLETED|"") return 0 ;;
-			*) return 1 ;;
-			esac
+			return 0
+		}
+		netof() {
+			for n in $(uci -q get "wireless.$2.network" 2>/dev/null) "$2" $(ubus list "network.interface.*" 2>/dev/null | sed -n "s/^network\.interface\.//p"); do
+				[ -n "$n" ] || continue
+				NS=$(ifstatus "$n" 2>/dev/null)
+				[ -n "$NS" ] || continue
+				for d in $(printf "%s" "$NS" | jget "@.l3_device") $(printf "%s" "$NS" | jget "@.device"); do
+					[ "$d" = "$1" ] && { echo "$n"; return 0; }
+				done
+			done
+			return 1
+		}
+		rc() {
+			if command -v wpa_cli >/dev/null 2>&1; then
+				wpa_cli -i "$1" reassociate >/dev/null 2>&1 && return 0
+			fi
+			N=$(netof "$1" "$3")
+			[ -n "$N" ] || return 1
+			i=0
+			while [ "$i" -lt 3 ]; do
+				ubus call network.interface."$N" down >/dev/null 2>&1
+				sleep 1
+				ubus call network.interface."$N" up >/dev/null 2>&1
+				sleep 3
+				[ "$(ubus call network.interface."$N" status 2>/dev/null | jget "@.up")" = "true" ] && return 0
+				i=$((i + 1))
+			done
+			return 1
 		}
 		pick() {
 			for s in $(uci show wireless 2>/dev/null | sed -n "s/^wireless\.\([^.]*\)=wifi-iface$/\1/p"); do
@@ -117,20 +195,46 @@ start_service() {
 			else
 				ubus call network.wireless up "{\"device\":\"$DEV\"}" >/dev/null 2>&1
 			fi
-			sleep 6
-			aok && return 0
+			AK=0
+			while [ "$AK" -lt 14 ]; do
+				aok && return 0
+				AK=$((AK + 1))
+				sleep 1
+			done
+			mark apguard $(( $(now) + 120 ))
 			timeout 45 wifi reload >/dev/null 2>&1
-			sleep 8
-			aok && return 0
+			AK=0
+			while [ "$AK" -lt 12 ]; do
+				aok && return 0
+				AK=$((AK + 1))
+				sleep 1
+			done
 			wup
 			sleep 8
 		}
 		aheal() {
+			mark apguard $(( $(now) + 120 ))
 			case "$1" in
 			1)
-				lg "ap L1 up $DEV"
-				wup
-				sleep 20
+				AD="${ADS:-$DEV}"
+				if [ -f "$G" ]; then
+					GS=$(cat "$G" 2>/dev/null)
+					if [ -n "$GS" ]; then
+						ifon "$GS"
+						rm -f "$G"
+						sync
+						lg "ap L1 gate released $GS"
+					fi
+				fi
+				lg "ap L1 reload $AD"
+				timeout 45 wifi reload >/dev/null 2>&1
+				AK=0
+				while [ "$AK" -lt 10 ]; do
+					aok && return 0
+					AK=$((AK + 1))
+					sleep 1
+				done
+				sleep 5
 				;;
 			2)
 				lg "ap L2 ungated up $DEV"
@@ -139,36 +243,9 @@ start_service() {
 				sleep 10
 				;;
 			3)
-				if [ "$MULTI" = "1" ]; then
-					lg "ap L3 skip, multi-radio"
-					sleep 10
-					return
-				fi
-				STG=0
-				if [ "$STA_ON" = "1" ] && [ -n "$STP" ]; then
-					lg "ap L3 pause sta $STP"
-					echo "$STP" > "$G"
-					sync
-					ifoff "$STP"
-					STG=1
-				fi
-				lg "ap L3 radio reset"
-				timeout 45 wifi down >/dev/null 2>&1
-				sleep 2
+				lg "ap L3 hold, never kill ap"
 				wup
-				sleep 25
-				if [ "$STG" = "1" ]; then
-					ifon "$STP"
-					rm -f "$G"
-					sync
-					ubus call network.wireless up "{\"device\":\"$DEV\"}" >/dev/null 2>&1
-					if aok; then
-						lg "ap L3 sta back $STP"
-					else
-						lg "ap L3 failed, sta restored $STP"
-					fi
-				fi
-				sleep 5
+				sleep 20
 				;;
 			*)
 				if [ -z "$ASP" ]; then
@@ -182,36 +259,12 @@ start_service() {
 					sleep 60
 				else
 					lg "ap L4 reboot"
+					tail -n 300 "$L" > /etc/apfirst.last
 					touch "$F"
 					sync
 					reboot
 				fi
 				apstage=0
-				;;
-			esac
-		}
-		sheal() {
-			SIF=$(sif)
-			[ -n "$SIF" ] || return 0
-			case "$1" in
-			1)
-				lg "sta L1 reassoc $SIF"
-				wpa_cli -i "$SIF" reassociate >/dev/null 2>&1
-				sleep 8
-				;;
-			2)
-				lg "sta L2 reconnect $SIF"
-				wpa_cli -i "$SIF" disconnect >/dev/null 2>&1
-				sleep 2
-				wpa_cli -i "$SIF" reconnect >/dev/null 2>&1
-				sleep 3
-				wpa_cli -i "$SIF" reassociate >/dev/null 2>&1
-				sleep 7
-				;;
-			*)
-				lg "sta L3 reconf $SIF"
-				wpa_cli -i "$SIF" reconfigure >/dev/null 2>&1
-				sleep 10
 				;;
 			esac
 		}
@@ -229,7 +282,10 @@ start_service() {
 			i=$((i + 1))
 			sleep 1
 		done
-		lg "boot: phy=${PHY:-none} after ${i}s"
+		JSE="jok=$JOK"
+		[ "$JOK" = "1" ] || JSE="$JSE jq=$JQN"
+		lg "boot: phy=${PHY:-none} after ${i}s $JSE"
+		[ -f /etc/apfirst.last ] && lg "boot: prev log /etc/apfirst.last lines=$(wc -l < /etc/apfirst.last)"
 		ASPANY=$(pick ap)
 		STANY=$(pick sta)
 		DEV=$(devof "$STANY" "$ASPANY")
@@ -337,55 +393,7 @@ start_service() {
 		apstage=0
 		apcool=0
 		apcoolon=0
-		stfail=0
-		ststage=0
-		sback=0
-		stcool=0
-		sbust=0
-		sup=0
-		tick=0
-		fbt0=0
-		fbdone=0
 		while :; do
-			tick=$((tick + 1))
-			# sta 兜底：独立按真实秒数计时；掉线满 180s 且 AP 正常才补一次，只试一次
-			if [ "$STA_ON" = "1" ]; then
-				FBDIS=$(uci -q get "wireless.$STP.disabled")
-				if sok && [ "$FBDIS" != "1" ]; then
-					fbt0=0
-					fbdone=0
-				else
-					FBN=$(now)
-					[ "$fbt0" = "0" ] && fbt0=$FBN
-					if [ "$fbdone" = "0" ] && [ $((FBN - fbt0)) -ge 180 ]; then
-						if [ "$AP_ON" = "0" ] || aok; then
-							FBIF=$(sif)
-							if [ "$FBDIS" = "1" ] || [ -z "$FBIF" ]; then
-								fbdone=1
-								if [ "$FBDIS" = "1" ]; then
-									lg "sta fallback: re-enable $STP"
-									ifon "$STP"
-								fi
-								if [ -f "$G" ]; then rm -f "$G"; fi
-								sync
-								lg "sta fallback: wifi reload iface=${FBIF:-none}"
-								timeout 45 wifi reload >/dev/null 2>&1
-								sleep 10
-							else
-								FBST=$(sstate)
-								case "$FBST" in
-								SCANNING|ASSOCIATING|AUTHENTICATING|ASSOCIATED|4WAY_HANDSHAKE|GROUP_HANDSHAKE) ;;
-								*)
-									fbdone=1
-									lg "sta fallback reassoc $FBIF st=$FBST"
-									wpa_cli -i "$FBIF" reassociate >/dev/null 2>&1
-									;;
-								esac
-							fi
-						fi
-					fi
-				fi
-			fi
 			if [ "$apcoolon" = "1" ] && [ "$(now)" -ge "$apcool" ]; then
 				apcoolon=0
 				lg "ap cool over, retry"
@@ -431,65 +439,100 @@ start_service() {
 					ifon "$STP"
 					rm -f "$G"
 					sync
-					ubus call network.wireless up "{\"device\":\"$DEV\"}" >/dev/null 2>&1
-					lg "sta regated $STP"
+					lg "sta regated $STP, no reload"
 				fi
 			fi
-			if [ "$STA_ON" = "1" ] && [ "$tick" -ge "$stcool" ]; then
-				ST=$(sstate)
-				if sok; then
-					[ "$sup" != "1" ] && lg "sta up st=$ST"
-					sup=1
-					stfail=0
-					ststage=0
-					sback=0
-					sbust=0
-				elif [ "$ST" = "SCANNING" ] || [ "$ST" = "ASSOCIATING" ] || [ "$ST" = "AUTHENTICATING" ] || [ "$ST" = "ASSOCIATED" ] || [ "$ST" = "4WAY_HANDSHAKE" ] || [ "$ST" = "GROUP_HANDSHAKE" ]; then
-					sup=0
-					if [ "$sbust" = "0" ]; then
-						sbust=$tick
-						lg "sta busy st=$ST"
-					elif [ $((tick - sbust)) -ge 4 ]; then
-						sbust=0
-						stfail=$((stfail + 1))
-						lg "sta stuck st=$ST n=$stfail"
+			if [ "$STA_ON" = "1" ]; then
+				WN=$(ubus call network.wireless status 2>/dev/null)
+				SC_DEV=""
+				SC_S=""
+				for SSH in $(sta_list); do
+					[ "$(uci -q get "wireless.$SSH.disabled")" = "1" ] && continue
+					SDV=$(uci -q get "wireless.$SSH.device")
+					[ -n "$SDV" ] || continue
+					SB=$(uci -q get "wireless.$SSH.bssid")
+					SQ=$(uci -q get "wireless.$SSH.ssid")
+					[ -n "$SB" ] || [ -n "$SQ" ] || continue
+					SX=$(printf "%s" "$WN" | jget "@.$SDV.interfaces[@.section=\"$SSH\"].section")
+					SF=$(printf "%s" "$WN" | jget "@.$SDV.interfaces[@.section=\"$SSH\"].ifname")
+					if [ -z "$SX" ] || [ -z "$SF" ]; then
+						[ -f "$RUN/$SSH.empty" ] || { touch "$RUN/$SSH.empty"; lg "sta $SSH read empty, skip"; }
+						continue
 					fi
-				else
-					sup=0
-					sbust=0
-					stfail=$((stfail + 1))
-					[ "$stfail" -eq 1 ] && lg "sta bad st=$ST stage=$ststage"
-				fi
-				if [ "$stfail" -ge 3 ]; then
-					if [ "$AP_ON" = "1" ] && ! aok; then
-						[ "$stfail" -lt 9 ] && lg "sta held, ap not ok"
-						stfail=9
+					SV=$(ubus call iwinfo info "{\"device\":\"$SF\"}" 2>/dev/null | jget "@.signal")
+					if [ -z "$SV" ]; then
+						[ -f "$RUN/$SSH.empty" ] || { touch "$RUN/$SSH.empty"; lg "sta $SSH signal empty, skip"; }
+						continue
+					fi
+					rm -f "$RUN/$SSH.empty"
+					SST=unassoc
+					dbm "$SV" && SST=up
+					if [ "$SST" = "up" ]; then
+						if [ -f "$RUN/$SSH.down" ]; then
+							lg "sta up $SSH if=$SF sig=$SV"
+							rm -f "$RUN/$SSH.down"
+						fi
+						mark "$SSH.miss" 0
+						continue
+					fi
+					if [ ! -f "$RUN/$SSH.down" ]; then
+						touch "$RUN/$SSH.down"
+						lg "sta down $SSH st=$SST if=$SF sdv=$SDV wn=${#WN} sx=${#SX}"
+					fi
+					if [ "$(stamp "$SSH.rc")" = "0" ]; then
+						aok || { lg "sta $SSH $SST first, ap not ok, hold"; continue; }
+						mark "$SSH.rc" "$(now)"
+						lg "sta $SSH $SST first, reassoc if=$SF"
+						if rc "$SF" "$SDV" "$SSH"; then
+							lg "sta $SSH reassoc ok $SF"
+						else
+							lg "sta $SSH reassoc failed, ap kept"
+						fi
+						continue
+					fi
+					[ $(( $(now) - $(stamp "$SSH.scan") )) -ge "$SCANIV" ] || continue
+					mark "$SSH.scan" "$(now)"
+					if ! scan_of "$SDV"; then
+						lg "sta $SSH $SST scan fail, hold"
+						continue
+					fi
+					if [ -z "$(printf "%s" "$SC_S" | jget "@.results[0].bssid")" ]; then
+						lg "sta $SSH $SST scan empty, hold"
+						continue
+					fi
+					SPS=$(peer_sig "$SB" "$SQ")
+					if [ -z "$SPS" ]; then
+						SM=$(( $(stamp "$SSH.miss") + 1 ))
+						[ "$SM" -gt "$MISS" ] && SM=$MISS
+						mark "$SSH.miss" "$SM"
+						lg "sta $SSH $SST peer miss $SM/$MISS"
+						if [ "$SM" -ge "$MISS" ]; then
+							mark "$SSH.miss" 0
+							mark "$SSH.scan" $(( $(now) + 600 ))
+							lg "sta $SSH $SST peer offline, hold ap"
+						fi
+						continue
+					fi
+					mark "$SSH.miss" 0
+					if ! dbm "$SPS"; then
+						lg "sta $SSH $SST peer sig invalid, hold"
+						continue
+					fi
+					if [ "$SPS" -lt "$MINRSSI" ]; then
+						lg "sta $SSH $SST peer weak $SPS, hold"
+						continue
+					fi
+					[ $(( $(now) - $(stamp "$SSH.rc") )) -lt "$RELOADCD" ] && continue
+					aok || { lg "sta $SSH unassoc, ap not ok, hold"; continue; }
+					mark "$SSH.rc" "$(now)"
+					lg "sta $SSH unassoc if=$SF peer=$SPS, reassoc"
+					if rc "$SF" "$SDV" "$SSH"; then
+						lg "sta $SSH reassoc ok $SF"
 					else
-						stfail=0
-						ststage=$((ststage + 1))
-						[ "$ststage" -gt 3 ] && ststage=3
-						sheal "$ststage"
-						if [ "$ststage" -eq 3 ]; then
-							sback=$((sback + 1))
-							[ "$sback" -gt 4 ] && sback=4
-							case "$sback" in
-							1) stcool=$((tick + 4)) ;;
-							2) stcool=$((tick + 8)) ;;
-							3) stcool=$((tick + 16)) ;;
-							4) stcool=$((tick + 40)) ;;
-							esac
-						fi
-						sleep 5
-						if sok; then
-							lg "sta healed stage=$ststage"
-							ststage=0
-							stfail=0
-							sback=0
-							stcool=0
-							sbust=0
-						fi
+						lg "sta $SSH reassoc failed, ap kept"
 					fi
-				fi
+					break
+				done
 			fi
 			sleep 15
 		done'
