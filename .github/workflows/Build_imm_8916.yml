@@ -157,10 +157,6 @@ jobs:
         cd openwrt
         ./scripts/feeds install -a -f
 
-    - name: remove warning
-      run: |
-        chmod 755 $GITHUB_WORKSPACE/scripts/diy-part.sh
-        $GITHUB_WORKSPACE/scripts/diy-part.sh
 
     - name: Load custom DIY_P2_SH
       run: |
