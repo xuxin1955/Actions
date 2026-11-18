@@ -177,30 +177,23 @@ jobs:
         cd openwrt
         make defconfig V=s
 
-    - name: Cache ccache
+    - name: Cache host tools
       uses: actions/cache@v5
       with:
-        path: /mnt/openwrt/.ccache
-        key: ccache-msm8916-${{ github.run_id }}
-        restore-keys: |
-          ccache-msm8916-
+        path: |
+          /mnt/openwrt/staging_dir/host
+          /mnt/openwrt/build_dir/host
+        key: tools-v1
+        restore-keys: tools-
 
-    - name: Setup ccache
-      run: |
-       mkdir -p /mnt/openwrt/.ccache
-       export CCACHE_DIR=/mnt/openwrt/.ccache
-       export CCACHE_BASEDIR=/mnt/openwrt
-       export CCACHE_NOHASHDIR=true
-       echo "CCACHE_DIR=/mnt/openwrt/.ccache" >> "$GITHUB_ENV"
-       echo "CCACHE_BASEDIR=/mnt/openwrt" >> "$GITHUB_ENV"
-       echo "CCACHE_NOHASHDIR=true" >> "$GITHUB_ENV"
-       ccache -M 10G
-       ccache -o compression=true
-       ccache -o compression_level=1
-       ccache -o inode_cache=false
-       ccache -o compiler_check=content
-       ccache -o sloppiness=file_stat_matches,include_file_ctime,include_file_mtime,time_macros,pch_defines
-       ccache -p | grep -E "max_size|cache_dir"
+    - name: Cache toolchain
+      uses: actions/cache@v5
+      with:
+        path: |
+          /mnt/openwrt/staging_dir/toolchain-*
+          /mnt/openwrt/build_dir/toolchain-*
+        key: tc-v1
+        restore-keys: tc-
 
     - name: 查看 openwrt 目录
       run: |
@@ -246,9 +239,6 @@ jobs:
       run: |
         cd openwrt
 
-        echo "===== ccache BEFORE ====="
-        ccache --show-stats
-
         echo -e "$(nproc) thread compile"
 
         set +e
@@ -275,8 +265,6 @@ jobs:
         echo "===== 产物清单 ====="
         ls -1 bin/targets/msm89xx/msm8916/ 2>/dev/null || true
         echo "sysupgrade 数量: $(ls -1 bin/targets/msm89xx/msm8916/*squashfs-sysupgrade.bin 2>/dev/null | wc -l)"
-        echo "ccache AFTER"
-        ccache --show-stats
       shell: bash
 
     - name: df -hT
