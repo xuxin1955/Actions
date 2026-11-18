@@ -183,7 +183,7 @@ jobs:
         path: |
           /mnt/openwrt/staging_dir/host
           /mnt/openwrt/build_dir/host
-        key: tools-v1
+        key: tools-${{ github.run_id }}
         restore-keys: tools-
 
     - name: Cache toolchain
@@ -192,7 +192,7 @@ jobs:
         path: |
           /mnt/openwrt/staging_dir/toolchain-*
           /mnt/openwrt/build_dir/toolchain-*
-        key: tc-v1
+        key: tc-${{ github.run_id }}
         restore-keys: tc-
 
     - name: 查看 openwrt 目录
