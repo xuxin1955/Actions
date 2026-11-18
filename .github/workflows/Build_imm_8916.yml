@@ -64,9 +64,13 @@ jobs:
         tools-cache: true
 
     - name: apt update
+      timeout-minutes: 15
+      env:
+         DEBIAN_FRONTEND: noninteractive
+         NEEDRESTART_MODE: a
       run: |
         sudo -E apt-get -y update
-        sudo -E apt-get -y install $(curl -fsSL https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt)
+        sudo -E apt-get -y --no-install-recommends install $(curl -fsSL https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt)
 
     - name: mkbootimg build
       run: |
