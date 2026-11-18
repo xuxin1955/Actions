@@ -51,7 +51,7 @@ jobs:
         large-packages: false
         swap-storage: false
         docker-images: false
-        tools-cache: true
+        tools-cache: false
 
     - name: space usage check
       run: df -H
