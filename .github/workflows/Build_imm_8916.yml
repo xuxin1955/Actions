@@ -61,16 +61,18 @@ jobs:
         large-packages: false
         swap-storage: false
         docker-images: false
-        tools-cache: true
+        tools-cache: false
 
-    - name: apt update
+    - name: deps
       timeout-minutes: 15
       env:
-         DEBIAN_FRONTEND: noninteractive
-         NEEDRESTART_MODE: a
+        DEBIAN_FRONTEND: noninteractive
+        NEEDRESTART_MODE: a
       run: |
+        sudo sed -i -E 's|^URIs: .*|URIs: https://mirrors.aliyun.com/ubuntu/|' /etc/apt/sources.list.d/ubuntu.sources
+        echo "https://mirrors.aliyun.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt
         sudo -E apt-get -y update
-        sudo -E apt-get -y --no-install-recommends install $(curl -fsSL https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt)
+        sudo -E timeout 480 apt-get -y --no-install-recommends install $(curl -fsSL https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt)
 
     - name: mkbootimg build
       run: |
