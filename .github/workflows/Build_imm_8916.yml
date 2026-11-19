@@ -363,7 +363,7 @@ jobs:
           echo "- 内核版本: ${KVER:-未知}"
           echo "- 管理地址: 192.168.10.1"
           echo "- 默认账号: root / 空密码"
-          echo "- 源码: $(echo "${{ env.REPO_URL }}" | sed "s#https://github.com/##")"
+          echo "- 源码: ${{ env.REPO_URL }}"
           echo "- 分支: ${{ env.REPO_BRANCH }}"
           echo ""
           echo "<details>"
