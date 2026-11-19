@@ -346,27 +346,87 @@ jobs:
 
     - name: Generate release tag
       id: tag
+      env:
+        MIRROR: https://gh-proxy.com/
       run: |
-        echo "release_tag=MSM8916-$(date +%Y.%m.%d)-V${{ github.run_number }}" >> $GITHUB_OUTPUT
-        echo "release_name=MSM8916-$(date +%Y.%m.%d-%H%M)" >> $GITHUB_OUTPUT
-        touch release.txt
-        echo "" >> release.txt
+        MIRROR="${MIRROR:-https://gh-proxy.com/}"
+        TAG="MSM8916-$(date +%Y.%m.%d)-V${GITHUB_RUN_NUMBER}"
+        NAME="MSM8916-$(date +%Y.%m.%d-%H%M)"
+        { echo "release_tag=$TAG"; echo "release_name=$NAME"; } >> $GITHUB_OUTPUT
+
+        KVER=$(grep -h "kmod-usb-core" ${{ env.FIRMWARE }}/*.manifest 2>/dev/null | awk -F' - ' '{print $2}' | grep -oP '[0-9]+\.[0-9]+(\.[0-9]+)?([-~]?rc[0-9]+)?' | head -1 || true)
+
         {
-        echo "## 高通8916系列 immortalwrt" >> release.txt
-        echo "- 编译时间: $(date +"%Y%m%d %H:%M:%S")" >> release.txt
-        echo "- 编译机型: ${{ env.ALL_DEVICES }}" >> release.txt
-        echo "- 管理地址: 192.168.10.1" >> release.txt
-        echo "- 默认用户: root" >> release.txt
-        echo "- 默认密码: 空" >> release.txt
-        echo "- 源码仓库: ${{ env.REPO_URL }}" >> release.txt
-        echo "- 分支: ${{ env.REPO_BRANCH }}" >> release.txt
-        echo "- 内核版本: $(grep -h "kmod-usb-core" ${{ env.FIRMWARE }}/*.manifest 2>/dev/null | awk -F' - ' '{print $2}' | grep -oP '[0-9]+\.[0-9]+(\.[0-9]+)?([-~]?rc[0-9]+)?' | head -1)"
-        echo "" >> release.txt
-        echo "### 主要插件"
-        echo "#### luci-app 系列"
-        grep -h "luci-app-" ${{ env.FIRMWARE }}/*.manifest 2>/dev/null | awk -F':' '{print $NF}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -oP 'luci-app-[a-zA-Z0-9_-]+' | sort -u | sed 's/^/- /'
-        } >> release.txt
+          echo "## 高通8916系列 immortalwrt"
+          echo ""
+          echo "- 编译时间: $(date +"%Y-%m-%d %H:%M")"
+          echo "- 内核版本: ${KVER:-未知}"
+          echo "- 管理地址: 192.168.10.1"
+          echo "- 默认账号: root / 空密码"
+          echo "- 源码: $(echo "${{ env.REPO_URL }}" | sed "s#https://github.com/##")"
+          echo "- 分支: ${{ env.REPO_BRANCH }}"
+          echo ""
+          echo "<details>"
+          echo "<summary>支持机型</summary>"
+          echo ""
+          for m in ${{ env.ALL_DEVICES }}; do echo "- ${m}"; done
+          echo ""
+          echo "</details>"
+          echo ""
+          echo "<details>"
+          echo "<summary>主要插件</summary>"
+          echo ""
+          grep -h "luci-app-" ${{ env.FIRMWARE }}/*.manifest 2>/dev/null | grep -oP 'luci-app-[a-zA-Z0-9_-]+' | sort -u | sed 's/^/- /' || true
+          echo ""
+          echo "</details>"
+          echo ""
+          echo "<details>"
+          echo "<summary>固件下载 · 点击大小直接下载（国内加速）</summary>"
+          echo ""
+          echo "> 蓝色数字是文件大小，点它直接开始下载。"
+          echo ">"
+          echo "> 点击后可能需要等待几秒才开始下载，请耐心等待，不要重复点击。"
+          echo ""
+          MATCH=0
+          ROWS=""
+          for m in ${{ env.ALL_DEVICES }}; do
+            line="| **${m}** "
+            for t in sysupgrade.bin system.img boot.img; do
+              f=$(ls ${{ env.FIRMWARE }}/*openstick-${m}-squashfs-"${t}" 2>/dev/null | head -1 || true)
+              [ -n "${f}" ] || f=$(ls ${{ env.FIRMWARE }}/*openstick-${m}-*"${t}" 2>/dev/null | head -1 || true)
+              if [ -n "${f}" ]; then
+                MATCH=$((MATCH+1))
+                n=$(basename "${f}")
+                sz=$(LC_ALL=C du -h "${f}" | cut -f1)
+                u="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${n}"
+                line="${line}| [${sz}](${MIRROR}${u}) "
+              else
+                line="${line}| - "
+              fi
+            done
+            ROWS="${ROWS}${line}|"$'\n'
+          done
+
+          if [ "${MATCH}" -eq 0 ]; then
+            echo "> 固件文件名与机型未匹配，请直接在下方 Assets 列表下载。"
+          else
+            echo "| 机型 | sysupgrade.bin | system.img | boot.img |"
+            echo "|---|---|---|---|"
+            printf '%s' "${ROWS}"
+          fi
+          echo ""
+          echo "原始地址见下方 Assets 列表。"
+          echo ""
+          echo "</details>"
+        } > release.txt
         echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Drop stale release with same tag
+      if: steps.tag.outputs.status == 'success'
+      continue-on-error: true
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: gh release delete "${{ steps.tag.outputs.release_tag }}" --yes --cleanup-tag
 
     - name: Generate file list
       run: |
@@ -391,6 +451,7 @@ jobs:
       with:
         tag: ${{ steps.tag.outputs.release_tag }}
         name: ${{ steps.tag.outputs.release_name }}
+        commit: ${{ github.sha }}
         bodyFile: release.txt
         artifacts: ${{ env.FIRMWARE }}/*
         allowUpdates: true
