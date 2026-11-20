@@ -52,12 +52,12 @@ jobs:
           echo "::error::patch not found: $P"
           exit 1
         fi
-        if ! git apply --check --verbose "$P"; then
+        if ! git -c core.whitespace=-space-before-tab apply --check --verbose "$P"; then
           echo "::error::patch does not apply, base is 15d4ccc, HEAD is $(git rev-parse --short=7 HEAD)"
           git log --oneline -3
           exit 1
         fi
-        git apply --verbose "$P"
+        git -c core.whitespace=-space-before-tab apply --verbose "$P"
         if [ "$(grep -c . integration/openwrt/series)" -ne 5 ]; then
           echo "::error::unexpected series content after applying patch"
           cat integration/openwrt/series
@@ -228,7 +228,7 @@ jobs:
       run: |
         TAG=$(date +"%Y.%m.%d-%H%M")
         echo "release_tag=$TAG" >> $GITHUB_OUTPUT
-        echo "release_name=SY108 华为5G通讯壳 OpenWrt 固件 (UDX710) $TAG" >> $GITHUB_OUTPUT
+        echo "release_name=SY108 华为5G通讯壳 ImmortalWrt 固件 (UDX710) $TAG" >> $GITHUB_OUTPUT
         mkdir -p firmware
         cp -f "$SY108_OUT/images/main/boot.bin" firmware/main-boot.bin 2>/dev/null || true
         cp -f "$SY108_OUT/images/main/sysupgrade.bin" firmware/sysupgrade.bin 2>/dev/null || true
@@ -251,24 +251,28 @@ jobs:
         echo "" >> release.txt
         echo "- 源码: $REPO_URL" >> release.txt
         echo "- 分支: $REPO_BRANCH" >> release.txt
+        echo "- 基线: ImmortalWrt" >> release.txt
+        echo "- 分支: master" >> release.txt
         echo "- 内核版本: $KVER" >> release.txt
         echo "- 管理地址: 192.168.66.1" >> release.txt
         echo "- 登录账号: root" >> release.txt
         echo "- 密码: admin" >> release.txt
         echo "" >> release.txt
+        echo "<details>" >> release.txt
+        echo "<summary>主要插件</summary>" >> release.txt
+        echo "" >> release.txt
         for m in firmware/*.manifest; do
           [ -f "$m" ] || continue
-          P=$(basename "$m" .manifest)
           LIST=$(awk '{print $1}' "$m" \
             | sed -E 's/:.*$//; s/-[0-9][^-]*$//' \
             | grep -E '^(luci-app|udx)-' \
             | sort -u || true)
-          echo "#### 插件清单" >> release.txt
           if [ -n "$LIST" ]; then
             printf '%s\n' "$LIST" | sed 's/^/- /' >> release.txt
           fi
-          echo "" >> release.txt
         done
+        echo "" >> release.txt
+        echo "</details>" >> release.txt
         rm -f firmware/main-build.json
         rm -f firmware/*.manifest
         ls -l firmware
@@ -369,11 +373,14 @@ jobs:
         if [ "$ok" = 1 ]; then
           {
             [ -z "$(tail -n1 release.txt 2>/dev/null)" ] || echo ""
-            echo "### U-Boot 文件"
+            echo "<details>"
+            echo "<summary>U-Boot 文件</summary>"
             echo ""
             echo "| 机型 | 文件 | 状态 | sha256 |"
             echo "|---|---|---|---|"
             cat uboot-rows.md
+            echo ""
+            echo "</details>"
           } >> release.txt
         fi
 
@@ -389,6 +396,48 @@ jobs:
         rm -f sha256sums.txt
         echo "--- 最终发布文件"
         ls -l
+
+    - name: Append download acceleration
+      if: always() && !cancelled() && env.UPLOAD_RELEASE == 'true'
+      env:
+        MIRROR: https://gh-proxy.com/
+        TAG: ${{ steps.tag.outputs.release_tag }}
+      run: |
+        [ -f release.txt ] || exit 0
+        FILES=$(find firmware -maxdepth 1 -type f -iname '*.bin' -printf '%f\n' 2>/dev/null | sort)
+        [ -n "$FILES" ] || exit 0
+        {
+          echo ""
+          echo "<details>"
+          echo "<summary>固件下载 · 点击大小直接下载（国内加速）</summary>"
+          echo ""
+          echo "> 蓝色数字是文件大小，点它直接开始下载。"
+          echo ">"
+          echo "> 点击后可能需要等待几秒才开始下载，请耐心等待，不要重复点击。"
+          echo ""
+          echo "| 文件 | 说明 | 大小 |"
+          echo "|---|---|---|"
+        } >> release.txt
+        printf '%s\n' "$FILES" | while IFS= read -r n; do
+          [ -n "$n" ] || continue
+          f="firmware/$n"
+          sz=$(LC_ALL=C du -h "$f" | cut -f1)
+          case "$n" in
+            sysupgrade.bin) desc="系统固件 sysupgrade" ;;
+            recovery.bin)   desc="恢复固件 recovery" ;;
+            uboot-*.bin)    desc="U-Boot ${n#uboot-}" ;;
+            *)              desc="固件" ;;
+          esac
+          u="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${n}"
+          echo "| \`$n\` | $desc | [${sz}](${MIRROR}${u}) |" >> release.txt
+        done
+        {
+          echo ""
+          echo "原始地址见下方 Assets 列表。"
+          echo ""
+          echo "</details>"
+        } >> release.txt
+        cat release.txt
 
     - name: Upload to release
       if: always() && !cancelled() && env.UPLOAD_RELEASE == 'true' && hashFiles('firmware/*.bin') != ''
