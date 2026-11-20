@@ -34,6 +34,37 @@ jobs:
     - name: Checkout
       uses: actions/checkout@main
 
+    - name: Clone source code
+      id: codes
+      run: |
+        git clone --depth 1 "$REPO_URL" -b "$REPO_BRANCH" sy108
+        cd sy108
+        git log --oneline -1
+        echo "SY108_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+        cd ..
+        echo "status=success" >> "$GITHUB_OUTPUT"
+
+    - name: Verify adaptation patch
+      working-directory: ./sy108
+      run: |
+        P="$GITHUB_WORKSPACE/scripts/sy108/sy108-imm-master.patch"
+        if [ ! -f "$P" ]; then
+          echo "::error::patch not found: $P"
+          exit 1
+        fi
+        if ! git apply --check --verbose "$P"; then
+          echo "::error::patch does not apply, base is 15d4ccc, HEAD is $(git rev-parse --short=7 HEAD)"
+          git log --oneline -3
+          exit 1
+        fi
+        git apply --verbose "$P"
+        if [ "$(grep -c . integration/openwrt/series)" -ne 5 ]; then
+          echo "::error::unexpected series content after applying patch"
+          cat integration/openwrt/series
+          exit 1
+        fi
+        cat integration/openwrt/series
+
     - name: Show hardware info
       run: |
         chmod 755 ./scripts/show_hardware_info.sh
@@ -70,17 +101,6 @@ jobs:
           sudo -E apt-get -y install --no-install-recommends $PKGS
         }
         sudo timedatectl set-timezone "${TZ}"
-        echo "status=success" >> "$GITHUB_OUTPUT"
-
-    - name: Clone source code
-      id: codes
-      if: steps.init.outputs.status == 'success' && success()
-      run: |
-        git clone --depth 1 "$REPO_URL" -b "$REPO_BRANCH" sy108
-        cd sy108
-        git log --oneline -1
-        echo "SY108_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-        cd ..
         echo "status=success" >> "$GITHUB_OUTPUT"
 
     - name: Patch build scripts for CI

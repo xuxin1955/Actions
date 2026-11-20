@@ -195,14 +195,15 @@ jobs:
             mkdir -p "$GITHUB_WORKSPACE/firmware/$D" "$GITHUB_WORKSPACE/meta"
             cat "$TGT"/*.manifest > "$GITHUB_WORKSPACE/meta/$D.manifest" 2>/dev/null || true
             find "$TGT" -maxdepth 1 -type f \
-              ! -name '*.manifest' \
-              ! -name '*.buildinfo' \
-              ! -name 'sha256sums' \
-              ! -name '*.json' \
-              ! -name '*.dtb' \
-              ! -name '*.txt' \
-              ! -name '*.md5' \
-              ! -name '*.sha256' \
+              ! -iname '*.manifest' \
+              ! -iname '*.buildinfo' \
+              ! -iname '*.json' \
+              ! -iname 'sha256sums' \
+              ! -iname '*.md5' \
+              ! -iname '*.sha256' \
+              ! -iname '*.txt' \
+              ! -iname '*.dtb' \
+              \( -iname '*.bin' -o -iname '*.itb' -o -iname '*.fip' -o -iname '*ubi*' \) \
               -exec cp -t "$GITHUB_WORKSPACE/firmware/$D/" {} +
             [ -n "$(ls -A "$GITHUB_WORKSPACE/firmware/$D")" ] || exit 1
           ) || rc=$?
@@ -231,28 +232,66 @@ jobs:
     - name: Generate release tag
       id: tag
       if: env.UPLOAD_RELEASE == 'true' && steps.compile.outputs.status == 'success'
+      env:
+        MIRROR: https://gh-proxy.com/
       run: |
-        echo "release_tag=$(date +%Y.%m.%d)-V${{ github.run_number }}" >> $GITHUB_OUTPUT
-        echo "release_name=$(date +%Y.%m.%d-%H%M)" >> $GITHUB_OUTPUT
-        echo "🚀 ImmortalWrt firmware (贝尔光猫)" >> release.txt
-        echo "----------------------" >> release.txt
-        echo "设备型号:" >> release.txt
-        while read -r x; do echo "  - $x" >> release.txt; done < built.txt
-        if [ -s failed.txt ]; then
-          echo "本次编译失败: $(tr '\n' ' ' < failed.txt)" >> release.txt
-        fi
-        echo "时间: $(date +"%Y-%m-%d %H:%M")" >> release.txt
-        echo "内核版本: $(grep -h "kmod-usb-core" meta/*.manifest 2>/dev/null | awk -F' - ' '{print $2}' | grep -oP '[5-6]\.[0-9]+\.[0-9]+' | head -1 || echo '未知')" >> release.txt
-        echo "源码仓库: ${{ env.REPO_URL }}" >> release.txt
-        echo "分支: ${{ env.REPO_BRANCH }}" >> release.txt
-        echo "管理地址: 192.168.10.1" >> release.txt
-        echo "默认账号: root / 无密码" >> release.txt
-        echo "" >> release.txt
-        echo "📌 bug反馈交流 QQ 群: 1020967055" >> release.txt
-        echo "" >> release.txt
-        echo "### 主要插件" >> release.txt
-        echo "#### luci-app 系列" >> release.txt
-        grep -h "luci-app-" meta/*.manifest 2>/dev/null | awk -F':' '{print $NF}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -oP 'luci-app-[a-zA-Z0-9_-]+' | sort -u | sed 's/^/- /' >> release.txt
+        TAG="$(date +%Y.%m.%d-%H%M)"
+        echo "release_tag=$TAG" >> $GITHUB_OUTPUT
+        echo "release_name=$TAG" >> $GITHUB_OUTPUT
+        MIRROR="${MIRROR:-https://gh-proxy.com/}"
+        {
+          echo "## 🚀 ImmortalWrt firmware (贝尔光猫)"
+          echo ""
+          echo "- 编译时间: $(date +"%Y-%m-%d %H:%M")"
+          echo "- 内核版本: $(grep -h "kmod-usb-core" meta/*.manifest 2>/dev/null | awk -F' - ' '{print $2}' | grep -oP '[5-6]\.[0-9]+\.[0-9]+' | head -1 || echo '未知')"
+          echo "- 源码仓库: ${REPO_URL}"
+          echo "- 分支: ${REPO_BRANCH}"
+          echo "- 管理地址: 192.168.10.1"
+          echo "- 默认账号: root / 无密码"
+          echo ""
+          echo "📌 bug反馈交流 QQ 群: 1020967055"
+          echo ""
+          echo "<details>"
+          echo "<summary>支持机型</summary>"
+          echo ""
+          while read -r x; do echo "- $x"; done < built.txt
+          if [ -s failed.txt ]; then
+            echo ""
+            echo "本次编译失败: $(tr '\n' ' ' < failed.txt)"
+          fi
+          echo ""
+          echo "</details>"
+          echo ""
+          echo "<details>"
+          echo "<summary>主要插件</summary>"
+          echo ""
+          grep -h "luci-app-" meta/*.manifest 2>/dev/null | awk -F':' '{print $NF}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -oP 'luci-app-[a-zA-Z0-9_-]+' | sort -u | sed 's/^/- /'
+          echo ""
+          echo "</details>"
+          echo ""
+          echo "<details>"
+          echo "<summary>固件下载 · 点击大小直接下载（国内加速）</summary>"
+          echo ""
+          echo "> 蓝色数字是文件大小，点它直接开始下载。"
+          echo "> 点击后可能需要等待几秒才开始下载，请耐心等待，不要重复点击。"
+          echo ""
+          echo "| 机型 | 固件 | 大小 |"
+          echo "|---|---|---|"
+          for D in $ALL_DEVICES; do
+            [ -d "firmware/$D" ] || continue
+            for f in firmware/$D/*; do
+              [ -f "$f" ] || continue
+              n=$(basename "$f")
+              sz=$(du -h "$f" | cut -f1)
+              u="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${n}"
+              echo "| **$D** | $n | [${sz}](${MIRROR}${u}) |"
+            done
+          done
+          echo ""
+          echo "原始地址见下方 Assets 列表。"
+          echo ""
+          echo "</details>"
+        } > release.txt
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Generate file list
