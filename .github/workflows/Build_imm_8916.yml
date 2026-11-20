@@ -465,7 +465,7 @@ jobs:
         draft: false
         prerelease: false
     - name: Cleanup old releases (keep current only)
-      if: always()
+      if: success()
       continue-on-error: true
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -478,25 +478,26 @@ jobs:
           echo "::warning::本次未产出有效固件(tag=${SELF_TAG:-none})，跳过清理，历史 Release 一律保留"
           exit 0
         fi
-        echo "本次 Release 有效: $SELF_TAG，开始清理旧 Release"
+        echo "本次 Release 有效: $SELF_TAG，仅清理本项目 MSM8916-* 旧 Release"
 
-        gh api "repos/$R/releases?per_page=100" --paginate \
-          --jq ".[]|select(.tag_name|test(\"^(MSM8916-)?20[0-9][0-9][.][0-9][0-9][.][0-9][0-9]\"))|select(.tag_name!=\"$SELF_TAG\")|.tag_name" |
-        while read -r tag; do
-          [ -n "$tag" ] || continue
-          if gh release delete "$tag" --repo "$R" --yes --cleanup-tag; then
-            echo "Deleted release + tag: $tag"
-          else
-            echo "::warning::release $tag delete failed"
-          fi
-        done
+        gh api "repos/$R/releases?per_page=100" --paginate --jq '.[].tag_name' \
+        | grep -E '^MSM8916-' \
+        | grep -v -x -F "$SELF_TAG" \
+        | while read -r tag; do
+            [ -n "$tag" ] || continue
+            if gh release delete "$tag" --repo "$R" --yes --cleanup-tag; then
+              echo "Deleted release + tag: $tag"
+            else
+              echo "::warning::release $tag delete failed"
+            fi
+          done
 
         comm -23 \
           <(gh api "repos/$R/git/refs/tags" --paginate \
-              --jq '.[].ref|sub("^refs/tags/";"")' |
-              grep -E '^(MSM8916-)?20[0-9][0-9][.][0-9][0-9][.][0-9][0-9]' | sort -u) \
+              --jq '.[].ref|sub("^refs/tags/";"")' | grep -E '^MSM8916-' | sort -u) \
           <(gh api "repos/$R/releases?per_page=100" --paginate --jq '.[].tag_name' | sort -u) |
         while read -r tag; do
+          [ -n "$tag" ] || continue
           gh api -X DELETE "repos/$R/git/refs/tags/$tag" >/dev/null 2>&1 \
             && echo "Deleted orphan tag: $tag"
         done
