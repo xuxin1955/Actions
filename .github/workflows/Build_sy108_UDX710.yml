@@ -82,20 +82,11 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a -f
 
-    - name: Cache dl
-      id: cache-dl
-      uses: actions/cache@v4
-      with:
-        path: openwrt/dl
-        key: sy108-dl-${{ hashFiles('openwrt/feeds.conf.default') }}
-        restore-keys: sy108-dl-
-
     - name: Download package
       working-directory: ./openwrt
       run: |
         cp "$GITHUB_WORKSPACE/config/sy108.config" .config
         make defconfig
-        [ "${{ steps.cache-dl.outputs.cache-hit }}" = "true" ] && echo "cache hit" || echo "cache miss"
         make download -j$(nproc) -k V=s 2>&1 | tee /tmp/dl.log
         if grep -qiE 'Hash verification failed|checksum mismatch' /tmp/dl.log; then
           echo "::warning::download 有校验告警，继续尝试编译"
