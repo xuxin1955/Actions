@@ -329,6 +329,9 @@ jobs:
     if: needs.build.result == 'success' && !cancelled()
     steps:
 
+    - name: Checkout
+      uses: actions/checkout@main
+
     - name: Collect firmware artifacts
       uses: actions/download-artifact@main
       with:
