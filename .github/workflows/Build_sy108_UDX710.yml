@@ -103,6 +103,8 @@ jobs:
       run: |
         cp "$GITHUB_WORKSPACE/config/sy108.config" .config
         make defconfig
+        mkdir -p "$GITHUB_WORKSPACE/build-config"
+        cp -f .config "$GITHUB_WORKSPACE/build-config/main.config"
         make package/sy108-image/host/compile
         ls -l staging_dir/host/share/sy108-image/tools/image/capsule.py
         set +e
@@ -133,6 +135,7 @@ jobs:
       run: |
         cp "$GITHUB_WORKSPACE/config/sy108_rec.config" .config
         make defconfig
+        cp -f .config "$GITHUB_WORKSPACE/build-config/recovery.config"
         make package/clean
         set +e
         make -j$JOBS
@@ -174,6 +177,16 @@ jobs:
       with:
         name: SY108_recovery_${{ env.IMM_COMMIT }}
         path: ${{ env.FIRMWARE_DIR }}/recovery.bin
+
+    - name: 自动上传最新源码生成.config编译配置
+      uses: actions/upload-artifact@main
+      if: always() && !cancelled()
+      with:
+        name: build-config
+        path: |
+          ${{ github.workspace }}/build-config/main.config
+          ${{ github.workspace }}/build-config/recovery.config
+        include-hidden-files: true
 
     - name: Prepare release
       id: tag
