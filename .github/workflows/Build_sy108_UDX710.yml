@@ -199,6 +199,7 @@ jobs:
         mkdir -p firmware
         cp -f "$FIRMWARE_DIR/sysupgrade.bin" firmware/sysupgrade.bin 2>/dev/null || true
         cp -f "$FIRMWARE_DIR/recovery.bin"  firmware/recovery.bin  2>/dev/null || true
+        cp -f "$GITHUB_WORKSPACE/scripts/spd_dump.zip" "firmware/刷机小工具-spd_dump.zip" 2>/dev/null || true
 
         : > release.txt
         MISS=""
@@ -207,6 +208,7 @@ jobs:
         echo "> **编译固件，待验证**" >> release.txt
         echo ">" >> release.txt
         echo "> 刷机提前备份原厂整套分区" >> release.txt
+        echo "> 刷机小工具见下方 Assets：\`刷机小工具-spd_dump.zip\`" >> release.txt
         if [ -n "$MISS" ]; then
           echo ">" >> release.txt
           echo "> 本次缺少:$MISS，该部分构建未成功，请勿按完整流程刷机。下载前先看下面 Assets 列表。" >> release.txt
@@ -333,7 +335,7 @@ jobs:
         TAG: ${{ steps.tag.outputs.release_tag }}
       run: |
         [ -f release.txt ] || exit 0
-        FILES=$(find firmware -maxdepth 1 -type f -iname '*.bin' -printf '%f\n' 2>/dev/null | sort)
+        FILES=$(find firmware -maxdepth 1 -type f \( -iname '*.bin' -o -iname '*.zip' \) -printf '%f\n' 2>/dev/null | sort)
         [ -n "$FILES" ] || exit 0
         {
           echo ""; echo "<details>"; echo "<summary>固件下载 · 点击大小直接下载（国内加速）</summary>"; echo ""
@@ -351,6 +353,7 @@ jobs:
             sysupgrade.bin) desc="系统固件 sysupgrade" ;;
             recovery.bin)   desc="恢复固件 recovery" ;;
             uboot-*.bin)    desc="U-Boot ${n#uboot-}" ;;
+            刷机小工具-*.zip) desc="刷机小工具 spd_dump" ;;
             *)              desc="固件" ;;
           esac
           u="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${n}"
