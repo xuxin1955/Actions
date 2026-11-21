@@ -236,7 +236,7 @@ jobs:
         done
         echo "" >> release.txt
         echo "</details>" >> release.txt
-        rm -f "$FIRMWARE_DIR"/*.manifest
+        rm -f "$FIRMWARE_DIR"/*.manifest "$FIRMWARE_DIR"/*.json
 
         ls -l firmware
         cat release.txt
