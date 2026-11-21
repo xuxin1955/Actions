@@ -1,0 +1,5424 @@
+From 0ece3bbaf9bbb875011fadfd80f4316ac9ce2d17 Mon Sep 17 00:00:00 2001
+From: jason-liu-4980 <38558962+jason-liu-4980@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 06:09:12 +0800
+Subject: [PATCH 09/11] soc: sprd: standardize SY108 peripheral and remoteproc
+ lifecycles
+
+Use standard remoteproc, NVMEM, watchdog and peripheral lifecycles.
+Prepare firmware outside the kernel and start PM_SYS after its SIPC
+receiver is installed. Retire the replaced private loaders and unused
+serial function without adding independent modem hot reset.
+---
+ drivers/devfreq/sprd-orca-ddr.c             |  188 +-
+ drivers/iio/adc/sy108-mcu.c                 |  184 +-
+ drivers/mfd/sprd-sc27xx-spi.c               |    1 +
+ drivers/nvmem/sprd-efuse.c                  |   54 +-
+ drivers/remoteproc/Kconfig                  |   20 +
+ drivers/remoteproc/Makefile                 |    2 +
+ drivers/remoteproc/udx710-modem.c           |  324 ++++
+ drivers/remoteproc/udx710-pmsys.c           |  165 ++
+ drivers/rtc/rtc-sc27xx.c                    |  330 +---
+ drivers/soc/sprd/Kconfig                    |   11 -
+ drivers/soc/sprd/Makefile                   |    2 -
+ drivers/soc/sprd/modem/cproc/Kconfig        |   10 -
+ drivers/soc/sprd/modem/cproc/Makefile       |    2 -
+ drivers/soc/sprd/modem/cproc/sprd_cproc.c   | 1846 -------------------
+ drivers/soc/sprd/modem/include/sprd_cproc.h |   94 -
+ drivers/soc/sprd/modem/sipc_v2/Kconfig      |    2 +-
+ drivers/soc/sprd/modem/sipc_v2/sipc.c       |   29 +-
+ drivers/soc/sprd/udx710-pmsys.c             |  334 ----
+ drivers/thermal/sprd_thermal.c              |    6 +-
+ drivers/tty/serial/Kconfig                  |    8 +-
+ drivers/tty/serial/sprd_serial.c            |   50 +-
+ drivers/tty/serial/sprd_serial_common.h     |   11 +
+ drivers/tty/serial/sprd_serial_ex.c         |   30 +-
+ drivers/usb/gadget/Kconfig                  |   10 -
+ drivers/usb/gadget/function/Makefile        |    2 -
+ drivers/usb/gadget/function/f_vserial.c     |  668 -------
+ drivers/watchdog/Kconfig                    |   10 +
+ drivers/watchdog/Makefile                   |    1 +
+ drivers/watchdog/sc27xx_wdt.c               |  218 +++
+ include/linux/sprd_cp.h                     |   27 -
+ include/linux/sprd_pmsys.h                  |   26 -
+ sound/soc/sprd/sprd-mcdt.c                  |   13 +
+ 32 files changed, 1002 insertions(+), 3676 deletions(-)
+ create mode 100644 drivers/remoteproc/udx710-modem.c
+ create mode 100644 drivers/remoteproc/udx710-pmsys.c
+ delete mode 100644 drivers/soc/sprd/modem/cproc/Kconfig
+ delete mode 100644 drivers/soc/sprd/modem/cproc/Makefile
+ delete mode 100644 drivers/soc/sprd/modem/cproc/sprd_cproc.c
+ delete mode 100644 drivers/soc/sprd/modem/include/sprd_cproc.h
+ delete mode 100644 drivers/soc/sprd/udx710-pmsys.c
+ delete mode 100644 drivers/usb/gadget/function/f_vserial.c
+ create mode 100644 drivers/watchdog/sc27xx_wdt.c
+ delete mode 100644 include/linux/sprd_cp.h
+ delete mode 100644 include/linux/sprd_pmsys.h
+
+diff --git a/drivers/devfreq/sprd-orca-ddr.c b/drivers/devfreq/sprd-orca-ddr.c
+index 2baa3b47e..f78137561 100644
+--- a/drivers/devfreq/sprd-orca-ddr.c
++++ b/drivers/devfreq/sprd-orca-ddr.c
+@@ -16,12 +16,9 @@
+ 
+ #define ORCA_DFS_VOTE 0x0000
+ #define ORCA_DFS_ENABLE 0x0300
+-#define ORCA_DFS_DISABLE 0x0305
+ #define ORCA_DFS_AUTO_ENABLE 0x0310
+-#define ORCA_DFS_AUTO_DISABLE 0x0315
+ #define ORCA_DFS_GET_FREQ 0x0500
+ #define ORCA_DFS_GET_AP 0x0502
+-#define ORCA_DFS_GET_CP 0x0503
+ #define ORCA_DFS_GET_TABLE 0x0505
+ #define ORCA_DFS_GET_STATUS 0x050a
+ #define ORCA_DFS_GET_AUTO 0x050b
+@@ -38,8 +35,6 @@ struct orca_ddr {
+ 	struct devfreq_dev_profile profile;
+ 	struct devfreq *devfreq;
+ 	bool connected;
+-	bool voted;
+-	u32 previous_ap_mhz;
+ 	unsigned int added_opps;
+ };
+ 
+@@ -49,9 +44,7 @@ static int orca_dfs_request(struct orca_ddr *d, u16 command, u32 value,
+ {
+ 	struct smsg message;
+ 	bool switch_command = command == ORCA_DFS_ENABLE ||
+-			      command == ORCA_DFS_DISABLE ||
+-			      command == ORCA_DFS_AUTO_ENABLE ||
+-			      command == ORCA_DFS_AUTO_DISABLE;
++			      command == ORCA_DFS_AUTO_ENABLE;
+ 	u16 success = switch_command	       ? ORCA_DFS_ENABLE_OK :
+ 		      command == ORCA_DFS_VOTE ? ORCA_DFS_VOTE_OK :
+ 						 ORCA_DFS_QUERY_OK;
+@@ -132,8 +125,6 @@ static int orca_ddr_target(struct device *dev, unsigned long *hz, u32 flags)
+ 	if (!ret) {
+ 		ret = orca_dfs_request(d, ORCA_DFS_VOTE,
+ 				       table[chosen] / ORCA_MHZ, &status);
+-		if (!ret)
+-			d->voted = true;
+ 	}
+ 	if (!ret)
+ 		ret = orca_ddr_read_hz(d, ORCA_DFS_GET_FREQ, hz);
+@@ -141,126 +132,6 @@ static int orca_ddr_target(struct device *dev, unsigned long *hz, u32 flags)
+ 	return ret;
+ }
+ 
+-static ssize_t orca_ddr_query_show(struct device *dev, u16 command,
+-				   bool frequency, char *buf)
+-{
+-	struct orca_ddr *d = dev_get_drvdata(dev);
+-	unsigned long hz = 0;
+-	u32 value = 0;
+-	int ret;
+-
+-	mutex_lock(&d->lock);
+-	if (frequency)
+-		ret = orca_ddr_read_hz(d, command, &hz);
+-	else
+-		ret = orca_dfs_request(d, command, 0, &value);
+-	mutex_unlock(&d->lock);
+-	return ret ? ret : sysfs_emit(buf, "%lu\n", frequency ? hz : value);
+-}
+-#define ORCA_DDR_ATTR(_name, _command, _frequency)                            \
+-	static ssize_t _name##_show(struct device *dev,                       \
+-				    struct device_attribute *attr, char *buf) \
+-	{                                                                     \
+-		return orca_ddr_query_show(dev, _command, _frequency, buf);   \
+-	}                                                                     \
+-	static DEVICE_ATTR_RO(_name)
+-
+-ORCA_DDR_ATTR(cp_vote_hz, ORCA_DFS_GET_CP, true);
+-
+-static ssize_t orca_ddr_switch_store(struct device *dev, const char *buf,
+-				     size_t size, bool automatic)
+-{
+-	struct orca_ddr *d = dev_get_drvdata(dev);
+-	bool enable;
+-	u32 value;
+-	u16 command;
+-	int ret = kstrtobool(buf, &enable);
+-
+-	if (ret)
+-		return ret;
+-	command = automatic ? (enable ? ORCA_DFS_AUTO_ENABLE :
+-					ORCA_DFS_AUTO_DISABLE) :
+-			      (enable ? ORCA_DFS_ENABLE : ORCA_DFS_DISABLE);
+-	mutex_lock(&d->lock);
+-	ret = orca_dfs_request(d, command, 0, &value);
+-	if (!ret)
+-		ret = orca_dfs_request(
+-			d, automatic ? ORCA_DFS_GET_AUTO : ORCA_DFS_GET_STATUS,
+-			0, &value);
+-	if (!ret && value != enable)
+-		ret = -EIO;
+-	mutex_unlock(&d->lock);
+-	return ret ? ret : size;
+-}
+-
+-#define ORCA_DDR_SWITCH(_name, _query, _automatic)                            \
+-	static ssize_t _name##_show(struct device *dev,                       \
+-				    struct device_attribute *attr, char *buf) \
+-	{                                                                     \
+-		return orca_ddr_query_show(dev, _query, false, buf);          \
+-	}                                                                     \
+-	static ssize_t _name##_store(struct device *dev,                      \
+-				     struct device_attribute *attr,           \
+-				     const char *buf, size_t size)            \
+-	{                                                                     \
+-		return orca_ddr_switch_store(dev, buf, size, _automatic);     \
+-	}                                                                     \
+-	static DEVICE_ATTR_RW(_name)
+-
+-ORCA_DDR_SWITCH(firmware_dfs_enabled, ORCA_DFS_GET_STATUS, false);
+-ORCA_DDR_SWITCH(firmware_auto_enabled, ORCA_DFS_GET_AUTO, true);
+-
+-static ssize_t ap_vote_hz_show(struct device *dev,
+-			       struct device_attribute *attr, char *buf)
+-{
+-	return orca_ddr_query_show(dev, ORCA_DFS_GET_AP, true, buf);
+-}
+-
+-static ssize_t ap_vote_hz_store(struct device *dev,
+-				struct device_attribute *attr, const char *buf,
+-				size_t size)
+-{
+-	struct orca_ddr *d = dev_get_drvdata(dev);
+-	unsigned long hz;
+-	unsigned int i;
+-	u32 value;
+-	int ret = kstrtoul(buf, 0, &hz);
+-
+-	if (ret)
+-		return ret;
+-	/*
+-	 * Zero withdraws the AP vote. A devfreq target is clamped to the minimum
+-	 * OPP and cannot express this distinct firmware operation.
+-	 */
+-	if (hz) {
+-		for (i = 0; i < d->profile.max_state; i++)
+-			if (d->profile.freq_table[i] == hz)
+-				break;
+-		if (i == d->profile.max_state)
+-			return -EINVAL;
+-	}
+-	mutex_lock(&d->lock);
+-	ret = orca_dfs_request(d, ORCA_DFS_VOTE, hz / ORCA_MHZ, &value);
+-	if (!ret) {
+-		d->voted = true;
+-		ret = orca_dfs_request(d, ORCA_DFS_GET_AP, 0, &value);
+-	}
+-	if (!ret && value != hz / ORCA_MHZ)
+-		ret = -EIO;
+-	mutex_unlock(&d->lock);
+-	return ret ? ret : size;
+-}
+-static DEVICE_ATTR_RW(ap_vote_hz);
+-
+-static struct attribute *orca_ddr_attrs[] = {
+-	&dev_attr_firmware_dfs_enabled.attr,
+-	&dev_attr_firmware_auto_enabled.attr,
+-	&dev_attr_ap_vote_hz.attr,
+-	&dev_attr_cp_vote_hz.attr,
+-	NULL,
+-};
+-ATTRIBUTE_GROUPS(orca_ddr);
+-
+ static int orca_freq_compare(const void *a, const void *b)
+ {
+ 	unsigned long x = *(const unsigned long *)a;
+@@ -283,7 +154,7 @@ static int orca_ddr_probe(struct platform_device *pdev)
+ 	struct device *dev = &pdev->dev;
+ 	struct orca_ddr *d;
+ 	unsigned long *table;
+-	u32 count, mhz, enabled, automatic;
++	u32 count, mhz, enabled, automatic, ap_vote;
+ 	int ret;
+ 	unsigned int i;
+ 
+@@ -310,15 +181,6 @@ static int orca_ddr_probe(struct platform_device *pdev)
+ 				     "PM_SYS DDR channel open failed\n");
+ 	d->connected = true;
+ 	mutex_lock(&d->lock);
+-	ret = orca_dfs_request(d, ORCA_DFS_GET_STATUS, 0, &enabled);
+-	if (ret)
+-		goto unlock;
+-	ret = orca_dfs_request(d, ORCA_DFS_GET_AUTO, 0, &automatic);
+-	if (ret)
+-		goto unlock;
+-	ret = orca_dfs_request(d, ORCA_DFS_GET_AP, 0, &d->previous_ap_mhz);
+-	if (ret)
+-		goto unlock;
+ 	for (i = 0; i < count; i++) {
+ 		ret = orca_dfs_request(d, ORCA_DFS_GET_TABLE, i, &mhz);
+ 		if (ret)
+@@ -335,6 +197,29 @@ static int orca_ddr_probe(struct platform_device *pdev)
+ 			ret = -EINVAL;
+ 			goto unlock;
+ 		}
++	/* Product default: firmware controls DDR; no AP frequency request. */
++	ret = orca_dfs_request(d, ORCA_DFS_ENABLE, 0, &enabled);
++	if (ret)
++		goto unlock;
++	ret = orca_dfs_request(d, ORCA_DFS_AUTO_ENABLE, 0, &automatic);
++	if (ret)
++		goto unlock;
++	ret = orca_dfs_request(d, ORCA_DFS_VOTE, 0, &ap_vote);
++	if (ret)
++		goto unlock;
++	ret = orca_dfs_request(d, ORCA_DFS_GET_STATUS, 0, &enabled);
++	if (ret)
++		goto unlock;
++	ret = orca_dfs_request(d, ORCA_DFS_GET_AUTO, 0, &automatic);
++	if (ret)
++		goto unlock;
++	ret = orca_dfs_request(d, ORCA_DFS_GET_AP, 0, &ap_vote);
++	if (ret)
++		goto unlock;
++	if (enabled != 1 || automatic != 1 || ap_vote) {
++		ret = -EIO;
++		goto unlock;
++	}
+ 	ret = orca_ddr_read_hz(d, ORCA_DFS_GET_FREQ, &d->profile.initial_freq);
+ 	if (!ret && !d->profile.initial_freq)
+ 		ret = -ERANGE;
+@@ -357,13 +242,13 @@ static int orca_ddr_probe(struct platform_device *pdev)
+ 		d->added_opps++;
+ 	}
+ 	/*
+-	 * Firmware's auto governor keeps running. No fabricated busy-time data
+-	 * and no AP polling daemon. Userspace governor supplies explicit votes.
++	 * Keep normal devfreq monitoring and governor semantics. The product
++	 * does not request frequencies; root can still use standard debug controls.
+ 	 */
+ 	dev_info(
+ 		dev,
+-		"PM_SYS DDR: %u frequencies, current %lu Hz, DFS %u, auto %u\n",
+-		count, d->profile.initial_freq, enabled, automatic);
++		"PM_SYS DDR: %u frequencies, current %lu Hz, DFS %u, auto %u, AP request %u MHz\n",
++		count, d->profile.initial_freq, enabled, automatic, ap_vote);
+ 	for (i = 0; i < count; i++)
+ 		dev_info(dev, "DDR firmware frequency %u: %lu Hz\n", i,
+ 			 table[i]);
+@@ -389,15 +274,9 @@ static void orca_ddr_remove(struct platform_device *pdev)
+ 
+ 	devfreq_remove_device(d->devfreq);
+ 	mutex_lock(&d->lock);
+-	if (d->voted) {
+-		ret = orca_dfs_request(d, ORCA_DFS_VOTE, d->previous_ap_mhz,
+-				       &status);
+-		if (ret)
+-			dev_warn(
+-				d->dev,
+-				"Could not restore preceding AP DDR vote: %d\n",
+-				ret);
+-	}
++	ret = orca_dfs_request(d, ORCA_DFS_VOTE, 0, &status);
++	if (ret)
++		dev_warn(d->dev, "Could not release AP DDR vote: %d\n", ret);
+ 	if (d->connected)
+ 		smsg_ch_close(SIPC_ID_PM_SYS, SMSG_CH_PM_CTRL,
+ 			      msecs_to_jiffies(100));
+@@ -417,9 +296,8 @@ static struct platform_driver orca_ddr_driver = {
+ 	.driver = {
+ 		.name = "sprd-orca-ddr",
+ 		.of_match_table = orca_ddr_of_match,
+-		.dev_groups = orca_ddr_groups,
+ 	},
+ };
+ module_platform_driver(orca_ddr_driver);
+-MODULE_DESCRIPTION("Orca PM_SYS firmware DDR frequency votes");
++MODULE_DESCRIPTION("Orca PM_SYS firmware DDR devfreq");
+ MODULE_LICENSE("GPL");
+diff --git a/drivers/iio/adc/sy108-mcu.c b/drivers/iio/adc/sy108-mcu.c
+index 0994248f4..04a299bf7 100644
+--- a/drivers/iio/adc/sy108-mcu.c
++++ b/drivers/iio/adc/sy108-mcu.c
+@@ -1,8 +1,9 @@
+ // SPDX-License-Identifier: GPL-2.0-only
+ /* SY108 board MCU over its fixed 115200/8N1 UART.
+  * ADC3..5 expose raw counts.
+- * USB/power requests are queued as device events. Board policy acknowledges
+- * the queue head before its gadget/shutdown operation.
++ * USB requests are acknowledged by the driver and announced as device events.
++ * Power requests are acknowledged by the blocking reboot notifier, before
++ * device shutdown closes the UART.
+  */
+ #include <linux/completion.h>
+ #include <linux/delay.h>
+@@ -12,6 +13,7 @@
+ #include <linux/mutex.h>
+ #include <linux/of.h>
+ #include <linux/property.h>
++#include <linux/reboot.h>
+ #include <linux/serdev.h>
+ #include <linux/spinlock.h>
+ #include <linux/unaligned.h>
+@@ -24,19 +26,19 @@
+ struct sy108_event {
+ 	u64 sequence;
+ 	u8 minor;
+-	bool announced, ack_started;
+ };
+ 
+ struct sy108_mcu {
+ 	struct serdev_device *serdev;
+ 	struct mutex command_lock;
+-	struct mutex event_lock;
+ 	spinlock_t rx_lock;
+ 	struct completion response;
+ 	struct work_struct event_work;
++	struct notifier_block reboot;
+ 	u8 stream[SY108_FRAME_MAX];
+ 	unsigned int used;
+ 	struct sy108_event events[SY108_EVENT_MAX];
++	struct sy108_event last_event, poweroff;
+ 	u64 next_event;
+ 	unsigned int event_head, event_count;
+ 	bool waiting, stopping, orphan_reply;
+@@ -93,7 +95,7 @@ static void sy108_handle_frame(struct sy108_mcu *mcu, const u8 *frame)
+ 				mcu->usb_reset_events++;
+ 			schedule_work(&mcu->event_work);
+ 		}
+-		/* No ACK until board policy acknowledges this queued event. */
++		/* The worker owns USB ACKs; power ACK waits for orderly poweroff. */
+ 		return;
+ 	}
+ 	/* SY108_MCU_V07 echoes the ADC channel in payload[0]; match it to
+@@ -190,7 +192,7 @@ static int sy108_request(struct sy108_mcu *mcu, u8 minor, const u8 *payload,
+ 	mutex_lock(&mcu->command_lock);
+ 	spin_lock_irqsave(&mcu->rx_lock, flags);
+ 	ret = mcu->stopping ? -ESHUTDOWN : mcu->link_error;
+-	if (!ret && mcu->event_count)
++	if (!ret && (mcu->event_count || mcu->poweroff.sequence))
+ 		ret = -EAGAIN;
+ 	if (ret) {
+ 		spin_unlock_irqrestore(&mcu->rx_lock, flags);
+@@ -244,127 +246,108 @@ static int sy108_request(struct sy108_mcu *mcu, u8 minor, const u8 *payload,
+ 	return ret;
+ }
+ 
++static void sy108_ack(struct sy108_mcu *mcu, const struct sy108_event *event)
++{
++	unsigned long flags;
++	u8 zero = 0, frame[8];
++	size_t size;
++	ssize_t written;
++	int ret;
++
++	/* serdev serializes complete frames, including against ADC requests. */
++	size = sy108_encode(event->minor == 4 ? 0x40 : 0xa0, &zero,
++			    event->minor == 4 ? 0 : 1, frame);
++	written = serdev_device_write(mcu->serdev, frame, size, SY108_TIMEOUT);
++	ret = written == (ssize_t)size ? 0 : written < 0 ? written : -EIO;
++	if (!ret)
++		serdev_device_wait_until_sent(mcu->serdev, SY108_TIMEOUT);
++	spin_lock_irqsave(&mcu->rx_lock, flags);
++	mcu->ack_attempts++;
++	if (ret)
++		mcu->ack_failures++;
++	mcu->last_ack_seq = event->sequence;
++	mcu->last_ack_error = ret;
++	spin_unlock_irqrestore(&mcu->rx_lock, flags);
++	if (ret)
++		dev_warn(&mcu->serdev->dev, "MCU ACK seq=%llu failed: %d\n",
++			 event->sequence, ret);
++}
++
+ static void sy108_events(struct work_struct *work)
+ {
+-	struct sy108_mcu *mcu =
+-		container_of(work, struct sy108_mcu, event_work);
++	struct sy108_mcu *mcu = container_of(work, struct sy108_mcu, event_work);
+ 	unsigned long flags;
+ 
+ 	for (;;) {
+-		struct sy108_event event = {};
++		struct sy108_event event;
+ 		char sequence[48];
+-		char *env[4];
+-		unsigned int i;
++		char *env[3];
+ 
+ 		spin_lock_irqsave(&mcu->rx_lock, flags);
+-		if (mcu->stopping) {
++		if (mcu->stopping || !mcu->event_count) {
+ 			spin_unlock_irqrestore(&mcu->rx_lock, flags);
+ 			return;
+ 		}
+-		for (i = 0; i < mcu->event_count; i++) {
+-			struct sy108_event *pending =
+-				&mcu->events[(mcu->event_head + i) %
+-					     SY108_EVENT_MAX];
+-
+-			if (!pending->announced) {
+-				pending->announced = true;
+-				event = *pending;
+-				break;
+-			}
+-		}
++		event = mcu->events[mcu->event_head];
++		mcu->event_head = (mcu->event_head + 1) % SY108_EVENT_MAX;
++		mcu->event_count--;
++		mcu->last_event = event;
++		if (event.minor == 4 && !mcu->poweroff.sequence)
++			mcu->poweroff = event;
+ 		spin_unlock_irqrestore(&mcu->rx_lock, flags);
+-		if (!event.sequence)
+-			return;
+-		snprintf(sequence, sizeof(sequence), "MCU_SEQ=%llu",
+-			 event.sequence);
+-		env[0] = event.minor == 4 ? "MCU_EVENT=poweroff" :
+-					    "MCU_EVENT=usb-reset";
++
++		if (event.minor == 0x0a)
++			sy108_ack(mcu, &event);
++		snprintf(sequence, sizeof(sequence), "MCU_SEQ=%llu", event.sequence);
++		env[0] = event.minor == 4 ? "MCU_EVENT=poweroff" : "MCU_EVENT=usb-reset";
+ 		env[1] = sequence;
+-		env[2] = "MCU_ACK=pending";
+-		env[3] = NULL;
++		env[2] = NULL;
+ 		kobject_uevent_env(&mcu->serdev->dev.kobj, KOBJ_CHANGE, env);
+ 	}
+ }
+ 
+-static ssize_t event_show(struct device *dev, struct device_attribute *attr,
+-			  char *buf)
++static int sy108_poweroff_notify(struct notifier_block *nb,
++				 unsigned long action, void *unused)
+ {
+-	struct sy108_mcu *mcu = dev_get_drvdata(dev);
+-	struct sy108_event event = {};
++	struct sy108_mcu *mcu = container_of(nb, struct sy108_mcu, reboot);
++	struct sy108_event event;
+ 	unsigned long flags;
+ 
++	if (action != SYS_POWER_OFF)
++		return NOTIFY_DONE;
++	/* Drain received requests while the UART is still available. This
++	 * blocking notifier runs before device_shutdown(), unlike sys-off prepare.
++	 */
++	flush_work(&mcu->event_work);
+ 	spin_lock_irqsave(&mcu->rx_lock, flags);
+-	if (mcu->event_count)
+-		event = mcu->events[mcu->event_head];
++	event = mcu->poweroff;
++	mcu->poweroff.sequence = 0;
+ 	spin_unlock_irqrestore(&mcu->rx_lock, flags);
+-	if (!event.sequence)
+-		return sysfs_emit(buf, "none\n");
+-	return sysfs_emit(buf, "seq=%llu minor=%02x kind=%s ack=%s\n",
+-			  event.sequence, event.minor,
+-			  event.minor == 4 ? "poweroff" : "usb-reset",
+-			  event.ack_started ? "writing" : "pending");
++	if (event.sequence)
++		sy108_ack(mcu, &event);
++	/* The stock protocol attempts an ACK once; an I/O error does not veto
++	 * the already requested system poweroff.
++	 */
++	return NOTIFY_DONE;
+ }
+-static DEVICE_ATTR_RO(event);
+ 
+-static ssize_t event_ack_store(struct device *dev,
+-			       struct device_attribute *attr, const char *buf,
+-			       size_t count)
++static ssize_t event_show(struct device *dev, struct device_attribute *attr,
++			  char *buf)
+ {
+ 	struct sy108_mcu *mcu = dev_get_drvdata(dev);
+-	struct sy108_event *event;
++	struct sy108_event event;
+ 	unsigned long flags;
+-	u64 sequence;
+-	u8 minor, zero = 0, frame[8];
+-	size_t size;
+-	ssize_t written;
+-	int ret;
+-
+-	ret = kstrtou64(buf, 10, &sequence);
+-	if (ret || !sequence)
+-		return ret ?: -EINVAL;
+-	mutex_lock(&mcu->event_lock);
+-	spin_lock_irqsave(&mcu->rx_lock, flags);
+-	ret = mcu->stopping ? -ESHUTDOWN : -ESTALE;
+-	if (!mcu->event_count || mcu->stopping)
+-		goto unlock_rx;
+-	event = &mcu->events[mcu->event_head];
+-	if (event->sequence != sequence)
+-		goto unlock_rx;
+-	ret = -EALREADY;
+-	if (event->ack_started)
+-		goto unlock_rx;
+-	event->ack_started = true;
+-	minor = event->minor;
+-	spin_unlock_irqrestore(&mcu->rx_lock, flags);
+ 
+-	/* serdev serializes whole frames with write_lock; an event ACK need
+-	 * not wait for an ADC transaction's response.
+-	 */
+-	size = sy108_encode(minor == 4 ? 0x40 : 0xa0, &zero, minor == 4 ? 0 : 1,
+-			    frame);
+-	written = serdev_device_write(mcu->serdev, frame, size, SY108_TIMEOUT);
+ 	spin_lock_irqsave(&mcu->rx_lock, flags);
+-	ret = written == (ssize_t)size ? 0 : written < 0 ? written : -EIO;
+-	mcu->ack_attempts++;
+-	if (ret)
+-		mcu->ack_failures++;
+-	mcu->last_ack_seq = sequence;
+-	mcu->last_ack_error = ret;
+-	/* Stock attempts ACK once and continues its AP action even on failure.
+-	 * Consume this event after any attempt; neither replay its ACK nor let
+-	 * a failed head prevent subsequent notifications from being handled.
+-	 */
+-	mcu->event_head = (mcu->event_head + 1) % SY108_EVENT_MAX;
+-	mcu->event_count--;
+-	/* Do not let VFS restart an interrupted ACK write as a second request. */
+-	if (ret == -ERESTARTSYS || ret == -EINTR)
+-		ret = -EIO;
+-unlock_rx:
++	/* Retain an early power request until the boot-policy adapter is ready. */
++	event = mcu->poweroff.sequence ? mcu->poweroff : mcu->last_event;
+ 	spin_unlock_irqrestore(&mcu->rx_lock, flags);
+-	mutex_unlock(&mcu->event_lock);
+-	return ret ? ret : count;
++	if (!event.sequence)
++		return sysfs_emit(buf, "none\n");
++	return sysfs_emit(buf, "seq=%llu kind=%s\n", event.sequence,
++			  event.minor == 4 ? "poweroff" : "usb-reset");
+ }
+-static DEVICE_ATTR_WO(event_ack);
++static DEVICE_ATTR_RO(event);
+ 
+ static int sy108_read_raw(struct iio_dev *indio,
+ 			  const struct iio_chan_spec *chan, int *val, int *val2,
+@@ -453,7 +436,6 @@ static struct attribute *sy108_attrs[] = {
+ 	&dev_attr_firmware_version.attr,
+ 	&dev_attr_status.attr,
+ 	&dev_attr_event.attr,
+-	&dev_attr_event_ack.attr,
+ 	NULL,
+ };
+ ATTRIBUTE_GROUPS(sy108);
+@@ -488,7 +470,6 @@ static int sy108_probe(struct serdev_device *serdev)
+ 	mcu = iio_priv(indio);
+ 	mcu->serdev = serdev;
+ 	mutex_init(&mcu->command_lock);
+-	mutex_init(&mcu->event_lock);
+ 	spin_lock_init(&mcu->rx_lock);
+ 	init_completion(&mcu->response);
+ 	INIT_WORK(&mcu->event_work, sy108_events);
+@@ -535,8 +516,11 @@ static int sy108_probe(struct serdev_device *serdev)
+ 	ret = devm_iio_device_register(dev, indio);
+ 	if (ret)
+ 		return ret;
+-	dev_info(dev,
+-		 "MCU ADC3..5 registered; event ACK requires board policy\n");
++	mcu->reboot.notifier_call = sy108_poweroff_notify;
++	ret = devm_register_reboot_notifier(dev, &mcu->reboot);
++	if (ret)
++		return ret;
++	dev_info(dev, "MCU ADC3..5 and driver-owned USB/power ACKs registered\n");
+ 	return 0;
+ }
+ 
+diff --git a/drivers/mfd/sprd-sc27xx-spi.c b/drivers/mfd/sprd-sc27xx-spi.c
+index 29bd3acac..d9f94e797 100644
+--- a/drivers/mfd/sprd-sc27xx-spi.c
++++ b/drivers/mfd/sprd-sc27xx-spi.c
+@@ -65,6 +65,7 @@ static const struct mfd_cell sc2730_devices[] = {
+ 	MFD_CELL_OF("sc2730-poweroff", NULL, NULL, 0, 0,
+ 		    "sprd,sc2730-poweroff"),
+ 	MFD_CELL_OF("sc2730-rtc", NULL, NULL, 0, 0, "sprd,sc2730-rtc"),
++	MFD_CELL_OF("sc2730-wdt", NULL, NULL, 0, 0, "sprd,sc2730-wdt"),
+ 	MFD_CELL_OF("sc2730-vibrator", NULL, NULL, 0, 0,
+ 		    "sprd,sc2730-vibrator"),
+ };
+diff --git a/drivers/nvmem/sprd-efuse.c b/drivers/nvmem/sprd-efuse.c
+index b998f7d9d..7f6105146 100644
+--- a/drivers/nvmem/sprd-efuse.c
++++ b/drivers/nvmem/sprd-efuse.c
+@@ -371,11 +371,6 @@ static int sprd_efuse_read_uid(struct sprd_efuse *efuse, u8 uid[8])
+ 			goto clock_off;
+ 		words[i] &= 0x7fffffff;
+ 	}
+-	if ((!words[0] && !words[1]) ||
+-	    (words[0] == 0x7fffffff && words[1] == 0x7fffffff)) {
+-		ret = -ENODATA;
+-		goto clock_off;
+-	}
+ 	for (i = 0; i < 8; i++)
+ 		uid[i] = words[i / 4] >> ((i % 4) * 8);
+ 
+@@ -386,35 +381,38 @@ static int sprd_efuse_read_uid(struct sprd_efuse *efuse, u8 uid[8])
+ 	return ret;
+ }
+ 
+-static ssize_t soc_uid_read(struct file *file, struct kobject *kobj,
+-			    const struct bin_attribute *attr, char *buf,
+-			    loff_t offset, size_t count)
++/* Keep calibration offsets at hardware block 2 and append the preceding
++ * two UID blocks to the read-only logical view. No calibration cell moves.
++ */
++static int sprd_orca_read(void *context, u32 offset, void *val, size_t bytes)
+ {
+-	struct sprd_efuse *efuse = dev_get_drvdata(kobj_to_dev(kobj));
+-	u8 uid[8];
++	struct sprd_efuse *efuse = context;
++	u32 public_size = efuse->data->blk_nums * SPRD_EFUSE_BLOCK_WIDTH;
++	u8 uid[8], *out = val;
++	size_t count;
+ 	int ret;
+ 
+-	if (offset < 0)
++	if (offset > public_size + sizeof(uid) ||
++	    bytes > public_size + sizeof(uid) - offset)
+ 		return -EINVAL;
+-	if (offset >= sizeof(uid) || !count)
++	if (offset < public_size && bytes) {
++		count = min_t(size_t, bytes, public_size - offset);
++		ret = sprd_efuse_read(efuse, offset, out, count);
++		if (ret)
++			return ret;
++		offset += count;
++		out += count;
++		bytes -= count;
++	}
++	if (!bytes)
+ 		return 0;
+ 	ret = sprd_efuse_read_uid(efuse, uid);
+ 	if (ret)
+ 		return ret;
+-	count = min_t(size_t, count, sizeof(uid) - offset);
+-	memcpy(buf, uid + offset, count);
+-	return count;
++	memcpy(out, uid + offset - public_size, bytes);
++	return 0;
+ }
+ 
+-static const BIN_ATTR_ADMIN_RO(soc_uid, 8);
+-static const struct bin_attribute *const sprd_efuse_uid_bin_attrs[] = {
+-	&bin_attr_soc_uid,
+-	NULL,
+-};
+-static const struct attribute_group sprd_efuse_uid_group = {
+-	.bin_attrs = sprd_efuse_uid_bin_attrs,
+-};
+-
+ static int sprd_efuse_write(void *context, u32 offset, void *val, size_t bytes)
+ {
+ 	struct sprd_efuse *efuse = context;
+@@ -515,8 +513,10 @@ static int sprd_efuse_probe(struct platform_device *pdev)
+ 	econfig.owner = THIS_MODULE;
+ 	econfig.name = pdata->read_only ? "orca-public-efuse" : "sprd-efuse";
+ 	econfig.size = efuse->data->blk_nums * SPRD_EFUSE_BLOCK_WIDTH;
+-	econfig.add_legacy_fixed_of_cells = true;
+-	econfig.reg_read = sprd_efuse_read;
++	econfig.add_legacy_fixed_of_cells = pdata != &orca_data;
++	econfig.reg_read = pdata == &orca_data ? sprd_orca_read : sprd_efuse_read;
++	if (pdata == &orca_data)
++		econfig.size += 8;
+ 	if (!pdata->read_only)
+ 		econfig.reg_write = sprd_efuse_write;
+ 	econfig.priv = efuse;
+@@ -527,8 +527,6 @@ static int sprd_efuse_probe(struct platform_device *pdev)
+ 		return PTR_ERR(nvmem);
+ 	}
+ 	platform_set_drvdata(pdev, efuse);
+-	if (pdata == &orca_data)
+-		return devm_device_add_group(&pdev->dev, &sprd_efuse_uid_group);
+ 
+ 	return 0;
+ }
+diff --git a/drivers/remoteproc/Kconfig b/drivers/remoteproc/Kconfig
+index 5b56b2dcc..9da4a580c 100644
+--- a/drivers/remoteproc/Kconfig
++++ b/drivers/remoteproc/Kconfig
+@@ -14,6 +14,16 @@ config REMOTEPROC
+ 
+ if REMOTEPROC
+ 
++config SPRD_UDX710_PMSYS
++	tristate "UDX710 PM_SYS CM4 remote processor"
++	depends on OF && (ARCH_SPRD || COMPILE_TEST)
++	select MFD_SYSCON
++	help
++	  Load the original raw CM4 firmware through the firmware loader.
++	  SIPC starts the processor after registering its receive endpoint.
++	  The board prepares the original firmware in RAM before loading
++	  this module. Hot stop and automatic recovery are not supported.
++
+ config REMOTEPROC_CDEV
+ 	bool "Remoteproc character device interface"
+ 	help
+@@ -390,6 +400,16 @@ config XLNX_R5_REMOTEPROC
+ 
+ 	  It's safe to say N if not interested in using RPU r5f cores.
+ 
++config UDX710_MODEM_REMOTEPROC
++	bool "UDX710 modem subsystem remoteproc"
++	depends on ARCH_SPRD || COMPILE_TEST
++	depends on OF && HAS_IOMEM
++	select MFD_SYSCON
++	help
++	  Load original raw modem/PHY/DSP firmware and prepared NV through
++	  the firmware loader, then release all modem cores in hardware order.
++	  Live stop and automatic recovery are not supported.
++
+ endif # REMOTEPROC
+ 
+ endmenu
+diff --git a/drivers/remoteproc/Makefile b/drivers/remoteproc/Makefile
+index 689686de0..589aa50c2 100644
+--- a/drivers/remoteproc/Makefile
++++ b/drivers/remoteproc/Makefile
+@@ -41,3 +41,5 @@ obj-$(CONFIG_TI_K3_DSP_REMOTEPROC)	+= ti_k3_dsp_remoteproc.o ti_k3_common.o
+ obj-$(CONFIG_TI_K3_M4_REMOTEPROC)	+= ti_k3_m4_remoteproc.o ti_k3_common.o
+ obj-$(CONFIG_TI_K3_R5_REMOTEPROC)	+= ti_k3_r5_remoteproc.o ti_k3_common.o
+ obj-$(CONFIG_XLNX_R5_REMOTEPROC)	+= xlnx_r5_remoteproc.o
++obj-$(CONFIG_SPRD_UDX710_PMSYS)	+= udx710-pmsys.o
++obj-$(CONFIG_UDX710_MODEM_REMOTEPROC) += udx710-modem.o
+diff --git a/drivers/remoteproc/udx710-modem.c b/drivers/remoteproc/udx710-modem.c
+new file mode 100644
+index 000000000..e1dad82ee
+--- /dev/null
++++ b/drivers/remoteproc/udx710-modem.c
+@@ -0,0 +1,324 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* UDX710 modem subsystem: load every raw image before releasing any core. */
++#include <linux/delay.h>
++#include <linux/firmware.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/mfd/syscon.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_reserved_mem.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/remoteproc.h>
++#include <linux/unaligned.h>
++
++#define MODEM_CORES 3
++#define MODEM_IMAGES 9
++#define IRAM_WORDS 49
++
++struct modem_core {
++	u32 shutdown, sleep, reset, reset_mask, sys_mask, extra;
++	bool reset_rmw;
++};
++
++static const struct modem_core modem_cores[MODEM_CORES] = {
++	{ 0x58, BIT(3), 0x214, 0x3000, BIT(1), 0, false },
++	{ 0x54, BIT(2), 0x220, 0x7, BIT(0), 0x48, true },
++	{ 0x18, BIT(0), 0x218, 0x7e00, BIT(17), 0, false },
++};
++
++static const char * const iram_names[] = { "cp-iram", "v3-iram", "nr-iram" };
++static const char * const iram_properties[] = {
++	"sprd,cp-iram-data", "sprd,v3-iram-data", "sprd,nr-iram-data",
++};
++static const char * const image_names[MODEM_IMAGES] = {
++	"modem", "v3phy", "nrphy", "nrdsp1", "nrdsp2",
++	"deltanv", "cpcmdline", "fixnv", "runnv",
++};
++
++struct udx710_modem {
++	struct regmap *aon, *pmu;
++	void __iomem *iram[MODEM_CORES];
++	u32 iram_data[MODEM_CORES][IRAM_WORDS];
++	struct resource image[MODEM_IMAGES];
++	const char *firmware[MODEM_IMAGES];
++};
++
++static int modem_core_reset(struct udx710_modem *m, unsigned int i, bool hold)
++{
++	const struct modem_core *c = &modem_cores[i];
++
++	if (c->reset_rmw)
++		return regmap_update_bits(m->aon, c->reset, c->reset_mask,
++					  hold ? c->reset_mask : 0);
++	return regmap_write(m->aon, c->reset + (hold ? 0x1000 : 0x2000),
++			    c->reset_mask);
++}
++
++static int modem_hold(struct rproc *rproc)
++{
++	struct udx710_modem *m = rproc->priv;
++	unsigned int i;
++	int ret;
++
++	for (i = 0; i < MODEM_CORES; i++) {
++		const struct modem_core *c = &modem_cores[i];
++
++		ret = modem_core_reset(m, i, true);
++		if (ret)
++			return ret;
++		msleep(50);
++		ret = regmap_write(m->pmu, 0x10b0, c->sys_mask);
++		if (ret)
++			return ret;
++		msleep(50);
++		ret = regmap_write(m->pmu, 0x1544, c->sleep);
++		if (ret)
++			return ret;
++		msleep(50);
++		if (c->extra) {
++			ret = regmap_write(m->pmu, c->extra + 0x1000, BIT(25));
++			if (ret)
++				return ret;
++		}
++		ret = regmap_write(m->pmu, c->shutdown + 0x1000, BIT(25));
++		if (ret)
++			return ret;
++	}
++	return 0;
++}
++
++static int modem_check_image(struct udx710_modem *m, unsigned int i,
++			     const struct firmware *fw)
++{
++	u32 entry;
++
++	if (!fw->size || fw->size > resource_size(&m->image[i]))
++		return -EFBIG;
++	/* FIXNV and RUNNV are complete raw payloads, including unused bytes. */
++	if (i >= 7 && fw->size != resource_size(&m->image[i]))
++		return -ENOEXEC;
++	if (i >= MODEM_CORES)
++		return 0;
++	/* Original MECP header and ARM reset vectors, after SCI extraction. */
++	if (fw->size < 0x60c || memcmp(fw->data, "MECPV1.0", 8) ||
++	    get_unaligned_le32(fw->data + 8) != 0x600 ||
++	    get_unaligned_le32(fw->data + 0x600) != 0xe59ff000 ||
++	    get_unaligned_le32(fw->data + 0x604) != 0xe59ff000)
++		return -ENOEXEC;
++	entry = get_unaligned_le32(fw->data + 0x608);
++	if (entry < m->image[i].start ||
++	    entry - m->image[i].start >= fw->size || (entry & 3))
++		return -ENOEXEC;
++	return 0;
++}
++
++static int modem_sanity(struct rproc *rproc, const struct firmware *fw)
++{
++	return modem_check_image(rproc->priv, 0, fw);
++}
++
++static int modem_load(struct rproc *rproc, const struct firmware *primary)
++{
++	struct udx710_modem *m = rproc->priv;
++	size_t lengths[MODEM_IMAGES] = {};
++	unsigned int i, j;
++	int ret;
++
++	for (i = 0; i < MODEM_IMAGES; i++) {
++		const struct firmware *fw = primary;
++		void __iomem *dst;
++
++		/* remoteproc already checked primary through .sanity_check. */
++		if (i) {
++			ret = request_firmware(&fw, m->firmware[i], rproc->dev.parent);
++			if (ret)
++				return ret;
++			ret = modem_check_image(m, i, fw);
++			if (ret)
++				goto release;
++		}
++		/* NRPHY's capacity overlaps its DSP windows. Actual extents may not. */
++		for (j = 0; j < i; j++)
++			if (m->image[i].start < m->image[j].start + lengths[j] &&
++			    m->image[j].start < m->image[i].start + fw->size) {
++				ret = -EINVAL;
++				goto release;
++			}
++		lengths[i] = fw->size;
++		dst = ioremap_np(m->image[i].start, fw->size);
++		if (!dst) {
++			ret = -ENOMEM;
++			goto release;
++		}
++		memcpy_toio(dst, fw->data, fw->size);
++		wmb();
++		iounmap(dst);
++		ret = 0;
++release:
++		if (i)
++			release_firmware(fw);
++		if (ret)
++			return ret;
++	}
++	return 0;
++}
++
++static int modem_start_core(struct udx710_modem *m, unsigned int i)
++{
++	const struct modem_core *c = &modem_cores[i];
++	unsigned int value, j;
++	int ret;
++
++	/* Preserve byte accesses used by the original IRAM loader. */
++	for (j = 0; j < IRAM_WORDS * sizeof(u32); j++)
++		writeb((m->iram_data[i][j / 4] >> (8 * (j % 4))) & 0xff,
++		       m->iram[i] + j);
++	wmb();
++	ret = regmap_write(m->pmu, c->shutdown + 0x2000, BIT(25));
++	if (ret)
++		return ret;
++	if (c->extra) {
++		ret = regmap_write(m->pmu, c->extra + 0x2000, BIT(25));
++		if (ret)
++			return ret;
++	}
++	ret = regmap_write(m->pmu, 0x2544, c->sleep);
++	if (ret)
++		return ret;
++	msleep(50);
++	ret = modem_core_reset(m, i, false);
++	if (ret)
++		return ret;
++	ret = regmap_read_poll_timeout(m->aon, c->reset, value,
++				       !(value & c->reset_mask), 10, 1000000);
++	if (ret)
++		return ret;
++	msleep(50);
++	ret = regmap_write(m->pmu, 0x20b0, c->sys_mask);
++	if (ret)
++		return ret;
++	return regmap_read_poll_timeout(m->pmu, 0xb0, value,
++					!(value & c->sys_mask), 10, 1000000);
++}
++
++static int modem_start(struct rproc *rproc)
++{
++	struct udx710_modem *m = rproc->priv;
++	unsigned int i;
++	int ret;
++
++	for (i = 0; i < MODEM_CORES; i++) {
++		ret = modem_start_core(m, i);
++		if (ret) {
++			/* A partial release is not a running modem subsystem. */
++			int hold_ret = modem_hold(rproc);
++
++			if (hold_ret)
++				dev_err(&rproc->dev, "reset after start failure: %d\n",
++					hold_ret);
++			return ret;
++		}
++	}
++	return 0;
++}
++
++static int modem_stop(struct rproc *rproc)
++{
++	/* SIPC/SIPA do not yet have a complete live shutdown contract. */
++	return -EOPNOTSUPP;
++}
++
++static const struct rproc_ops modem_ops = {
++	.sanity_check = modem_sanity,
++	.load = modem_load,
++	.start = modem_start,
++	.stop = modem_stop,
++};
++
++static int udx710_modem_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct device_node *np;
++	struct reserved_mem *reserved;
++	struct udx710_modem *m;
++	struct rproc *rproc;
++	const char *primary;
++	unsigned int i;
++	int ret;
++
++	ret = of_property_read_string_index(dev->of_node, "firmware-name", 0, &primary);
++	if (ret)
++		return ret;
++	rproc = devm_rproc_alloc(dev, "udx710-modem", &modem_ops, primary, sizeof(*m));
++	if (!rproc)
++		return -ENOMEM;
++	m = rproc->priv;
++	m->aon = syscon_regmap_lookup_by_phandle(dev->of_node, "sprd,aon-apb");
++	if (IS_ERR(m->aon))
++		return PTR_ERR(m->aon);
++	m->pmu = syscon_regmap_lookup_by_phandle(dev->of_node, "sprd,pmu-apb");
++	if (IS_ERR(m->pmu))
++		return PTR_ERR(m->pmu);
++	np = of_parse_phandle(dev->of_node, "memory-region", 0);
++	if (!np)
++		return -EINVAL;
++	reserved = of_reserved_mem_lookup(np);
++	of_node_put(np);
++	if (!reserved)
++		return -EINVAL;
++	for (i = 0; i < MODEM_CORES; i++) {
++		struct resource *res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
++								   iram_names[i]);
++
++		if (!res || resource_size(res) < IRAM_WORDS * sizeof(u32) ||
++		    of_property_count_u32_elems(dev->of_node, iram_properties[i]) != IRAM_WORDS)
++			return -EINVAL;
++		m->iram[i] = devm_platform_ioremap_resource_byname(pdev, iram_names[i]);
++		if (IS_ERR(m->iram[i]))
++			return PTR_ERR(m->iram[i]);
++		ret = of_property_read_u32_array(dev->of_node, iram_properties[i],
++						m->iram_data[i], IRAM_WORDS);
++		if (ret)
++			return ret;
++	}
++	for (i = 0; i < MODEM_IMAGES; i++) {
++		struct resource *res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
++								   image_names[i]);
++
++		if (!res || res->start < reserved->base ||
++		    res->end >= reserved->base + reserved->size)
++			return -EINVAL;
++		m->image[i] = *res;
++		ret = of_property_read_string_index(dev->of_node, "firmware-name", i,
++						    &m->firmware[i]);
++		if (ret)
++			return ret;
++	}
++	ret = modem_hold(rproc);
++	if (ret)
++		return ret;
++	rproc->auto_boot = false;
++	rproc->recovery_disabled = true;
++	platform_set_drvdata(pdev, rproc);
++	return devm_rproc_add(dev, rproc);
++}
++
++static const struct of_device_id udx710_modem_match[] = {
++	{ .compatible = "sprd,udx710-modem" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, udx710_modem_match);
++
++static struct platform_driver udx710_modem_driver = {
++	.probe = udx710_modem_probe,
++	.driver = {
++		.name = "udx710-modem",
++		.of_match_table = udx710_modem_match,
++		.suppress_bind_attrs = true,
++	},
++};
++module_platform_driver(udx710_modem_driver);
++MODULE_DESCRIPTION("UDX710 modem subsystem remote processor");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/remoteproc/udx710-pmsys.c b/drivers/remoteproc/udx710-pmsys.c
+new file mode 100644
+index 000000000..5356743a3
+--- /dev/null
++++ b/drivers/remoteproc/udx710-pmsys.c
+@@ -0,0 +1,165 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* UDX710 PM_SYS CM4: original raw firmware, no resource table. */
++#include <linux/delay.h>
++#include <linux/firmware.h>
++#include <linux/io.h>
++#include <linux/mfd/syscon.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/remoteproc.h>
++#include <linux/sched.h>
++#include <linux/unaligned.h>
++
++#define PMSYS_SRAM_BASE 0xb000
++#define PMSYS_SRAM_SIZE 0xdc00
++#define PMSYS_IMAGE_SIZE 0xd000
++#define PMSYS_RESET 0x210
++#define PMSYS_CORE_RESET BIT(0)
++#define PMSYS_SYS_RESET BIT(4)
++
++struct sprd_pmsys {
++	struct regmap *aon;
++	void __iomem *sram;
++};
++
++static int pmsys_sanity_check(struct rproc *rproc, const struct firmware *fw)
++{
++	u32 stack, entry;
++
++	if (fw->size != PMSYS_IMAGE_SIZE)
++		return -ENOEXEC;
++	stack = get_unaligned_le32(fw->data);
++	entry = get_unaligned_le32(fw->data + 4);
++	/* Original CM4 vector table: aligned stack inside its SRAM and a
++	 * Thumb reset entry inside the image.
++	 */
++	if (!stack || stack > PMSYS_SRAM_SIZE ||
++	    stack & 3 || !(entry & 1) || (entry & ~1U) >= PMSYS_IMAGE_SIZE)
++		return -ENOEXEC;
++	return 0;
++}
++
++static int pmsys_hold_reset(struct sprd_pmsys *pm)
++{
++	unsigned int reset;
++	int ret;
++
++	/* Stop the old firmware before SIPC initializes shared rings. */
++	ret = regmap_update_bits(pm->aon, PMSYS_RESET, PMSYS_CORE_RESET,
++				 PMSYS_CORE_RESET);
++	if (ret)
++		return ret;
++	udelay(2);
++	ret = regmap_update_bits(pm->aon, PMSYS_RESET, PMSYS_SYS_RESET, 0);
++	if (ret)
++		return ret;
++	ret = regmap_read(pm->aon, PMSYS_RESET, &reset);
++	if (ret)
++		return ret;
++	return (reset & (PMSYS_CORE_RESET | PMSYS_SYS_RESET)) ==
++		PMSYS_CORE_RESET ? 0 : -EIO;
++}
++
++static int pmsys_load(struct rproc *rproc, const struct firmware *fw)
++{
++	struct sprd_pmsys *pm = rproc->priv;
++	u32 i;
++
++	/* AON SRAM requires individual 32-bit accesses, not wide memcpy_toio. */
++	for (i = 0; i < PMSYS_IMAGE_SIZE; i += sizeof(u32)) {
++		writel_relaxed(get_unaligned_le32(fw->data + i), pm->sram + i);
++		if (!(i & 0xfff))
++			cond_resched();
++	}
++	wmb();
++	return 0;
++}
++
++static int pmsys_start(struct rproc *rproc)
++{
++	struct sprd_pmsys *pm = rproc->priv;
++	unsigned int reset;
++	int ret;
++
++	ret = regmap_update_bits(pm->aon, PMSYS_RESET, PMSYS_CORE_RESET, 0);
++	if (ret)
++		return ret;
++	ret = regmap_read(pm->aon, PMSYS_RESET, &reset);
++	if (ret)
++		return ret;
++	if (reset & (PMSYS_CORE_RESET | PMSYS_SYS_RESET))
++		return -EIO;
++	dev_info(&rproc->dev, "CM4 released after SIPC receiver registration\n");
++	return 0;
++}
++
++static int pmsys_stop(struct rproc *rproc)
++{
++	/* UART and DDR depend on the running firmware for the entire boot. */
++	return -EOPNOTSUPP;
++}
++
++static const struct rproc_ops pmsys_ops = {
++	.sanity_check = pmsys_sanity_check,
++	.load = pmsys_load,
++	.start = pmsys_start,
++	.stop = pmsys_stop,
++};
++
++static int sprd_pmsys_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct sprd_pmsys *pm;
++	struct resource *res;
++	struct rproc *rproc;
++	const char *firmware;
++	int ret;
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!res || res->start != PMSYS_SRAM_BASE ||
++	    resource_size(res) != PMSYS_SRAM_SIZE)
++		return -EINVAL;
++	ret = of_property_read_string(dev->of_node, "firmware-name", &firmware);
++	if (ret)
++		return ret;
++	rproc = devm_rproc_alloc(dev, "udx710-pmsys", &pmsys_ops, firmware,
++				sizeof(*pm));
++	if (!rproc)
++		return -ENOMEM;
++	pm = rproc->priv;
++	pm->aon = syscon_regmap_lookup_by_phandle(dev->of_node, "sprd,aon-apb");
++	if (IS_ERR(pm->aon))
++		return PTR_ERR(pm->aon);
++	pm->sram = devm_ioremap_resource(dev, res);
++	if (IS_ERR(pm->sram))
++		return PTR_ERR(pm->sram);
++	ret = pmsys_hold_reset(pm);
++	if (ret)
++		return ret;
++	/* Only SIPC may start PM_SYS, after publishing its receive endpoint. */
++	rproc->auto_boot = false;
++	rproc->recovery_disabled = true;
++	rproc->sysfs_read_only = true;
++	platform_set_drvdata(pdev, rproc);
++	return devm_rproc_add(dev, rproc);
++}
++
++static const struct of_device_id sprd_pmsys_of_match[] = {
++	{ .compatible = "sprd,udx710-pmsys" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, sprd_pmsys_of_match);
++
++static struct platform_driver sprd_pmsys_driver = {
++	.probe = sprd_pmsys_probe,
++	.driver = {
++		.name = "udx710-pmsys",
++		.of_match_table = sprd_pmsys_of_match,
++		.suppress_bind_attrs = true,
++	},
++};
++module_platform_driver(sprd_pmsys_driver);
++MODULE_DESCRIPTION("UDX710 PM_SYS CM4 remote processor");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/rtc/rtc-sc27xx.c b/drivers/rtc/rtc-sc27xx.c
+index 60b9c3bf2..f74fa1827 100644
+--- a/drivers/rtc/rtc-sc27xx.c
++++ b/drivers/rtc/rtc-sc27xx.c
+@@ -12,17 +12,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/regmap.h>
+ #include <linux/rtc.h>
+-#include <linux/timekeeping.h>
+ #include <linux/udx710-trial.h>
+-#include <linux/pid.h>
+-#include <linux/sched/signal.h>
+-#define UDX_LEASE_RATE 32768u
+-#define UDX_LEASE_TICKS (60u * UDX_LEASE_RATE)
+-struct udx_lease_state {
+-	uint64_t last_renew_ms;
+-	unsigned int renewals, closed, ready_stage;
+-};
+-
+ #define SPRD_RTC_SEC_CNT_VALUE 0x0
+ #define SPRD_RTC_MIN_CNT_VALUE 0x4
+ #define SPRD_RTC_HOUR_CNT_VALUE 0x8
+@@ -115,9 +105,6 @@ struct sprd_rtc {
+ 	u32 base;
+ 	int irq;
+ 	bool valid;
+-	struct udx_lease_state trial_lease;
+-	struct pid *trial_local_owner;
+-	bool trial_owner_cleanup;
+ };
+ 
+ /*
+@@ -670,271 +657,49 @@ static ssize_t udx_trial_stage_store(struct device *dev,
+ 
+ 	if (!trial_local_enabled(rtc))
+ 		return -EOPNOTSUPP;
+-	if (!sysfs_streq(buf, "initramfs"))
++	if (sysfs_streq(buf, "initramfs")) {
++		from = UDX_RTC_DRIVER_FRAMEWORK;
++		to = UDX_RTC_INITRAMFS;
++	} else if (sysfs_streq(buf, "runtime")) {
++		from = UDX_RTC_INITRAMFS;
++		to = trial_ready_stage();
++	} else {
+ 		return -EINVAL;
+-	from = UDX_RTC_DRIVER_FRAMEWORK;
+-	to = UDX_RTC_INITRAMFS;
++	}
+ 	mutex_lock(&rtc->rtc->ops_lock);
++	/* A manually restarted owner may reclaim the already-ready runtime. */
++	if (from == UDX_RTC_INITRAMFS) {
++		unsigned int stage;
++
++		ret = regmap_read(rtc->regmap, rtc->base + 0x50, &stage);
++		if (ret || stage == to)
++			goto out;
++	}
+ 	ret = udx_trial_stage_set(rtc, from, to);
++out:
+ 	mutex_unlock(&rtc->rtc->ops_lock);
+ 	return ret ? ret : count;
+ }
+ 
+ static DEVICE_ATTR_RW(udx_trial_stage);
+ 
+-static int lease_read(struct sprd_rtc *rtc, unsigned int reg,
+-		      unsigned int *value)
+-{
+-	return regmap_read(rtc->regmap, reg, value);
+-}
+-
+-static int udx_lease_peek(struct sprd_rtc *rtc, unsigned int *count)
+-{
+-	if (!count)
+-		return -EINVAL;
+-	for (unsigned int i = 0; i < 4; i++) {
+-		unsigned int hi, lo, again;
+-		int ret;
+-
+-		ret = lease_read(rtc, 0x5c, &hi);
+-		if (ret)
+-			return ret;
+-		ret = lease_read(rtc, 0x58, &lo);
+-		if (ret)
+-			return ret;
+-		ret = lease_read(rtc, 0x5c, &again);
+-		if (ret)
+-			return ret;
+-		if (hi == again) {
+-			*count = (hi << 16) | lo;
+-			return 0;
+-		}
+-	}
+-	return -EAGAIN;
+-}
+-
+-static int udx_lease_claim(struct sprd_rtc *rtc, struct udx_lease_state *s)
+-{
+-	unsigned int control;
+-	int ret;
+-
+-	if (!s || !s->ready_stage)
+-		return -EINVAL;
+-	if (s->closed)
+-		return -ESHUTDOWN;
+-	ret = lease_read(rtc, 0x48, &control);
+-	if (ret)
+-		return ret;
+-	return (control & 14u) == 14u ? 0 : -EPROTO;
+-}
+-
+-static int lease_idle(struct sprd_rtc *rtc)
+-{
+-	for (unsigned int i = 0; i < 64; i++) {
+-		unsigned int raw;
+-		int ret = lease_read(rtc, 0x50, &raw);
+-
+-		if (ret)
+-			return ret;
+-		if (!(raw & 0x10))
+-			return 0;
+-		if (i + 1 < 64)
+-			udelay(10);
+-	}
+-	return -ETIMEDOUT;
+-}
+-
+-static int lease_load(struct sprd_rtc *rtc, unsigned int high)
+-{
+-	const unsigned int regs[] = { 0x60, 0x44, 0x40, 0x60 };
+-	const unsigned int values[] = { 0xe551, high, 0, 0x1aae };
+-	int ret = lease_idle(rtc);
+-
+-	if (ret)
+-		return ret;
+-	for (unsigned int i = 0; i < 4; i++) {
+-		ret = regmap_write(rtc->regmap, regs[i], values[i]);
+-		if (ret)
+-			return ret;
+-	}
+-	udelay(100);
+-	return lease_idle(rtc);
+-}
+-
+-static void udx_lease_close(struct udx_lease_state *s)
+-{
+-	if (s)
+-		s->closed = 1;
+-}
+-
+-static int udx_lease_renew(struct sprd_rtc *rtc, struct udx_lease_state *s)
+-{
+-	int ret;
+-
+-	if (!s)
+-		return -EINVAL;
+-	if (s->closed)
+-		return -ESHUTDOWN;
+-	ret = lease_load(rtc, 30);
+-
+-	if (!ret) {
+-		s->renewals++;
+-		s->last_renew_ms = ktime_get_boottime_ns() / 1000000;
+-	}
+-	return ret;
+-}
+-
+-static int lease_reason(struct sprd_rtc *rtc, unsigned int value)
++/* Only the existing RTC stage and reboot-reason ABI belongs here. */
++static int udx_trial_reboot_target(struct sprd_rtc *rtc, bool recovery)
+ {
+ 	unsigned int prior;
+-	int ret = lease_read(rtc, 0x1bac, &prior);
+-
+-	if (ret)
+-		return ret;
+-	return regmap_write(rtc->regmap, 0x1bac, (prior & 0x200u) | value);
+-}
+-
+-static int lease_boot_window(struct sprd_rtc *rtc, struct udx_lease_state *s,
+-			     unsigned int recovery, unsigned int high)
+-{
+ 	int ret;
+ 
+-	if (!s || recovery > 1 || !s->ready_stage)
+-		return -EINVAL;
+-	if (s->closed)
+-		return -ESHUTDOWN;
+-	udx_lease_close(s);
+-	ret = udx_trial_stage_set(rtc, s->ready_stage,
+-				  recovery ? 0xbc5a : 0xb65a);
++	ret = udx_trial_stage_set(rtc, trial_ready_stage(),
++				 recovery ? UDX_RTC_RECOVERY_READY : UDX_RTC_ORIGINAL);
+ 	if (ret)
+ 		return ret;
+-	ret = lease_reason(rtc, recovery ? 0x20 : 0x40);
++	ret = regmap_read(rtc->regmap, 0x1bac, &prior);
+ 	if (ret)
+ 		return ret;
+-	return lease_load(rtc, high);
++	return regmap_write(rtc->regmap, 0x1bac,
++			    (prior & 0x200u) | (recovery ? 0x20 : 0x40));
+ }
+ 
+-static int udx_lease_boot_reboot(struct sprd_rtc *rtc,
+-				 struct udx_lease_state *s,
+-				 unsigned int recovery)
+-{
+-	return lease_boot_window(rtc, s, recovery, 6);
+-}
+-
+-static int udx_lease_boot_upgrade(struct sprd_rtc *rtc,
+-				  struct udx_lease_state *s)
+-{
+-	if (!s || (s->ready_stage != 0xbe5a && s->ready_stage != 0xbc5a))
+-		return -EINVAL;
+-	return lease_boot_window(rtc, s, 0, 30);
+-}
+-
+-static int trial_lease_admit(struct sprd_rtc *rtc)
+-{
+-	if (!trial_local_enabled(rtc))
+-		return -ENODEV;
+-	return rtc->trial_local_owner == task_tgid(current) ? 0 : -EPERM;
+-}
+-
+-static void trial_owner_put(void *data)
+-{
+-	struct sprd_rtc *rtc = data;
+-
+-	put_pid(rtc->trial_local_owner);
+-}
+-
+-static ssize_t udx_trial_lease_owner_store(struct device *dev,
+-					   struct device_attribute *attr,
+-					   const char *buf, size_t count)
+-{
+-	struct sprd_rtc *rtc = dev_get_drvdata(dev);
+-	struct task_struct *owner;
+-	unsigned int stage;
+-	int ret;
+-
+-	if (!sysfs_streq(buf, "claim"))
+-		return -EINVAL;
+-	if (!trial_local_enabled(rtc))
+-		return -EOPNOTSUPP;
+-	mutex_lock(&rtc->rtc->ops_lock);
+-	if (rtc->trial_lease.closed) {
+-		ret = -EBUSY;
+-		goto out;
+-	}
+-	owner = rtc->trial_local_owner ?
+-			get_pid_task(rtc->trial_local_owner, PIDTYPE_TGID) :
+-			NULL;
+-	if (owner) {
+-		bool active = !READ_ONCE(owner->exit_state);
+-
+-		put_task_struct(owner);
+-		if (active) {
+-			ret = -EBUSY;
+-			goto out;
+-		}
+-	}
+-	rtc->trial_lease.ready_stage = trial_ready_stage();
+-	ret = regmap_read(rtc->regmap, rtc->base + 0x50, &stage);
+-	if (ret)
+-		goto out;
+-	if (stage == UDX_RTC_INITRAMFS)
+-		ret = udx_trial_stage_set(rtc, stage, trial_ready_stage());
+-	else if (stage != trial_ready_stage())
+-		ret = -EPROTO;
+-	if (ret)
+-		goto out;
+-	ret = udx_lease_claim(rtc, &rtc->trial_lease);
+-	if (ret)
+-		goto out;
+-	put_pid(rtc->trial_local_owner);
+-	rtc->trial_local_owner = get_task_pid(current, PIDTYPE_TGID);
+-	if (!rtc->trial_owner_cleanup) {
+-		ret = devm_add_action_or_reset(rtc->dev, trial_owner_put, rtc);
+-		if (ret) {
+-			rtc->trial_local_owner = NULL;
+-			goto out;
+-		}
+-		rtc->trial_owner_cleanup = true;
+-	}
+-	dev_info(dev,
+-		 "runtime watchdog owner pid %d; existing countdown retained\n",
+-		 pid_nr(rtc->trial_local_owner));
+-out:
+-	mutex_unlock(&rtc->rtc->ops_lock);
+-	return ret ? ret : count;
+-}
+-
+-static DEVICE_ATTR_WO(udx_trial_lease_owner);
+-
+-static ssize_t udx_trial_lease_status_show(struct device *dev,
+-					   struct device_attribute *attr,
+-					   char *buf)
+-{
+-	struct sprd_rtc *rtc = dev_get_drvdata(dev);
+-	unsigned int count, stage;
+-	int ret;
+-
+-	if (!trial_local_enabled(rtc))
+-		return -ENODEV;
+-	mutex_lock(&rtc->rtc->ops_lock);
+-	ret = udx_lease_peek(rtc, &count);
+-	if (!ret)
+-		ret = regmap_read(rtc->regmap, rtc->base + 0x50, &stage);
+-	if (!ret)
+-		ret = sysfs_emit(
+-			buf,
+-			"mode=standalone owner=%d stage=%04x remaining_ticks=%u renewals=%u closed=%u last_renew_ms=%llu\n",
+-			rtc->trial_local_owner ?
+-				pid_nr(rtc->trial_local_owner) :
+-				0,
+-			stage, count, rtc->trial_lease.renewals,
+-			rtc->trial_lease.closed,
+-			(unsigned long long)rtc->trial_lease.last_renew_ms);
+-	mutex_unlock(&rtc->rtc->ops_lock);
+-	return ret;
+-}
+-
+-static DEVICE_ATTR_RO(udx_trial_lease_status);
+ static ssize_t udx_boot_policy_show(struct device *dev,
+ 				    struct device_attribute *attr, char *buf)
+ {
+@@ -948,29 +713,6 @@ static ssize_t udx_boot_policy_show(struct device *dev,
+ }
+ 
+ static DEVICE_ATTR_RO(udx_boot_policy);
+-static ssize_t udx_trial_lease_store(struct device *dev,
+-				     struct device_attribute *attr,
+-				     const char *buf, size_t count)
+-{
+-	struct sprd_rtc *rtc = dev_get_drvdata(dev);
+-	bool close = sysfs_streq(buf, "close");
+-	int ret;
+-
+-	if (!close && !sysfs_streq(buf, "renew"))
+-		return -EINVAL;
+-	mutex_lock(&rtc->rtc->ops_lock);
+-	ret = trial_lease_admit(rtc);
+-	if (!ret) {
+-		if (close)
+-			udx_lease_close(&rtc->trial_lease);
+-		else
+-			ret = udx_lease_renew(rtc, &rtc->trial_lease);
+-	}
+-	mutex_unlock(&rtc->rtc->ops_lock);
+-	return ret ? ret : count;
+-}
+-
+-static DEVICE_ATTR_WO(udx_trial_lease);
+ static ssize_t udx_trial_reboot_store(struct device *dev,
+ 				      struct device_attribute *attr,
+ 				      const char *buf, size_t count)
+@@ -978,7 +720,7 @@ static ssize_t udx_trial_reboot_store(struct device *dev,
+ 	struct sprd_rtc *rtc = dev_get_drvdata(dev);
+ 	char target[16], extra;
+ 	int ret, boot_target = trial_boot_target();
+-	bool recovery = false, upgrade = false;
++	bool recovery = false;
+ 
+ 	if (sscanf(buf, "%15s %c", target, &extra) != 1)
+ 		return -EINVAL;
+@@ -986,26 +728,17 @@ static ssize_t udx_trial_reboot_store(struct device *dev,
+ 		return -ENODEV;
+ 	if (!strcmp(target, "recovery"))
+ 		recovery = true;
+-	else if (!strcmp(target, "upgrade"))
+-		upgrade = true;
+-	else if (strcmp(target, "openwrt"))
++	else if (strcmp(target, "upgrade") && strcmp(target, "openwrt"))
+ 		return -EINVAL;
+ 	mutex_lock(&rtc->rtc->ops_lock);
+-	ret = trial_lease_admit(rtc);
+-	if (ret) {
+-		mutex_unlock(&rtc->rtc->ops_lock);
+-		return ret;
+-	}
+-	if (upgrade)
+-		ret = udx_lease_boot_upgrade(rtc, &rtc->trial_lease);
+-	else
+-		ret = udx_lease_boot_reboot(rtc, &rtc->trial_lease, recovery);
++	ret = trial_local_enabled(rtc) ?
++		udx_trial_reboot_target(rtc, recovery) : -ENODEV;
+ 	mutex_unlock(&rtc->rtc->ops_lock);
+ 	if (ret)
+-		dev_warn(dev, "trial reboot %s refused: %d; renewals closed\n",
++		dev_warn(dev, "trial reboot %s stage/reason failed: %d\n",
+ 			 target, ret);
+ 	else
+-		dev_info(dev, "trial reboot %s queued; CTRL remains14\n",
++		dev_info(dev, "trial reboot %s stage/reason recorded\n",
+ 			 target);
+ 	return ret ? ret : count;
+ }
+@@ -1013,9 +746,6 @@ static ssize_t udx_trial_reboot_store(struct device *dev,
+ static DEVICE_ATTR_WO(udx_trial_reboot);
+ static struct attribute *udx_trial_attrs[] = {
+ 	&dev_attr_udx_trial_stage.attr,
+-	&dev_attr_udx_trial_lease.attr,
+-	&dev_attr_udx_trial_lease_owner.attr,
+-	&dev_attr_udx_trial_lease_status.attr,
+ 	&dev_attr_udx_boot_policy.attr,
+ 	&dev_attr_udx_trial_reboot.attr,
+ 	NULL,
+diff --git a/drivers/soc/sprd/Kconfig b/drivers/soc/sprd/Kconfig
+index 805931354..b1566e5d9 100644
+--- a/drivers/soc/sprd/Kconfig
++++ b/drivers/soc/sprd/Kconfig
+@@ -1,13 +1,2 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+-config SPRD_UDX710_PMSYS
+-	bool "UDX710 PM_SYS CM4 firmware startup"
+-	depends on OF && (ARCH_SPRD || COMPILE_TEST) && MTD_UBI=y
+-	select MFD_SYSCON
+-	help
+-	  Read the board's unchanged nr_pmsys UBI volume while CM4 is held
+-	  in reset, then
+-	  release it after SIPC has registered the mailbox receive endpoint.
+-	  This does not enable the PM firmware's watchdog feeding service.
+-
+ source "drivers/soc/sprd/modem/sipc_v2/Kconfig"
+-source "drivers/soc/sprd/modem/cproc/Kconfig"
+diff --git a/drivers/soc/sprd/Makefile b/drivers/soc/sprd/Makefile
+index 7043d47fa..3031cc17b 100644
+--- a/drivers/soc/sprd/Makefile
++++ b/drivers/soc/sprd/Makefile
+@@ -1,4 +1,2 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+-obj-$(CONFIG_SPRD_UDX710_PMSYS) += udx710-pmsys.o
+ obj-$(CONFIG_SPRD_SIPC) += modem/sipc_v2/
+-obj-$(CONFIG_SPRD_CPROC) += modem/cproc/
+diff --git a/drivers/soc/sprd/modem/cproc/Kconfig b/drivers/soc/sprd/modem/cproc/Kconfig
+deleted file mode 100644
+index 350c8f092..000000000
+--- a/drivers/soc/sprd/modem/cproc/Kconfig
++++ /dev/null
+@@ -1,10 +0,0 @@
+-# SPDX-License-Identifier: GPL-2.0-only
+-config SPRD_CPROC
+-	bool "Experimental Spreadtrum AP communication processor loader"
+-	depends on ARM64 && OF && PROC_FS && SPRD_SIPC && EXPERT
+-	select MFD_SYSCON
+-	help
+-	  Preserve the vendor CPROC procfs boot, stop, image-load and status
+-	  interface, using the bootloader-supplied DT handoff and real syscons.
+-	  Built-in only; manual unbind is suppressed while complete CP reset
+-	  coordination and open-handle lifetime handling remain under review.
+diff --git a/drivers/soc/sprd/modem/cproc/Makefile b/drivers/soc/sprd/modem/cproc/Makefile
+deleted file mode 100644
+index d85b5eb18..000000000
+--- a/drivers/soc/sprd/modem/cproc/Makefile
++++ /dev/null
+@@ -1,2 +0,0 @@
+-
+-obj-$(CONFIG_SPRD_CPROC) += sprd_cproc.o
+diff --git a/drivers/soc/sprd/modem/cproc/sprd_cproc.c b/drivers/soc/sprd/modem/cproc/sprd_cproc.c
+deleted file mode 100644
+index 9a9df3690..000000000
+--- a/drivers/soc/sprd/modem/cproc/sprd_cproc.c
++++ /dev/null
+@@ -1,1846 +0,0 @@
+-// SPDX-License-Identifier: GPL-2.0-only
+-/*
+- * Copyright (C) 2018 Spreadtrum Communications Inc.
+- *
+- * This software is licensed under the terms of the GNU General Public
+- * License version 2, as published by the Free Software Foundation, and
+- * may be copied, distributed, and modified under those terms.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- */
+-
+-#include <linux/delay.h>
+-#include <linux/interrupt.h>
+-#include <linux/io.h>
+-#include <linux/kernel.h>
+-#include <linux/module.h>
+-#include <linux/miscdevice.h>
+-#include <linux/mutex.h>
+-#include <linux/mm.h>
+-#include <linux/of_address.h>
+-#include <linux/of_device.h>
+-#include <linux/of.h>
+-#include <linux/of_reserved_mem.h>
+-#include <linux/iopoll.h>
+-#include <linux/kref.h>
+-#include <linux/list.h>
+-#include <linux/overflow.h>
+-#include <linux/of_irq.h>
+-#include <linux/platform_device.h>
+-#include <linux/poll.h>
+-#include <linux/proc_fs.h>
+-#include <linux/sched.h>
+-#include <linux/slab.h>
+-#include <linux/uaccess.h>
+-#include <linux/unaligned.h>
+-#include <linux/wait.h>
+-
+-#include <linux/mfd/syscon.h>
+-#include <linux/regmap.h>
+-#include <linux/sipc.h>
+-#include <linux/debugfs.h>
+-#include <linux/sprd_cp.h>
+-
+-#include "../include/sprd_cproc.h"
+-
+-#ifdef CONFIG_DEBUG_FS
+-static const struct file_operations sprd_cproc_debug_fops;
+-static struct dentry *cproc_root;
+-
+-static void sprd_cproc_init_debugfs(void);
+-#endif
+-
+-#ifndef CONFIG_SPRD_SIPC_V2
+-#define SOC_MODEM 0
+-#define modem_ram_vmap_nocache(type, start, size) \
+-	shmem_ram_vmap_nocache((start), (size))
+-#define modem_ram_unmap(type, mem) shmem_ram_unmap((mem))
+-#endif
+-
+-#define CPROC_WDT_TRUE true
+-#define CPROC_WDT_FLASE false
+-/*
+- * Bound temporary uncached mappings while matching the 64 KiB loader writes.
+- * Page-sized mappings left thousands of lazy vmap descriptors after boot.
+- */
+-#define CPROC_VMALLOC_SIZE_LIMIT (64 * 1024)
+-#define MAX_CPROC_ENTRY_NUM 0x10
+-
+-enum {
+-	CP_NORMAL_STATUS = 0,
+-	CP_STOP_STATUS,
+-	CP_WDTIRQ_STATUS,
+-	CP_UNKNOWN_STATUS,
+-	CP_MAX_STATUS,
+-};
+-
+-enum {
+-	BE_SEGMFG = BIT(4),
+-	BE_RDONLY = BIT(5),
+-	BE_WRONLY = BIT(6),
+-	BE_CPDUMP = BIT(7),
+-	BE_MNDUMP = BIT(8),
+-	BE_RDWDT = BIT(9),
+-	BE_RDWDTS = BIT(10),
+-	BE_RDLDIF = BIT(11),
+-	BE_LD = BIT(12),
+-	BE_CTRL_ON = BIT(13),
+-	BE_CTRL_OFF = BIT(14),
+-	BE_IOCTL = BIT(15),
+-};
+-
+-enum {
+-	ARM_CTRL = 0x0, /* arm control */
+-	AGDSP_CTRL, /* agdsp control */
+-	CTRL_NR,
+-};
+-
+-static int cp_boot_mode;
+-
+-const char *cp_status_info[] = {
+-	"started\n",
+-	"stopped\n",
+-	"wdtirq\n",
+-	"unknown\n",
+-};
+-
+-const char *cproc_dts_args[CPROC_CTRL_NR] = {
+-	"shutdown",  "deepsleep", "corereset", "sysreset",
+-	"getstatus", "dspreset",  "fshutdown",
+-};
+-
+-struct cproc_proc_fs;
+-
+-struct cproc_proc_entry {
+-	char *name;
+-	struct proc_dir_entry *entry;
+-	struct cproc_device *cproc;
+-	unsigned int flag; /*if set bit4 => bit0~bit3 for segs index */
+-};
+-
+-struct cproc_proc_fs {
+-	struct proc_dir_entry *procdir;
+-	struct cproc_proc_entry entries[MAX_CPROC_ENTRY_NUM];
+-};
+-
+-struct cproc_device {
+-	struct list_head node;
+-	struct kref ref;
+-	struct mutex control_lock;
+-	bool misc_registered;
+-	bool removing;
+-	struct dentry *debugfs;
+-	struct miscdevice miscdev;
+-	struct cproc_init_data *initdata;
+-	void *vbase;
+-	int wdtirq;
+-	int wdtcnt;
+-	wait_queue_head_t wdtwait;
+-	char *name;
+-	int status;
+-	int type;
+-	struct cproc_proc_fs procfs;
+-};
+-
+-struct cproc_parent {
+-	struct list_head children;
+-};
+-
+-static void sprd_cproc_release_ref(struct kref *ref);
+-
+-struct cproc_dump_info {
+-	char parent_name[20];
+-	char name[20];
+-	u32 start_addr;
+-	u32 size;
+-};
+-
+-static int sprd_cproc_regmap_update_bit(struct cproc_ctrl *ctrl, u32 index,
+-					u32 mask, u32 val);
+-static int sprd_cproc_regmap_read(struct cproc_ctrl *ctrl, u32 index,
+-				  unsigned int *val);
+-
+-static int __init early_mode(char *str)
+-{
+-	if (!strcmp("shutdown", str))
+-		cp_boot_mode = 1;
+-
+-	return 0;
+-}
+-
+-early_param("modem", early_mode);
+-
+-static int sprd_cproc_open(struct inode *inode, struct file *filp)
+-{
+-	struct cproc_device *cproc =
+-		container_of(filp->private_data, struct cproc_device, miscdev);
+-
+-	kref_get(&cproc->ref);
+-	filp->private_data = cproc;
+-
+-	pr_debug("%s: %s!\n", __func__, cproc->initdata->devname);
+-
+-	return 0;
+-}
+-
+-static int sprd_cproc_release(struct inode *inode, struct file *filp)
+-{
+-	struct cproc_device *cproc = filp->private_data;
+-
+-	pr_debug("%s: %s !\n", __func__, cproc->initdata->devname);
+-
+-	kref_put(&cproc->ref, sprd_cproc_release_ref);
+-	return 0;
+-}
+-
+-static long sprd_cproc_ioctl(struct file *filp, unsigned int cmd,
+-			     unsigned long arg)
+-{
+-	return -ENOTTY;
+-}
+-
+-static int sprd_cproc_mmap(struct file *filp, struct vm_area_struct *vma)
+-{
+-	return -EOPNOTSUPP;
+-}
+-
+-static const struct file_operations sprd_cproc_fops = {
+-	.owner = THIS_MODULE,
+-	.open = sprd_cproc_open,
+-	.release = sprd_cproc_release,
+-	.unlocked_ioctl = sprd_cproc_ioctl,
+-	.mmap = sprd_cproc_mmap,
+-};
+-
+-static int cproc_proc_open(struct inode *inode, struct file *filp)
+-{
+-	struct cproc_proc_entry *entry =
+-		(struct cproc_proc_entry *)pde_data(inode);
+-
+-	pr_debug("%s: %s\n!", __func__, entry->name);
+-
+-	filp->private_data = entry;
+-
+-	return 0;
+-}
+-
+-static int cproc_proc_release(struct inode *inode, struct file *filp)
+-{
+-	return 0;
+-}
+-
+-static ssize_t cproc_proc_read(struct file *filp, char __user *buf,
+-			       size_t count, loff_t *ppos)
+-{
+-	struct cproc_proc_entry *entry =
+-		(struct cproc_proc_entry *)filp->private_data;
+-	struct cproc_device *cproc = entry->cproc;
+-	char *type = entry->name;
+-	unsigned int len;
+-	unsigned int flag;
+-	void *vmem;
+-	int rval;
+-	int i;
+-	unsigned long r;
+-	u32 base, size;
+-
+-	if (*ppos < 0)
+-		return -EINVAL;
+-	if (!count)
+-		return 0;
+-	flag = entry->flag;
+-	pr_debug("%s: type = %s, flag = 0x%x\n", __func__, type, flag);
+-
+-	if ((flag & BE_RDONLY) == 0)
+-		return -EPERM;
+-
+-	if (flag & (BE_CPDUMP | BE_MNDUMP))
+-		return -EOPNOTSUPP;
+-	if ((flag & (BE_CPDUMP | BE_SEGMFG)) != 0) {
+-		if (flag & BE_CPDUMP) {
+-			base = cproc->initdata->base;
+-			size = cproc->initdata->maxsz;
+-		} else {
+-			for (i = 0; i < cproc->initdata->segnr; i++) {
+-				if (strcmp(cproc->initdata->segs[i].name,
+-					   entry->name) == 0)
+-					break;
+-			}
+-
+-			if (i == cproc->initdata->segnr)
+-				return -EINVAL;
+-
+-			base = cproc->initdata->segs[i].base;
+-			size = cproc->initdata->segs[i].maxsz;
+-		}
+-
+-		if (*ppos >= size)
+-			return 0;
+-
+-		if (count > size - *ppos)
+-			count = size - *ppos;
+-
+-		r = count;
+-		i = 0;
+-		do {
+-			u32 copy_size = min_t(unsigned long, r,
+-					      CPROC_VMALLOC_SIZE_LIMIT);
+-
+-			vmem = modem_ram_vmap_nocache(
+-				SOC_MODEM,
+-				base + *ppos + CPROC_VMALLOC_SIZE_LIMIT * i,
+-				copy_size);
+-			if (!vmem) {
+-				unsigned long addr =
+-					base + *ppos +
+-					CPROC_VMALLOC_SIZE_LIMIT * i;
+-				pr_err("Unable to map cproc base: 0x%lx\n",
+-				       addr);
+-				if (i > 0) {
+-					*ppos += CPROC_VMALLOC_SIZE_LIMIT * i;
+-					return CPROC_VMALLOC_SIZE_LIMIT * i;
+-				} else {
+-					return -ENOMEM;
+-				}
+-			}
+-			if (r < CPROC_VMALLOC_SIZE_LIMIT)
+-				copy_size = r;
+-			if (unalign_copy_to_user(buf, vmem, copy_size)) {
+-				pr_err("cproc read copy data to user err!\n");
+-				modem_ram_unmap(SOC_MODEM, vmem);
+-				return -EFAULT;
+-			}
+-			modem_ram_unmap(SOC_MODEM, vmem);
+-			r -= copy_size;
+-			buf += copy_size;
+-			i++;
+-		} while (r > 0);
+-		/*remap and unmap in each read operation, shi yunlong, end*/
+-	} else if ((flag & BE_RDWDTS) != 0) {
+-		int status = READ_ONCE(cproc->status);
+-		const char *info;
+-
+-		if (status < 0 || status >= CP_MAX_STATUS)
+-			return -EINVAL;
+-		info = cp_status_info[status];
+-		len = strlen(info);
+-		if (*ppos >= len)
+-			return 0;
+-
+-		count = min_t(size_t, count, len - *ppos);
+-		if (unalign_copy_to_user(buf, info + *ppos, count)) {
+-			pr_err("cproc: read, copy data to user error!\n");
+-			return -EFAULT;
+-		}
+-	} else if ((flag & BE_RDWDT) != 0) {
+-		/* wait forever */
+-		rval = wait_event_interruptible(
+-			cproc->wdtwait, cproc->wdtcnt != CPROC_WDT_FLASE ||
+-						READ_ONCE(cproc->removing));
+-		if (rval < 0)
+-			return rval;
+-		if (READ_ONCE(cproc->removing))
+-			return -ENODEV;
+-
+-		len = strlen(cp_status_info[CP_WDTIRQ_STATUS]);
+-		if (*ppos >= len)
+-			return 0;
+-		count = min_t(size_t, count, len - *ppos);
+-		if (unalign_copy_to_user(
+-			    buf, cp_status_info[CP_WDTIRQ_STATUS] + *ppos,
+-			    count)) {
+-			pr_err("cproc: read, copy data to user error!\n");
+-			return -EFAULT;
+-		}
+-	} else if ((flag & BE_RDLDIF) != 0) {
+-		struct cproc_init_data *data = cproc->initdata;
+-		struct cproc_segments *segm = NULL;
+-		struct load_node lnode;
+-		char __user *p = buf;
+-
+-		/* lseek i to *ppos, equivalent to i = *ppos /
+-		 * sizeof(struct load_node)
+-		 */
+-		if (*ppos >= (loff_t)data->segnr * sizeof(lnode))
+-			return 0;
+-		i = DIV_ROUND_UP_ULL(*ppos, sizeof(lnode));
+-
+-		for (len = 0, segm = &data->segs[i]; i < data->segnr;
+-		     i++, segm++) {
+-			if (segm->maxsz == 0)
+-				break;
+-
+-			memset(&lnode, 0, sizeof(lnode));
+-			pr_debug("%s: segm[%d] name=%s base=0x%x,size=0x%0x\n",
+-				 __func__, i, segm->name, segm->base,
+-				 segm->maxsz);
+-			strscpy(lnode.name, segm->name, sizeof(lnode.name));
+-			lnode.base = segm->base;
+-			lnode.size = segm->maxsz;
+-			len += sizeof(lnode);
+-
+-			if (count < len) {
+-				len -= sizeof(lnode);
+-				break;
+-			}
+-
+-			if (unalign_copy_to_user(p, &lnode, sizeof(lnode))) {
+-				pr_err("%s: copy ldif to user err!\n",
+-				       __func__);
+-				return -EFAULT;
+-			}
+-
+-			p += sizeof(lnode);
+-		}
+-
+-		count = len;
+-
+-	} else if ((flag & BE_MNDUMP) != 0) {
+-		return -EOPNOTSUPP;
+-	} else {
+-		return -EINVAL;
+-	}
+-
+-	*ppos += count;
+-	return count;
+-}
+-
+-static int cproc_proc_copy_iram(struct cproc_device *cproc)
+-{
+-	struct cproc_ctrl *ctrl = cproc->initdata->ctrl;
+-	void __iomem *iram;
+-	u8 bytes[sizeof(u32)];
+-	size_t i, j;
+-
+-	if (ctrl->iram_loaded)
+-		return 0;
+-	if (!ctrl->iram_size || ctrl->iram_size > sizeof(ctrl->iram_data) ||
+-	    ctrl->iram_size % sizeof(u32))
+-		return -EINVAL;
+-
+-	iram = ioremap(ctrl->iram_addr, ctrl->iram_size);
+-	if (!iram)
+-		return -ENOMEM;
+-	/* OF has already converted big-endian DT cells to CPU u32 values.
+-	 * The ARM target consumes little-endian words, independent of AP
+-	 * kernel endianness. Byte I/O avoids unaligned/burst SRAM accesses.
+-	 */
+-	for (i = 0; i < ctrl->iram_size / sizeof(u32); i++) {
+-		put_unaligned_le32(ctrl->iram_data[i], bytes);
+-		for (j = 0; j < sizeof(bytes); j++)
+-			writeb(bytes[j], iram + i * sizeof(u32) + j);
+-	}
+-	/* Commit IRAM boot code before marking it loaded and releasing CP reset. */
+-	wmb();
+-	iounmap(iram);
+-	ctrl->iram_loaded = 1;
+-	return 0;
+-}
+-
+-static ssize_t cproc_proc_copy_from_user(void *to, const void __user *from,
+-					 unsigned long n)
+-{
+-	unsigned long i, ret, size;
+-	char *buf, *src;
+-	u32 *word_dst, *word_src;
+-	u8 *byte_dst, *byte_src;
+-
+-	buf = kzalloc(n, GFP_KERNEL);
+-	if (!buf)
+-		return -ENOMEM;
+-
+-	/* when the dst address is on aon sp iram, we use the function
+-	 * copy_from_user or the function memcpy to copy data to the dst
+-	 * in sharkl5(arm32), the instuction stm may cause aon sp iram
+-	 * repose unknown error to cpu. A ways to get around this
+-	 * probem is below, Firstly,  copy the user data to a ddr buf,
+-	 * than,  copy it to iram one byte by one byte
+-	 */
+-	ret = unalign_copy_from_user(buf, from, n);
+-
+-	/* Returns number of bytes that could not be copied.
+-	 * On success, this will be zero.
+-	 */
+-	src = buf;
+-
+-	/*Firstly, cpoy all word align address one word by one word*/
+-	size = (n - ret) / sizeof(u32);
+-	word_dst = (u32 *)to;
+-	word_src = (u32 *)src;
+-	for (i = 0; i < size; i++)
+-		*word_dst++ = *word_src++;
+-
+-	/*than, cpoy all left context one byte by one byte */
+-	size = (n - ret) % sizeof(u32);
+-	byte_dst = (u8 *)word_dst;
+-	byte_src = (u8 *)word_src;
+-	for (i = 0; i < size; i++)
+-		*byte_dst++ = *byte_src++;
+-
+-	kfree(buf);
+-
+-	return ret;
+-}
+-
+-static ssize_t cproc_proc_write_locked(struct file *filp,
+-				       const char __user *buf, size_t count,
+-				       loff_t *ppos)
+-{
+-	struct cproc_proc_entry *entry =
+-		(struct cproc_proc_entry *)filp->private_data;
+-	struct cproc_device *cproc = entry->cproc;
+-	char *type = entry->name;
+-	u32 base, size, offset;
+-	void *vmem;
+-	int i, ret;
+-	unsigned long r = count;
+-	unsigned int flag;
+-
+-	if (*ppos < 0)
+-		return -EINVAL;
+-	if (!count)
+-		return 0;
+-	flag = entry->flag;
+-	pr_debug("%s: type = %s flag = 0x%x\n", __func__, type, flag);
+-
+-	if ((flag & BE_WRONLY) == 0) {
+-		return -EPERM;
+-	} else if ((flag & BE_CTRL_ON) != 0) {
+-		if (READ_ONCE(cproc->status) != CP_STOP_STATUS)
+-			return -EBUSY;
+-		/* Every failure after hardware side effects remains unverified. */
+-		WRITE_ONCE(cproc->status, CP_UNKNOWN_STATUS);
+-		WRITE_ONCE(cproc->wdtcnt, CPROC_WDT_FLASE);
+-		ret = cproc->initdata->start(cproc);
+-		if (ret)
+-			return ret;
+-		/* Do not overwrite a watchdog IRQ observed during the command. */
+-		cmpxchg(&cproc->status, CP_UNKNOWN_STATUS, CP_NORMAL_STATUS);
+-		return count;
+-	} else if ((flag & BE_CTRL_OFF) != 0) {
+-		pr_debug("%s: stop!\n", __func__);
+-		WRITE_ONCE(cproc->status, CP_UNKNOWN_STATUS);
+-		ret = cproc->initdata->stop(cproc);
+-		if (ret)
+-			return ret;
+-		cmpxchg(&cproc->status, CP_UNKNOWN_STATUS, CP_STOP_STATUS);
+-		return count;
+-	} else if ((flag & BE_LD) != 0) {
+-		/* A failed start/stop cannot authorize overwriting a live domain. */
+-		if (READ_ONCE(cproc->status) != CP_STOP_STATUS)
+-			return -EBUSY;
+-		i = ~((~0) << 4) & flag;
+-		base = cproc->initdata->segs[i].base;
+-		size = cproc->initdata->segs[i].maxsz;
+-		if (*ppos >= size || count > size - *ppos)
+-			return -EFBIG;
+-		offset = *ppos;
+-
+-		pr_debug("%s: write %s, offse = %d!\n", __func__, type, offset);
+-
+-		if (!cproc->initdata->ctrl->iram_loaded &&
+-		    cproc->initdata->ctrl->iram_size > 0) {
+-			ret = cproc_proc_copy_iram(cproc);
+-			if (ret)
+-				return ret;
+-		}
+-	} else {
+-		pr_err("%s: flag erro!\n", __func__);
+-		return -EPERM;
+-	}
+-
+-	if (size <= offset) {
+-		pr_debug(
+-			"%s: max bin size <= offset write over! size = 0x%x, offset = 0x%x\n",
+-			__func__, size, offset);
+-		return 0;
+-	}
+-
+-	pr_debug("%s: write addr = 0x%08x, size = %lu\n!", __func__,
+-		 base + offset, r);
+-	count = min((size_t)(size - offset), count);
+-	r = count;
+-	i = 0;
+-	do {
+-		unsigned long ret;
+-		const char __user *pos;
+-		u32 copy_size =
+-			min_t(unsigned long, r, CPROC_VMALLOC_SIZE_LIMIT);
+-
+-		vmem = modem_ram_vmap_nocache(
+-			SOC_MODEM, base + offset + CPROC_VMALLOC_SIZE_LIMIT * i,
+-			copy_size);
+-		if (!vmem) {
+-			unsigned long addr =
+-				base + offset + CPROC_VMALLOC_SIZE_LIMIT * i;
+-			pr_err("Unable to map cproc base: 0x%lx\n", addr);
+-			if (i > 0) {
+-				*ppos += CPROC_VMALLOC_SIZE_LIMIT * i;
+-				return CPROC_VMALLOC_SIZE_LIMIT * i;
+-			} else {
+-				return -ENOMEM;
+-			}
+-		}
+-		if (r < CPROC_VMALLOC_SIZE_LIMIT)
+-			copy_size = r;
+-		pos = buf + CPROC_VMALLOC_SIZE_LIMIT * i;
+-		/* dst is aon sp iram, we must used cproc_proc_copy_from_user */
+-		if (strstr(cproc->initdata->devname, "pm"))
+-			ret = cproc_proc_copy_from_user(vmem, pos, copy_size);
+-		else
+-			ret = unalign_copy_from_user(vmem, pos, copy_size);
+-		if (ret) {
+-			pr_err("%s: copy data from user err = %lu!\n", __func__,
+-			       ret);
+-			modem_ram_unmap(SOC_MODEM, vmem);
+-			return -EFAULT;
+-		}
+-		modem_ram_unmap(SOC_MODEM, vmem);
+-		r -= copy_size;
+-		i++;
+-	} while (r > 0);
+-
+-	*ppos += count;
+-	return count;
+-}
+-
+-static ssize_t cproc_proc_write(struct file *filp, const char __user *buf,
+-				size_t count, loff_t *ppos)
+-{
+-	struct cproc_proc_entry *entry = filp->private_data;
+-	struct cproc_device *cproc = entry->cproc;
+-	ssize_t ret;
+-
+-	if (mutex_lock_interruptible(&cproc->control_lock))
+-		return -ERESTARTSYS;
+-	ret = READ_ONCE(cproc->removing) ?
+-		      -ENODEV :
+-		      cproc_proc_write_locked(filp, buf, count, ppos);
+-	mutex_unlock(&cproc->control_lock);
+-	return ret;
+-}
+-
+-static loff_t cproc_proc_lseek(struct file *filp, loff_t off, int whence)
+-{
+-	struct cproc_proc_entry *entry =
+-		(struct cproc_proc_entry *)filp->private_data;
+-	struct cproc_device *cproc = entry->cproc;
+-	char *type = entry->name;
+-	loff_t new;
+-
+-	switch (whence) {
+-	case SEEK_SET:
+-		new = off;
+-		break;
+-	case SEEK_CUR:
+-		if (check_add_overflow(filp->f_pos, off, &new))
+-			return -EINVAL;
+-		break;
+-	case SEEK_END:
+-		if (strcmp(type, "mem") == 0) {
+-			if (check_add_overflow((loff_t)cproc->initdata->maxsz,
+-					       off, &new))
+-				return -EINVAL;
+-		} else {
+-			return -EINVAL;
+-		}
+-		break;
+-	default:
+-		return -EINVAL;
+-	}
+-	return vfs_setpos(filp, new, MAX_LFS_FILESIZE);
+-}
+-
+-static unsigned int cproc_proc_poll(struct file *filp, poll_table *wait)
+-{
+-	struct cproc_proc_entry *entry =
+-		(struct cproc_proc_entry *)filp->private_data;
+-	struct cproc_device *cproc = entry->cproc;
+-	char *type = entry->name;
+-	unsigned int mask = 0;
+-
+-	pr_debug("%s: type = %s\n", __func__, type);
+-
+-	if (strcmp(type, "wdtirq") == 0) {
+-		poll_wait(filp, &cproc->wdtwait, wait);
+-		if (cproc->wdtcnt != CPROC_WDT_FLASE)
+-			mask |= POLLIN | POLLRDNORM;
+-	} else {
+-		pr_err("%s: file don't support poll !\n", __func__);
+-	}
+-	return mask;
+-}
+-
+-static long cproc_proc_ioctl_locked(struct file *filp, unsigned int cmd,
+-				    unsigned long arg)
+-{
+-	struct cproc_proc_entry *entry =
+-		(struct cproc_proc_entry *)filp->private_data;
+-	struct cproc_device *cproc = entry->cproc;
+-	struct cproc_ctrl *ctrl;
+-	long ret = -ENOTTY;
+-	u32 status, mask;
+-	int done;
+-
+-	if (!(entry->flag & BE_IOCTL)) {
+-		pr_err("ioctl into non-supported file %s!\n", entry->name);
+-
+-		return -EOPNOTSUPP;
+-	}
+-
+-	ctrl = cproc->initdata->ctrl;
+-	mask = ctrl->ctrl_mask[CPROC_CTRL_LOAD_STATUS];
+-
+-	switch (cmd) {
+-	case SPRD_CP_IOCGLDSTAT:
+-		if (!access_ok((void __user *)arg, _IOC_SIZE(cmd)))
+-			return -EFAULT;
+-
+-		ret = sprd_cproc_regmap_read(ctrl, CPROC_CTRL_LOAD_STATUS,
+-					     &status);
+-		if (ret)
+-			return ret;
+-		done = (status & mask) ? 1 : 0;
+-		ret = __put_user(done, (int __user *)arg);
+-		break;
+-
+-	case SPRD_CP_IOCCLDSTAT:
+-		ret = sprd_cproc_regmap_update_bit(ctrl, CPROC_CTRL_LOAD_STATUS,
+-						   mask, ~mask);
+-		break;
+-
+-	default:
+-		break;
+-	}
+-
+-	return ret;
+-}
+-
+-static long cproc_proc_ioctl(struct file *filp, unsigned int cmd,
+-			     unsigned long arg)
+-{
+-	struct cproc_proc_entry *entry = filp->private_data;
+-	struct cproc_device *cproc = entry->cproc;
+-	long ret;
+-
+-	if (mutex_lock_interruptible(&cproc->control_lock))
+-		return -ERESTARTSYS;
+-	ret = READ_ONCE(cproc->removing) ?
+-		      -ENODEV :
+-		      cproc_proc_ioctl_locked(filp, cmd, arg);
+-	mutex_unlock(&cproc->control_lock);
+-	return ret;
+-}
+-
+-static const struct proc_ops cpproc_fs_fops = {
+-	.proc_open = cproc_proc_open,
+-	.proc_release = cproc_proc_release,
+-	.proc_lseek = cproc_proc_lseek,
+-	.proc_read = cproc_proc_read,
+-	.proc_write = cproc_proc_write,
+-	.proc_poll = cproc_proc_poll,
+-	.proc_ioctl = cproc_proc_ioctl,
+-#ifdef CONFIG_COMPAT
+-	.proc_compat_ioctl = cproc_proc_ioctl,
+-#endif
+-};
+-
+-static int sprd_cproc_fs_init(struct cproc_device *cproc)
+-{
+-	u8 i, ucnt;
+-	unsigned int flag;
+-	umode_t mode;
+-	struct cproc_ctrl *ctrl;
+-
+-	cproc->procfs.procdir = proc_mkdir(cproc->name, NULL);
+-	if (!cproc->procfs.procdir)
+-		return -ENOMEM;
+-
+-	memset(cproc->procfs.entries, 0, sizeof(cproc->procfs.entries));
+-
+-	for (flag = 0, ucnt = 0, mode = 0, i = 0; i < MAX_CPROC_ENTRY_NUM;
+-	     i++, flag = 0, mode = 0) {
+-		switch (i) {
+-		case 0:
+-			cproc->procfs.entries[i].name = "start";
+-			flag |= (BE_WRONLY | BE_CTRL_ON);
+-			ucnt++;
+-			break;
+-
+-		case 1:
+-			cproc->procfs.entries[i].name = "stop";
+-			flag |= (BE_WRONLY | BE_CTRL_OFF);
+-			ucnt++;
+-			break;
+-
+-		case 2:
+-			cproc->procfs.entries[i].name = "wdtirq";
+-			flag |= (BE_RDONLY | BE_RDWDT);
+-			ucnt++;
+-			break;
+-
+-		case 3:
+-			cproc->procfs.entries[i].name = "status";
+-			flag |= (BE_RDONLY | BE_RDWDTS);
+-			ctrl = cproc->initdata->ctrl;
+-			if (ctrl->ctrl_reg[CPROC_CTRL_LOAD_STATUS] !=
+-			    INVALID_REG)
+-				flag |= BE_IOCTL;
+-			ucnt++;
+-			break;
+-
+-		case 4:
+-			cproc->procfs.entries[i].name = "ldinfo";
+-			flag |= (BE_RDONLY | BE_RDLDIF);
+-			ucnt++;
+-			break;
+-
+-		default:
+-			if (cproc->initdata->segnr + ucnt >
+-			    MAX_CPROC_ENTRY_NUM) {
+-				pr_debug("%s: entries size to small\n",
+-					 __func__);
+-				return -E2BIG;
+-			}
+-
+-			if (i - ucnt >= cproc->initdata->segnr)
+-				return 0;
+-
+-			cproc->procfs.entries[i].name =
+-				cproc->initdata->segs[i - ucnt].name;
+-			flag |= (BE_WRONLY | BE_RDONLY | BE_LD | BE_SEGMFG |
+-				 (i - ucnt));
+-			break;
+-		}
+-
+-		cproc->procfs.entries[i].flag = flag;
+-		cproc->procfs.entries[i].cproc = cproc;
+-
+-		mode |= 0600;
+-		if (flag & (BE_CPDUMP | BE_MNDUMP))
+-			mode |= 0004;
+-
+-		pr_debug("%s: entry name is %s type 0x%x addr: 0x%p\n",
+-			 __func__, cproc->procfs.entries[i].name,
+-			 cproc->procfs.entries[i].flag,
+-			 &cproc->procfs.entries[i]);
+-		cproc->procfs.entries[i].entry =
+-			proc_create_data(cproc->procfs.entries[i].name, mode,
+-					 cproc->procfs.procdir, &cpproc_fs_fops,
+-					 &cproc->procfs.entries[i]);
+-		if (!cproc->procfs.entries[i].entry)
+-			return -ENOMEM;
+-	}
+-	return 0;
+-}
+-
+-static void sprd_cproc_fs_exit(struct cproc_device *cproc)
+-{
+-	WRITE_ONCE(cproc->removing, true);
+-	wake_up_interruptible_all(&cproc->wdtwait);
+-	proc_remove(cproc->procfs.procdir);
+-	cproc->procfs.procdir = NULL;
+-}
+-
+-static int sprd_cproc_regmap_update_bit(struct cproc_ctrl *ctrl, u32 index,
+-					u32 mask, u32 val)
+-{
+-	u32 reg = ctrl->ctrl_reg[index];
+-	u32 orig, tmp, set, clr;
+-	int ret;
+-
+-	if (reg == INVALID_REG || IS_ERR_OR_NULL(ctrl->rmap[index]))
+-		return -EOPNOTSUPP;
+-	/* BIT(31) denotes the vendor's non-bit-operation register encoding. */
+-	if (reg & BIT(31)) {
+-		reg &= ~BIT(31);
+-		ret = regmap_read(ctrl->rmap[index], reg, &orig);
+-		if (ret)
+-			return ret;
+-		tmp = (orig & ~mask) | (val & mask);
+-		if (tmp == orig)
+-			return 0;
+-		return regmap_write(ctrl->rmap[index], reg, tmp);
+-	}
+-	/* Vendor syscons use separate SET/CLR aliases. Upstream regmap-mmio
+-	 * has no Spreadtrum update_bits callback, so issue those writes here.
+-	 */
+-	set = val & mask;
+-	clr = ~set & mask;
+-	if (set) {
+-		ret = regmap_write(ctrl->rmap[index], reg + 0x1000, set);
+-		if (ret)
+-			return ret;
+-	}
+-	if (clr)
+-		return regmap_write(ctrl->rmap[index], reg + 0x2000, clr);
+-	return 0;
+-}
+-
+-static int sprd_cproc_regmap_read(struct cproc_ctrl *ctrl, u32 index,
+-				  unsigned int *val)
+-{
+-	if (ctrl->ctrl_reg[index] == INVALID_REG ||
+-	    IS_ERR_OR_NULL(ctrl->rmap[index]))
+-		return -EOPNOTSUPP;
+-	return regmap_read(ctrl->rmap[index], ctrl->ctrl_reg[index] & ~BIT(31),
+-			   val);
+-}
+-
+-static irqreturn_t sprd_cproc_irq_handler(int irq, void *dev_id)
+-{
+-	struct cproc_device *cproc = (struct cproc_device *)dev_id;
+-
+-	pr_debug("%s: cp watchdog enable !\n", __func__);
+-	WRITE_ONCE(cproc->wdtcnt, CPROC_WDT_TRUE);
+-	WRITE_ONCE(cproc->status, CP_WDTIRQ_STATUS);
+-	wake_up_interruptible_all(&cproc->wdtwait);
+-	return IRQ_HANDLED;
+-}
+-
+-static int sprd_cproc_native_arm_start(void *arg)
+-{
+-	struct cproc_device *cproc = (struct cproc_device *)arg;
+-	struct cproc_init_data *pdata = cproc->initdata;
+-	struct cproc_ctrl *ctrl;
+-	int ret;
+-	u32 state;
+-
+-	if (!pdata)
+-		return -ENODEV;
+-	ctrl = pdata->ctrl;
+-
+-	pr_debug("%s: %s, type = 0x%x, status = 0x%x\n", __func__,
+-		 pdata->devname, cproc->type, cproc->status);
+-
+-	if (strstr(pdata->devname, "cp") || strstr(pdata->devname, "nrphy") ||
+-	    strstr(pdata->devname, "v3phy")) {
+-		ret = cproc_proc_copy_iram(cproc);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	/* clear force shutdown */
+-	pr_debug("%s: force shutdown reg =0x%x, mask =0x%x\n", __func__,
+-		 ctrl->ctrl_reg[CPROC_CTRL_SHUT_DOWN],
+-		 ctrl->ctrl_mask[CPROC_CTRL_SHUT_DOWN]);
+-	if (ctrl->ctrl_reg[CPROC_CTRL_SHUT_DOWN] != INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_SHUT_DOWN,
+-			ctrl->ctrl_mask[CPROC_CTRL_SHUT_DOWN],
+-			~ctrl->ctrl_mask[CPROC_CTRL_SHUT_DOWN]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	/* Clear CPROC_CTRL_EXT0 for some special modem core */
+-	if (ctrl->ctrl_reg[CPROC_CTRL_EXT0] != INVALID_REG) {
+-		pr_debug("%s: CPROC_CTRL_EXT0 reg =0x%x, mask =0x%x\n",
+-			 __func__, ctrl->ctrl_reg[CPROC_CTRL_EXT0],
+-			 ctrl->ctrl_mask[CPROC_CTRL_EXT0]);
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_EXT0, ctrl->ctrl_mask[CPROC_CTRL_EXT0],
+-			~ctrl->ctrl_mask[CPROC_CTRL_EXT0]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	/* clear force deep sleep */
+-	pr_debug("%s: deep sleep reg =0x%x, mask =0x%x\n", __func__,
+-		 ctrl->ctrl_reg[CPROC_CTRL_DEEP_SLEEP],
+-		 ctrl->ctrl_mask[CPROC_CTRL_DEEP_SLEEP]);
+-	if (ctrl->ctrl_reg[CPROC_CTRL_DEEP_SLEEP] != INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_DEEP_SLEEP,
+-			ctrl->ctrl_mask[CPROC_CTRL_DEEP_SLEEP],
+-			~ctrl->ctrl_mask[CPROC_CTRL_DEEP_SLEEP]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	/* clear core reset */
+-	pr_debug("%s: core reset reg =0x%x, mask =0x%x\n", __func__,
+-		 ctrl->ctrl_reg[CPROC_CTRL_CORE_RESET],
+-		 ctrl->ctrl_mask[CPROC_CTRL_CORE_RESET]);
+-	if (ctrl->ctrl_reg[CPROC_CTRL_CORE_RESET] != INVALID_REG) {
+-		msleep(50);
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_CORE_RESET,
+-			ctrl->ctrl_mask[CPROC_CTRL_CORE_RESET],
+-			~ctrl->ctrl_mask[CPROC_CTRL_CORE_RESET]);
+-		if (ret)
+-			return ret;
+-
+-		{
+-			int err;
+-
+-			err = read_poll_timeout(
+-				sprd_cproc_regmap_read, ret,
+-				ret || !(state &
+-					 ctrl->ctrl_mask[CPROC_CTRL_CORE_RESET]),
+-				10, 1000000, false, ctrl, CPROC_CTRL_CORE_RESET,
+-				&state);
+-			if (ret || err)
+-				return ret ? ret : err;
+-		}
+-	}
+-
+-	/* clear sys reset */
+-	pr_debug("%s: sys reset reg =0x%x, mask =0x%x\n", __func__,
+-		 ctrl->ctrl_reg[CPROC_CTRL_SYS_RESET],
+-		 ctrl->ctrl_mask[CPROC_CTRL_SYS_RESET]);
+-	if (ctrl->ctrl_reg[CPROC_CTRL_SYS_RESET] != INVALID_REG) {
+-		msleep(50);
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_SYS_RESET,
+-			ctrl->ctrl_mask[CPROC_CTRL_SYS_RESET],
+-			~ctrl->ctrl_mask[CPROC_CTRL_SYS_RESET]);
+-		if (ret)
+-			return ret;
+-
+-		{
+-			int err;
+-
+-			err = read_poll_timeout(
+-				sprd_cproc_regmap_read, ret,
+-				ret || !(state &
+-					 ctrl->ctrl_mask[CPROC_CTRL_SYS_RESET]),
+-				10, 1000000, false, ctrl, CPROC_CTRL_SYS_RESET,
+-				&state);
+-			if (ret || err)
+-				return ret ? ret : err;
+-		}
+-	}
+-
+-	return 0;
+-}
+-
+-static int sprd_cproc_native_arm_stop(void *arg)
+-{
+-	struct cproc_device *cproc = (struct cproc_device *)arg;
+-	struct cproc_init_data *pdata = cproc->initdata;
+-	struct cproc_ctrl *ctrl;
+-	int ret;
+-
+-	if (!pdata)
+-		return -ENODEV;
+-	ctrl = pdata->ctrl;
+-	ctrl->iram_loaded = 0;
+-	pr_debug("%s: stop %s\n", __func__, cproc->name);
+-
+-	/* hold tgdsp and ldsp */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_DSPCORE_RESET] & INVALID_REG) !=
+-	    INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_DSPCORE_RESET,
+-			ctrl->ctrl_mask[CPROC_CTRL_DSPCORE_RESET],
+-			ctrl->ctrl_mask[CPROC_CTRL_DSPCORE_RESET]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	/* reset core */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_CORE_RESET] & INVALID_REG) !=
+-	    INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_CORE_RESET,
+-			ctrl->ctrl_mask[CPROC_CTRL_CORE_RESET],
+-			ctrl->ctrl_mask[CPROC_CTRL_CORE_RESET]);
+-		if (ret)
+-			return ret;
+-		msleep(50);
+-	}
+-	/* reset sys */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_SYS_RESET] & INVALID_REG) !=
+-	    INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_SYS_RESET,
+-			ctrl->ctrl_mask[CPROC_CTRL_SYS_RESET],
+-			ctrl->ctrl_mask[CPROC_CTRL_SYS_RESET]);
+-		if (ret)
+-			return ret;
+-		msleep(50);
+-	}
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_DEEP_SLEEP] & INVALID_REG) !=
+-	    INVALID_REG) {
+-		/* force deep sleep */
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_DEEP_SLEEP,
+-			ctrl->ctrl_mask[CPROC_CTRL_DEEP_SLEEP],
+-			ctrl->ctrl_mask[CPROC_CTRL_DEEP_SLEEP]);
+-		if (ret)
+-			return ret;
+-		msleep(50);
+-	}
+-
+-	/* set CPROC_CTRL_EXT0 for some special modem core */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_EXT0] & INVALID_REG) != INVALID_REG) {
+-		/* CPROC_CTRL_EXT0 */
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_EXT0, ctrl->ctrl_mask[CPROC_CTRL_EXT0],
+-			ctrl->ctrl_mask[CPROC_CTRL_EXT0]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_SHUT_DOWN] & INVALID_REG) !=
+-	    INVALID_REG) {
+-		/* force shutdown */
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_SHUT_DOWN,
+-			ctrl->ctrl_mask[CPROC_CTRL_SHUT_DOWN],
+-			ctrl->ctrl_mask[CPROC_CTRL_SHUT_DOWN]);
+-		if (ret)
+-			return ret;
+-	}
+-	return 0;
+-}
+-
+-static int sprd_cproc_native_agdsp_start(void *arg)
+-{
+-	struct cproc_device *cproc = (struct cproc_device *)arg;
+-	struct cproc_init_data *pdata = cproc->initdata;
+-	struct cproc_ctrl *ctrl;
+-	int ret;
+-
+-	if (!pdata)
+-		return -ENODEV;
+-
+-	pr_debug("sprd_cproc: %s\n", __func__);
+-
+-	ctrl = pdata->ctrl;
+-
+-	/* clear agdsp sys shutdown */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_SHUT_DOWN] & INVALID_REG) !=
+-	    INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_SHUT_DOWN,
+-			ctrl->ctrl_mask[CPROC_CTRL_SHUT_DOWN],
+-			~ctrl->ctrl_mask[CPROC_CTRL_SHUT_DOWN]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	/* clear agdsp core shutdown */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_EXT0] & INVALID_REG) != INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_EXT0, ctrl->ctrl_mask[CPROC_CTRL_EXT0],
+-			~ctrl->ctrl_mask[CPROC_CTRL_EXT0]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	/* clear agdsp core reset */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_CORE_RESET] & INVALID_REG) !=
+-	    INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_CORE_RESET,
+-			ctrl->ctrl_mask[CPROC_CTRL_CORE_RESET],
+-			~ctrl->ctrl_mask[CPROC_CTRL_CORE_RESET]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	/* clear agdsp core deep sleep */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_DEEP_SLEEP] & INVALID_REG) !=
+-	    INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_DEEP_SLEEP,
+-			ctrl->ctrl_mask[CPROC_CTRL_DEEP_SLEEP],
+-			~ctrl->ctrl_mask[CPROC_CTRL_DEEP_SLEEP]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	/* config reg protection */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_EXT2] & INVALID_REG) != INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(ctrl, CPROC_CTRL_EXT2,
+-						   0xffff, ~0xffff);
+-		if (ret)
+-			return ret;
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_EXT2, ctrl->ctrl_mask[CPROC_CTRL_EXT2],
+-			ctrl->ctrl_mask[CPROC_CTRL_EXT2]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	/* config boot addr */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_EXT3] & INVALID_REG) != INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(ctrl, CPROC_CTRL_EXT3,
+-						   0xffffffff, ~0xffffffff);
+-		if (ret)
+-			return ret;
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_EXT3, ctrl->ctrl_mask[CPROC_CTRL_EXT3],
+-			ctrl->ctrl_mask[CPROC_CTRL_EXT3]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	/* config agdsp ctrl1 */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_EXT4] & INVALID_REG) != INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_EXT4, ctrl->ctrl_mask[CPROC_CTRL_EXT4],
+-			ctrl->ctrl_mask[CPROC_CTRL_EXT4]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	/* config agdsp ctrl */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_EXT5] & INVALID_REG) != INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_EXT5, ctrl->ctrl_mask[CPROC_CTRL_EXT5],
+-			ctrl->ctrl_mask[CPROC_CTRL_EXT5]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	/* agdsp reset */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_EXT1] & INVALID_REG) != INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_EXT1, ctrl->ctrl_mask[CPROC_CTRL_EXT1],
+-			~ctrl->ctrl_mask[CPROC_CTRL_EXT1]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	return 0;
+-}
+-
+-static int sprd_cproc_native_agdsp_stop(void *arg)
+-{
+-	struct cproc_device *cproc = (struct cproc_device *)arg;
+-	struct cproc_init_data *pdata = cproc->initdata;
+-	struct cproc_ctrl *ctrl;
+-	int ret;
+-
+-	if (!pdata)
+-		return -ENODEV;
+-
+-	pr_debug("sprd_cproc: %s\n", __func__);
+-
+-	ctrl = pdata->ctrl;
+-
+-	/* agdsp core reset */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_EXT1] & INVALID_REG) != INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_EXT1, ctrl->ctrl_mask[CPROC_CTRL_EXT1],
+-			ctrl->ctrl_mask[CPROC_CTRL_EXT1]);
+-		if (ret)
+-			return ret;
+-		msleep(50);
+-	}
+-
+-	/* agdsp sys reset */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_CORE_RESET] & INVALID_REG) !=
+-	    INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_CORE_RESET,
+-			ctrl->ctrl_mask[CPROC_CTRL_CORE_RESET],
+-			ctrl->ctrl_mask[CPROC_CTRL_CORE_RESET]);
+-		if (ret)
+-			return ret;
+-		msleep(50);
+-	}
+-
+-	/* agdsp force deep sleep */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_DEEP_SLEEP] & INVALID_REG) !=
+-	    INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_DEEP_SLEEP,
+-			ctrl->ctrl_mask[CPROC_CTRL_DEEP_SLEEP],
+-			ctrl->ctrl_mask[CPROC_CTRL_DEEP_SLEEP]);
+-		if (ret)
+-			return ret;
+-		msleep(50);
+-	}
+-
+-	/* agdsp core force shutdown */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_EXT0] & INVALID_REG) != INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_EXT0, ctrl->ctrl_mask[CPROC_CTRL_EXT0],
+-			ctrl->ctrl_mask[CPROC_CTRL_EXT0]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	/* agdsp sys force shutdown */
+-	if ((ctrl->ctrl_reg[CPROC_CTRL_SHUT_DOWN] & INVALID_REG) !=
+-	    INVALID_REG) {
+-		ret = sprd_cproc_regmap_update_bit(
+-			ctrl, CPROC_CTRL_SHUT_DOWN,
+-			ctrl->ctrl_mask[CPROC_CTRL_SHUT_DOWN],
+-			ctrl->ctrl_mask[CPROC_CTRL_SHUT_DOWN]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	return 0;
+-}
+-
+-static int sprd_cproc_native_start(void *arg)
+-{
+-	struct cproc_device *cproc = (struct cproc_device *)arg;
+-
+-	if (!cproc)
+-		return -ENODEV;
+-
+-	pr_debug("sprd_cproc: native start type = 0x%x\n", cproc->type);
+-	if (cproc->type == ARM_CTRL)
+-		return sprd_cproc_native_arm_start(cproc);
+-	else if (cproc->type == AGDSP_CTRL)
+-		return sprd_cproc_native_agdsp_start(cproc);
+-
+-	return -EINVAL;
+-}
+-
+-static int sprd_cproc_native_stop(void *arg)
+-{
+-	struct cproc_device *cproc = (struct cproc_device *)arg;
+-
+-	if (!cproc)
+-		return -ENODEV;
+-
+-	pr_debug("sprd_cproc: native stop type = 0x%x\n", cproc->type);
+-	if (cproc->type == ARM_CTRL)
+-		return sprd_cproc_native_arm_stop(cproc);
+-	else if (cproc->type == AGDSP_CTRL)
+-		return sprd_cproc_native_agdsp_stop(cproc);
+-
+-	return -EINVAL;
+-}
+-
+-static u32 g_common_loader[] = { 0xe59f0000, 0xe12fff10, 0x8ae00000 };
+-
+-static u32 g_r5_loader[] = {
+-	0xee110f10, 0xe3c00005, 0xe3c00a01, 0xf57ff04f, 0xee010f10, 0xf57ff06f,
+-	0xee110f30, 0xe3800802, 0xe3800801, 0xe3c00902, 0xee010f30, 0xf57ff04f,
+-	0xe3a00000, 0xee070f15, 0xee0f0f15, 0xe3a01000, 0xee061f12, 0xf57ff06f,
+-	0xe3a01000, 0xee061f11, 0xe3a0103f, 0xee061f51, 0xe3a01f42, 0xee061f91,
+-	0xee110f30, 0xe3c00802, 0xe3c00801, 0xe3c00902, 0xee010f30, 0xee110f10,
+-	0xe3800001, 0xf57ff04f, 0xee010f10, 0xf57ff06f, 0xe51ff004, 0x8b800600
+-};
+-
+-struct sprd_cproc_data {
+-	int (*start)(void *arg);
+-	int (*stop)(void *arg);
+-	u32 iram_size;
+-	u32 *iramdata;
+-};
+-
+-static struct sprd_cproc_data g_cproc_data = {
+-	.start = sprd_cproc_native_start,
+-	.stop = sprd_cproc_native_stop,
+-	.iram_size = sizeof(g_common_loader),
+-	.iramdata = &g_common_loader[0],
+-};
+-
+-static struct sprd_cproc_data g_cproc_data_pubcp = {
+-	.start = sprd_cproc_native_start,
+-	.stop = sprd_cproc_native_stop,
+-	.iram_size = sizeof(g_r5_loader),
+-	.iramdata = &g_r5_loader[0],
+-};
+-
+-static const struct of_device_id sprd_cproc_match_table[] = {
+-	{ .compatible = "sprd,scproc", .data = &g_cproc_data },
+-	{ .compatible = "sprd,scproc_pubcp", .data = &g_cproc_data_pubcp },
+-	{},
+-};
+-MODULE_DEVICE_TABLE(of, sprd_cproc_match_table);
+-
+-static int sprd_cproc_parse_dt(struct cproc_init_data **init,
+-			       struct device_node *node)
+-{
+-	struct cproc_init_data *pdata;
+-	struct cproc_ctrl *ctrl;
+-	struct resource res;
+-	struct device_node *np = node, *chd = NULL;
+-	int ret, i, segnr;
+-	u32 iram_dsize;
+-	u32 cr_num;
+-	struct reserved_mem *rmem;
+-	struct device_node *mem_np;
+-	phys_addr_t allowed_end;
+-	int index;
+-	struct device_node *parent_np = of_get_parent(node);
+-
+-	struct sprd_cproc_data *pcproc_data;
+-	const struct of_device_id *of_id =
+-		of_match_node(sprd_cproc_match_table, parent_np);
+-	of_node_put(parent_np);
+-	if (of_id) {
+-		pcproc_data = (struct sprd_cproc_data *)of_id->data;
+-	} else {
+-		pr_err("%s: not find matched id!\n", __func__);
+-		return -ENODEV;
+-	}
+-
+-	/* Only an actual reserved-memory owner can authorize AP load accesses.
+-	 * In particular the 336 MiB cptl reg window is larger than its 272 MiB
+-	 * reserved carveout; reg/ranges alone must never authorize RAM access.
+-	 */
+-	mem_np = of_parse_phandle(np, "memory-region", 0);
+-	if (!mem_np)
+-		return -EINVAL;
+-	rmem = of_reserved_mem_lookup(mem_np);
+-	of_node_put(mem_np);
+-	if (!rmem || !rmem->size || !IS_ALIGNED(rmem->base, PAGE_SIZE) ||
+-	    !IS_ALIGNED(rmem->size, PAGE_SIZE) ||
+-	    check_add_overflow(rmem->base, rmem->size - 1, &allowed_end))
+-		return -EINVAL;
+-
+-	segnr = of_get_available_child_count(np);
+-	if (!segnr || segnr > MAX_CPROC_ENTRY_NUM - 7)
+-		return -EINVAL;
+-	pr_debug("%s: segnr = %d\n", __func__, segnr);
+-	pdata = kzalloc(sizeof(*pdata) + segnr * sizeof(struct cproc_segments),
+-			GFP_KERNEL);
+-	if (!pdata)
+-		return -ENOMEM;
+-
+-	ctrl = kzalloc_obj(*ctrl, GFP_KERNEL);
+-	if (!ctrl) {
+-		kfree(pdata);
+-		return -ENOMEM;
+-	}
+-
+-	ret = of_property_read_string(np, "sprd,name",
+-				      (const char **)&pdata->devname);
+-	if (ret) {
+-		pr_err("cproc: parse name error!\n");
+-		goto error;
+-	}
+-
+-	pr_debug("cproc: parse devname = %s\n", pdata->devname);
+-	/* get ic type */
+-	ret = of_property_read_u32(np, "sprd,type", (u32 *)&pdata->type);
+-	if (ret) {
+-		if (strstr(pdata->devname, "pm"))
+-			pdata->type = ARM_CTRL;
+-		else if (strstr(pdata->devname, "agdsp"))
+-			pdata->type = AGDSP_CTRL;
+-		else
+-			pdata->type = ARM_CTRL;
+-	}
+-
+-	for (i = 0; i < CPROC_CTRL_NR; i++)
+-		ctrl->ctrl_reg[i] = INVALID_REG;
+-
+-	for (cr_num = 0;
+-	     cr_num < ARRAY_SIZE(cproc_dts_args) && cproc_dts_args[cr_num];
+-	     cr_num++) {
+-		struct of_phandle_args args;
+-		int named_index;
+-
+-		named_index = of_property_match_string(np, "syscon-names",
+-						       cproc_dts_args[cr_num]);
+-		if (named_index < 0) {
+-			/* The five base controls are part of the boot contract. */
+-			if (cr_num <= CPROC_CTRL_LOAD_STATUS) {
+-				ret = named_index;
+-				goto error;
+-			}
+-			continue;
+-		}
+-		ret = of_parse_phandle_with_args(np, "syscons", "#syscon-cells",
+-						 named_index, &args);
+-		if (ret)
+-			goto error;
+-		if (args.args_count != 2) {
+-			of_node_put(args.np);
+-			ret = -EINVAL;
+-			goto error;
+-		}
+-		ctrl->rmap[cr_num] = syscon_node_to_regmap(args.np);
+-		of_node_put(args.np);
+-		if (IS_ERR(ctrl->rmap[cr_num])) {
+-			ret = PTR_ERR(ctrl->rmap[cr_num]);
+-			goto error;
+-		}
+-		ctrl->ctrl_reg[cr_num] = args.args[0];
+-		ctrl->ctrl_mask[cr_num] = args.args[1];
+-		ctrl->reg_nr = cr_num + 1;
+-	}
+-
+-	/* get iram size */
+-	ret = of_property_read_u32(np, "sprd,iram-dsize", &iram_dsize);
+-	if (ret)
+-		iram_dsize = MAX_IRAM_DATA_NUM;
+-	/* The DT count is in words and the destination is a fixed array.
+-	 * Reject, rather than truncate, an invalid boot handoff.
+-	 */
+-	if ((of_id->data == &g_cproc_data_pubcp && !iram_dsize) ||
+-	    iram_dsize > ARRAY_SIZE(ctrl->iram_data)) {
+-		pr_err("cproc: IRAM word count %u exceeds %zu\n", iram_dsize,
+-		       ARRAY_SIZE(ctrl->iram_data));
+-		ret = -EOVERFLOW;
+-		goto error;
+-	}
+-
+-	/* get iram data */
+-	ret = of_property_read_u32_array(np, "sprd,iram-data", ctrl->iram_data,
+-					 iram_dsize);
+-	if (ret) {
+-		if (of_id->data == &g_cproc_data_pubcp)
+-			goto error;
+-		ctrl->iram_size = 0;
+-	} else {
+-		ctrl->iram_size = iram_dsize * sizeof(u32);
+-	}
+-
+-	for (i = 0; i < iram_dsize; i++) {
+-		pr_debug("%s: iram-data[%d] = 0x%08x\n", __func__, i,
+-			 ctrl->iram_data[i]);
+-	}
+-
+-	index = 0;
+-	if (ctrl->iram_size > 0) {
+-		/* get iram_base+offset */
+-		ret = of_address_to_resource(np, index, &res);
+-		if (ret) {
+-			pr_err("cproc: parse iram base error!");
+-			goto error;
+-		}
+-		if (ctrl->iram_size > resource_size(&res)) {
+-			ret = -EINVAL;
+-			goto error;
+-		}
+-		ctrl->iram_addr = res.start;
+-		pr_debug("%s: iram_addr=0x%p\n", __func__,
+-			 (void *)ctrl->iram_addr);
+-		index++;
+-	}
+-
+-	/* get cp base */
+-	ret = of_address_to_resource(np, index, &res);
+-	if (ret) {
+-		pr_err("cproc: parse cp base error!\n");
+-		goto error;
+-	}
+-
+-	if (res.start > U32_MAX || !resource_size(&res) ||
+-	    resource_size(&res) > U32_MAX || res.end > U32_MAX) {
+-		ret = -EOVERFLOW;
+-		goto error;
+-	}
+-	pdata->base = res.start;
+-	pdata->maxsz = res.end - res.start + 1;
+-	pr_debug("%s: cp base = 0x%p, size = 0x%x\n", __func__,
+-		 (void *)pdata->base, pdata->maxsz);
+-	index++;
+-
+-	/* Preserve no peer-controlled dump mapping. The dump interfaces stay
+-	 * absent until every descriptor is bounded and per-open state exists.
+-	 */
+-
+-	/* get irq */
+-	if (of_find_property(np, "interrupts", NULL) ||
+-	    of_find_property(np, "interrupts-extended", NULL)) {
+-		pdata->wdtirq = of_irq_get(np, 0);
+-		if (pdata->wdtirq < 0) {
+-			ret = pdata->wdtirq;
+-			goto error;
+-		}
+-	}
+-	pr_debug("%s: wdt irq %u\n", __func__, pdata->wdtirq);
+-
+-	i = 0;
+-	for_each_available_child_of_node(np, chd) {
+-		struct cproc_segments *seg;
+-
+-		seg = &pdata->segs[i];
+-		ret = of_property_read_string(chd, "cproc,name",
+-					      (const char **)&seg->name);
+-		if (ret) {
+-			pr_err("cproc: parse chil[%d] name error!\n", i);
+-			goto error;
+-		}
+-		pr_debug("%s: child node [%d] name=%s\n", __func__, i,
+-			 seg->name);
+-		/* get child base addr */
+-		ret = of_address_to_resource(chd, 0, &res);
+-		if (ret) {
+-			pr_err("cproc: parse chil[%d] base error!\n", i);
+-			goto error;
+-		}
+-		if (res.start > U32_MAX || !resource_size(&res) ||
+-		    resource_size(&res) > U32_MAX || res.end > U32_MAX) {
+-			ret = -EOVERFLOW;
+-			goto error;
+-		}
+-		if (res.start < rmem->base || res.end > allowed_end ||
+-		    res.start < pdata->base ||
+-		    res.end >= (u64)pdata->base + pdata->maxsz) {
+-			pr_err("cproc: load segment outside reserved owner/window\n");
+-			ret = -ERANGE;
+-			goto error;
+-		}
+-		seg->base = res.start;
+-		seg->maxsz = res.end - res.start + 1;
+-		pr_debug("%s: child node [%d] base=0x%x, size=0x%0x\n",
+-			 __func__, i, seg->base, seg->maxsz);
+-		i++;
+-	}
+-
+-	pdata->segnr = segnr;
+-
+-	pdata->start = pcproc_data->start;
+-	pdata->stop = pcproc_data->stop;
+-
+-	pdata->ctrl = ctrl;
+-	*init = pdata;
+-	return 0;
+-error:
+-	of_node_put(chd);
+-	if (pdata->wdtirq > 0)
+-		irq_dispose_mapping(pdata->wdtirq);
+-	if (pdata->mini_mem)
+-		modem_ram_unmap(SOC_MODEM, pdata->mini_mem);
+-	kfree(ctrl);
+-	kfree(pdata);
+-	return ret;
+-}
+-
+-static void sprd_cproc_destroy_pdata(struct cproc_init_data **init)
+-{
+-	struct cproc_init_data *pdata = *init;
+-
+-	if (pdata) {
+-		if (pdata->mini_mem)
+-			modem_ram_unmap(SOC_MODEM, pdata->mini_mem);
+-		if (pdata->wdtirq > 0)
+-			irq_dispose_mapping(pdata->wdtirq);
+-		kfree(pdata->ctrl);
+-		kfree(pdata);
+-	}
+-	*init = NULL;
+-}
+-
+-static void sprd_cproc_release_ref(struct kref *ref)
+-{
+-	struct cproc_device *cproc =
+-		container_of(ref, struct cproc_device, ref);
+-
+-	sprd_cproc_destroy_pdata(&cproc->initdata);
+-	kfree(cproc);
+-}
+-
+-static void sprd_cproc_remove_child(struct cproc_device *cproc)
+-{
+-	sprd_cproc_fs_exit(cproc);
+-	debugfs_remove(cproc->debugfs);
+-	if (cproc->wdtirq > 0)
+-		free_irq(cproc->wdtirq, cproc);
+-	if (cproc->misc_registered)
+-		misc_deregister(&cproc->miscdev);
+-	kref_put(&cproc->ref, sprd_cproc_release_ref);
+-}
+-
+-static void sprd_cproc_remove(struct platform_device *pdev)
+-{
+-	struct cproc_parent *parent = platform_get_drvdata(pdev);
+-	struct cproc_device *cproc, *tmp;
+-
+-	list_for_each_entry_safe(cproc, tmp, &parent->children, node) {
+-		list_del(&cproc->node);
+-		sprd_cproc_remove_child(cproc);
+-	}
+-}
+-
+-static int sprd_cproc_probe(struct platform_device *pdev)
+-{
+-	struct cproc_parent *parent;
+-	struct device_node *child;
+-	int ret;
+-
+-	if (!pdev->dev.of_node)
+-		return -ENODEV;
+-	parent = devm_kzalloc(&pdev->dev, sizeof(*parent), GFP_KERNEL);
+-	if (!parent)
+-		return -ENOMEM;
+-	INIT_LIST_HEAD(&parent->children);
+-	platform_set_drvdata(pdev, parent);
+-
+-	for_each_available_child_of_node(pdev->dev.of_node, child) {
+-		struct cproc_device *cproc;
+-
+-		cproc = kzalloc_obj(*cproc, GFP_KERNEL);
+-		if (!cproc) {
+-			ret = -ENOMEM;
+-			goto fail;
+-		}
+-		kref_init(&cproc->ref);
+-		mutex_init(&cproc->control_lock);
+-		ret = sprd_cproc_parse_dt(&cproc->initdata, child);
+-		if (ret) {
+-			kfree(cproc);
+-			goto fail;
+-		}
+-		list_add_tail(&cproc->node, &parent->children);
+-		cproc->name = cproc->initdata->devname;
+-		cproc->type = cproc->initdata->type;
+-		/* Boot arguments express intent, not a verified hardware state. */
+-		cproc->status = CP_UNKNOWN_STATUS;
+-		dev_dbg(&pdev->dev,
+-			"CP boot shutdown requested: %d; state unknown\n",
+-			cp_boot_mode);
+-		init_waitqueue_head(&cproc->wdtwait);
+-		cproc->miscdev.minor = MISC_DYNAMIC_MINOR;
+-		cproc->miscdev.name = cproc->name;
+-		cproc->miscdev.fops = &sprd_cproc_fops;
+-		cproc->miscdev.parent = &pdev->dev;
+-		ret = misc_register(&cproc->miscdev);
+-		if (ret)
+-			goto fail;
+-		cproc->misc_registered = true;
+-
+-		if (cproc->initdata->wdtirq > 0) {
+-			ret = request_irq(cproc->initdata->wdtirq,
+-					  sprd_cproc_irq_handler, 0,
+-					  cproc->name, cproc);
+-			if (ret)
+-				goto fail;
+-			cproc->wdtirq = cproc->initdata->wdtirq;
+-		}
+-		ret = sprd_cproc_fs_init(cproc);
+-		if (ret)
+-			goto fail;
+-#ifdef CONFIG_DEBUG_FS
+-		sprd_cproc_init_debugfs();
+-		cproc->debugfs = debugfs_create_file(cproc->name, 0400,
+-						     cproc_root,
+-						     cproc->initdata,
+-						     &sprd_cproc_debug_fops);
+-#endif
+-	}
+-	if (list_empty(&parent->children))
+-		return -ENODEV;
+-	return 0;
+-fail:
+-	of_node_put(child);
+-	sprd_cproc_remove(pdev);
+-	return dev_err_probe(&pdev->dev, ret,
+-			     "cannot register CPROC children\n");
+-}
+-
+-static struct platform_driver sprd_cproc_driver = {
+-	.probe    = sprd_cproc_probe,
+-	.remove   = sprd_cproc_remove,
+-	.driver   = {
+-		.owner = THIS_MODULE,
+-		.name = "sprd_cproc",
+-		.suppress_bind_attrs = true,
+-		.of_match_table = sprd_cproc_match_table,
+-	},
+-};
+-
+-static int __init sprd_cproc_init(void)
+-{
+-	if (platform_driver_register(&sprd_cproc_driver) != 0) {
+-		pr_err("%s: platform drv register Failed\n", __func__);
+-		return -1;
+-	}
+-
+-	return 0;
+-}
+-
+-static void __exit sprd_cproc_exit(void)
+-{
+-	platform_driver_unregister(&sprd_cproc_driver);
+-}
+-
+-#if defined(CONFIG_DEBUG_FS)
+-static int sprd_cproc_debug_show(struct seq_file *m, void *private)
+-{
+-	struct cproc_init_data *pdata = (struct cproc_init_data *)m->private;
+-	struct cproc_ctrl *ctrl;
+-	struct cproc_segments *segs;
+-	int i;
+-
+-	sipc_debug_putline(m, '*', 100);
+-
+-	if (!pdata)
+-		return 0;
+-
+-	seq_printf(m, "cproc %s info:\n", pdata->devname);
+-	seq_printf(m, "wdtirq: %d, type: %d\n", pdata->wdtirq, pdata->type);
+-	seq_printf(m, "base: 0x%08x, size: 0x%08x\n", (u32)pdata->base,
+-		   pdata->maxsz);
+-
+-	if (pdata->mini_mem)
+-		seq_printf(m, "mini dump mem: 0x%08x, size: 0x%08x\n",
+-			   (u32)pdata->mini_mem_paddr, pdata->mini_mem_size);
+-
+-	if (pdata->ctrl) {
+-		ctrl = pdata->ctrl;
+-		if (ctrl->iram_size > 0) {
+-			seq_printf(m, "iram_addr: 0x%08x, iram_size: 0x%08x\n",
+-				   (u32)ctrl->iram_addr, ctrl->iram_size);
+-
+-			sipc_debug_putline(m, '-', 80);
+-			seq_puts(m, "iram data list:\n");
+-
+-			for (i = 0; i < ctrl->iram_size / sizeof(u32); i++) {
+-				if ((i + 1) % 4 == 0)
+-					seq_printf(m, "0x%08x\n",
+-						   ctrl->iram_data[i]);
+-				else
+-					seq_printf(m, "0x%08x, ",
+-						   ctrl->iram_data[i]);
+-			}
+-			seq_puts(m, "\n");
+-			sipc_debug_putline(m, '-', 80);
+-		}
+-
+-		sipc_debug_putline(m, '-', 80);
+-		seq_puts(m, "ctrl reg list:\n");
+-
+-		for (i = 0; i < ctrl->reg_nr; i++)
+-			seq_printf(m, "reg[%2d]: reg=0x%08x, mask=0x%08x\n", i,
+-				   ctrl->ctrl_reg[i], ctrl->ctrl_mask[i]);
+-		sipc_debug_putline(m, '-', 80);
+-	}
+-
+-	segs = pdata->segs;
+-	sipc_debug_putline(m, '-', 80);
+-	seq_puts(m, "segment list:\n");
+-
+-	for (i = 0; i < pdata->segnr; i++)
+-		seq_printf(m,
+-			   "segment[%2d]:base=0x%08x, size=0x%08x, name=%s\n",
+-			   i, segs[i].base, segs[i].maxsz, segs[i].name);
+-
+-	sipc_debug_putline(m, '-', 80);
+-
+-	return 0;
+-}
+-
+-static int sprd_cproc_debug_open(struct inode *inode, struct file *file)
+-{
+-	return single_open(file, sprd_cproc_debug_show, inode->i_private);
+-}
+-
+-static const struct file_operations sprd_cproc_debug_fops = {
+-	.open = sprd_cproc_debug_open,
+-	.read = seq_read,
+-	.llseek = seq_lseek,
+-	.release = single_release,
+-};
+-
+-static void sprd_cproc_init_debugfs(void)
+-{
+-	if (!cproc_root)
+-		cproc_root = debugfs_create_dir("cproc", NULL);
+-}
+-#endif /* CONFIG_DEBUG_FS */
+-
+-module_init(sprd_cproc_init);
+-module_exit(sprd_cproc_exit);
+-
+-MODULE_DESCRIPTION("SPRD Communication Processor Driver");
+-MODULE_LICENSE("GPL");
+diff --git a/drivers/soc/sprd/modem/include/sprd_cproc.h b/drivers/soc/sprd/modem/include/sprd_cproc.h
+deleted file mode 100644
+index 80d2d3f44..000000000
+--- a/drivers/soc/sprd/modem/include/sprd_cproc.h
++++ /dev/null
+@@ -1,94 +0,0 @@
+-/* SPDX-License-Identifier: GPL-2.0-only */
+-/*
+- * Copyright (C) 2018 Spreadtrum Communications Inc.
+- *
+- * This software is licensed under the terms of the GNU General Public
+- * License version 2, as published by the Free Software Foundation, and
+- * may be copied, distributed, and modified under those terms.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- */
+-
+-#ifndef _SPRD_CPROC_H
+-#define _SPRD_CPROC_H
+-#define INVALID_REG (0xff)
+-enum {
+-	CPROC_CTRL_SHUT_DOWN = 0,
+-	CPROC_CTRL_DEEP_SLEEP = 1,
+-	CPROC_CTRL_CORE_RESET = 2,
+-	CPROC_CTRL_SYS_RESET = 3,
+-	CPROC_CTRL_LOAD_STATUS = 4,
+-	CPROC_CTRL_DSPCORE_RESET = 5,
+-	CPROC_CTRL_EXT0,
+-	CPROC_CTRL_EXT1,
+-	CPROC_CTRL_EXT2,
+-	CPROC_CTRL_EXT3,
+-	CPROC_CTRL_EXT4,
+-	CPROC_CTRL_EXT5,
+-	CPROC_CTRL_EXT6,
+-	CPROC_CTRL_NR,
+-};
+-
+-#define CPROC_IRAM_DATA_NR 3
+-
+-enum {
+-	CPROC_REGION_CP_MEM = 0,
+-	CPROC_REGION_IRAM_MEM = 1,
+-	CPROC_REGION_CTRL_REG = 1,
+-	CPROC_REGION_NR,
+-};
+-
+-enum {
+-	CPROC_REGTYPE_AON_APB = 0,
+-	CPROC_REGTYPE_PMU_APB = 1,
+-	CPROC_REGTYPE_NR,
+-};
+-
+-struct cproc_segments {
+-	char *name;
+-	u32 base; /* segment addr */
+-	u32 maxsz; /* segment size */
+-};
+-
+-#define MAX_CPROC_NODE_NAME_LEN 0x20
+-struct load_node {
+-	char name[MAX_CPROC_NODE_NAME_LEN];
+-	u32 base;
+-	u32 size;
+-};
+-
+-#define MAX_IRAM_DATA_NUM 0x40
+-struct cproc_ctrl {
+-	phys_addr_t iram_addr;
+-	u32 iram_loaded;
+-	u32 iram_size;
+-	u32 iram_data[MAX_IRAM_DATA_NUM];
+-	u32 ctrl_reg[CPROC_CTRL_NR]; /* offset */
+-	u32 ctrl_mask[CPROC_CTRL_NR];
+-	struct regmap *rmap[CPROC_CTRL_NR];
+-	u32 reg_nr;
+-};
+-
+-struct cproc_init_data {
+-	char *devname;
+-	phys_addr_t base; /* CP base addr */
+-	u32 maxsz; /* CP max size */
+-	int (*start)(void *arg);
+-	int (*stop)(void *arg);
+-	int (*suspend)(void *arg);
+-	int (*resume)(void *arg);
+-
+-	struct cproc_ctrl *ctrl;
+-	void *mini_mem;
+-	phys_addr_t mini_mem_paddr;
+-	u32 mini_mem_size;
+-	int wdtirq;
+-	int type;
+-	u32 segnr;
+-	struct cproc_segments segs[];
+-};
+-
+-#endif
+diff --git a/drivers/soc/sprd/modem/sipc_v2/Kconfig b/drivers/soc/sprd/modem/sipc_v2/Kconfig
+index 80db7717d..1f7ed3bb1 100644
+--- a/drivers/soc/sprd/modem/sipc_v2/Kconfig
++++ b/drivers/soc/sprd/modem/sipc_v2/Kconfig
+@@ -1,7 +1,7 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ config SPRD_SIPC
+ 	bool "Experimental UDX710 local-peer SIPC v2 transport"
+-	depends on ARM64 && OF && MAILBOX && EXPERT
++	depends on ARM64 && OF && MAILBOX && EXPERT && REMOTEPROC
+ 	select GENERIC_ALLOCATOR
+ 	help
+ 	  AP-side SMSG, SMEM, SBUF and SBLOCK using the standard mailbox
+diff --git a/drivers/soc/sprd/modem/sipc_v2/sipc.c b/drivers/soc/sprd/modem/sipc_v2/sipc.c
+index 75316be1b..f6fbf96dd 100644
+--- a/drivers/soc/sprd/modem/sipc_v2/sipc.c
++++ b/drivers/soc/sprd/modem/sipc_v2/sipc.c
+@@ -27,7 +27,7 @@
+ #include <linux/spinlock.h>
+ #include <linux/wait.h>
+ #include <linux/sipc.h>
+-#include <linux/sprd_pmsys.h>
++#include <linux/remoteproc.h>
+ #include <linux/sizes.h>
+ 
+ #include "sipc_priv.h"
+@@ -296,9 +296,14 @@ static int sipc_validate_local_peer(struct smsg_ipc *ipc,
+ }
+ #endif
+ 
++static void sipc_rproc_put(void *data)
++{
++	rproc_put(data);
++}
++
+ static int sipc_probe(struct platform_device *pdev)
+ {
+-	struct sprd_pmsys *pmsys = NULL;
++	struct rproc *pmsys = NULL;
+ 	struct smsg_ipc *ipc;
+ 	struct device_node *np;
+ 	int ret;
+@@ -316,9 +321,21 @@ static int sipc_probe(struct platform_device *pdev)
+ 		ipc->dev = &pdev->dev;
+ 		if (ipc->dst == SIPC_ID_PM_SYS &&
+ 		    of_find_property(np, "sprd,pm-sys", NULL)) {
+-			pmsys = sprd_pmsys_get(&pdev->dev);
+-			if (IS_ERR(pmsys))
+-				return PTR_ERR(pmsys);
++			u32 handle;
++
++			ret = of_property_read_u32(np, "sprd,pm-sys", &handle);
++			if (ret)
++				return ret;
++			pmsys = rproc_get_by_phandle(handle);
++			if (!pmsys)
++				return -EPROBE_DEFER;
++			ret = devm_add_action_or_reset(&pdev->dev, sipc_rproc_put,
++						      pmsys);
++			if (ret)
++				return ret;
++			if (!device_link_add(&pdev->dev, pmsys->dev.parent,
++					     DL_FLAG_AUTOREMOVE_CONSUMER))
++				return -ENOMEM;
+ 		}
+ #ifdef CONFIG_SPRD_SIPC_MBOX_CLIENT
+ 		ret = sipc_validate_local_peer(ipc, np);
+@@ -340,7 +357,7 @@ static int sipc_probe(struct platform_device *pdev)
+ 		 * first; UART/DDR consumers follow this completed endpoint probe.
+ 		 */
+ 		if (pmsys) {
+-			ret = sprd_pmsys_start(pmsys);
++			ret = rproc_boot(pmsys);
+ 			if (ret) {
+ 				smsg_ipc_destroy(ipc);
+ 				return ret;
+diff --git a/drivers/soc/sprd/udx710-pmsys.c b/drivers/soc/sprd/udx710-pmsys.c
+deleted file mode 100644
+index f1248b1c6..000000000
+--- a/drivers/soc/sprd/udx710-pmsys.c
++++ /dev/null
+@@ -1,334 +0,0 @@
+-// SPDX-License-Identifier: GPL-2.0-only
+-/* UDX710 CM4 startup through its SRAM firmware window and reset controls.
+- */
+-#include <linux/delay.h>
+-#include <linux/mtd/ubi.h>
+-#include <linux/notifier.h>
+-#include <linux/io.h>
+-#include <linux/mfd/syscon.h>
+-#include <linux/module.h>
+-#include <linux/mutex.h>
+-#include <linux/of.h>
+-#include <linux/of_platform.h>
+-#include <linux/platform_device.h>
+-#include <linux/regmap.h>
+-#include <linux/sched.h>
+-#include <linux/sprd_pmsys.h>
+-#include <linux/unaligned.h>
+-#include <linux/workqueue.h>
+-
+-#define PMSYS_SRAM_BASE 0xb000
+-#define PMSYS_SRAM_SIZE 0xdc00
+-#define PMSYS_IMAGE_SIZE 0xd000
+-#define PMSYS_RESET 0x210
+-#define PMSYS_CORE_RESET BIT(0)
+-#define PMSYS_SYS_RESET BIT(4)
+-
+-struct sprd_pmsys {
+-	struct device *dev;
+-	struct regmap *aon;
+-	void __iomem *sram;
+-	struct mutex lock;
+-	bool released;
+-};
+-
+-/* Volume notifications run under UBI locks. Only schedule work here; neither
+- * opening a volume nor probing a platform device is allowed in the callback.
+- */
+-static void pmsys_reprobe(struct work_struct *work)
+-{
+-	struct device_node *np;
+-	struct platform_device *pdev;
+-	int ret;
+-
+-	np = of_find_compatible_node(NULL, NULL, "sprd,udx710-pmsys");
+-	if (!np)
+-		return;
+-	pdev = of_find_device_by_node(np);
+-	of_node_put(np);
+-	if (!pdev)
+-		return;
+-	ret = device_attach(&pdev->dev);
+-	if (ret < 0)
+-		dev_dbg(&pdev->dev, "PM_SYS deferred attach: %d\n", ret);
+-	put_device(&pdev->dev);
+-}
+-static DECLARE_WORK(pmsys_reprobe_work, pmsys_reprobe);
+-
+-static int pmsys_ubi_event(struct notifier_block *nb, unsigned long event,
+-			   void *data)
+-{
+-	struct ubi_notification *notice = data;
+-
+-	if (event == UBI_VOLUME_ADDED && notice->di.ubi_num == 0 &&
+-	    !strcmp(notice->vi.name, "nr_pmsys"))
+-		schedule_work(&pmsys_reprobe_work);
+-	return NOTIFY_OK;
+-}
+-
+-static struct notifier_block pmsys_ubi_notifier = {
+-	.notifier_call = pmsys_ubi_event,
+-};
+-
+-static int pmsys_read_original(struct device *dev, u8 **image)
+-{
+-	struct ubi_volume_desc *desc;
+-	struct ubi_volume_info volume;
+-	const char *name;
+-	u8 *data;
+-	int ret;
+-
+-	ret = of_property_read_string(dev->of_node, "sprd,firmware-volume",
+-				      &name);
+-	if (ret || strcmp(name, "nr_pmsys"))
+-		return -EINVAL;
+-	desc = ubi_open_volume_nm(0, name, UBI_READONLY);
+-	if (IS_ERR(desc)) {
+-		ret = PTR_ERR(desc);
+-		if (ret == -ENODEV || ret == -ENOENT)
+-			ret = -EPROBE_DEFER;
+-		return ret;
+-	}
+-	ubi_get_volume_info(desc, &volume);
+-	ret = -EINVAL;
+-	if (volume.corrupted || volume.upd_marker ||
+-	    volume.used_bytes < PMSYS_IMAGE_SIZE ||
+-	    volume.usable_leb_size < PMSYS_IMAGE_SIZE)
+-		goto close;
+-	data = kmalloc(PMSYS_IMAGE_SIZE, GFP_KERNEL);
+-	if (!data) {
+-		ret = -ENOMEM;
+-		goto close;
+-	}
+-	ret = ubi_leb_read(desc, 0, data, 0, PMSYS_IMAGE_SIZE, 1);
+-	if (ret)
+-		goto free;
+-	/* Original CM4 vector table: aligned stack inside its SRAM and a Thumb
+-	 * reset entry inside the image.
+-	 */
+-	if (get_unaligned_le32(data) <= PMSYS_IMAGE_SIZE ||
+-	    get_unaligned_le32(data) > PMSYS_SRAM_SIZE ||
+-	    get_unaligned_le32(data) & 3 ||
+-	    !(get_unaligned_le32(data + 4) & 1) ||
+-	    (get_unaligned_le32(data + 4) & ~1U) >= PMSYS_IMAGE_SIZE) {
+-		ret = -ENOEXEC;
+-		goto free;
+-	}
+-	*image = data;
+-	ubi_close_volume(desc);
+-	return 0;
+-free:
+-	kfree(data);
+-close:
+-	ubi_close_volume(desc);
+-	return ret;
+-}
+-
+-static ssize_t state_show(struct device *dev, struct device_attribute *attr,
+-			  char *buf)
+-{
+-	struct sprd_pmsys *pm = dev_get_drvdata(dev);
+-	unsigned int reset;
+-	int ret = regmap_read(pm->aon, PMSYS_RESET, &reset);
+-
+-	if (ret)
+-		return ret;
+-	return sysfs_emit(buf, "%s core_reset=%u system_reset=%u\n",
+-			  READ_ONCE(pm->released) ? "released" : "prepared",
+-			  !!(reset & PMSYS_CORE_RESET),
+-			  !!(reset & PMSYS_SYS_RESET));
+-}
+-static DEVICE_ATTR_RO(state);
+-static struct attribute *pmsys_attrs[] = { &dev_attr_state.attr, NULL };
+-ATTRIBUTE_GROUPS(pmsys);
+-
+-static void pmsys_put_device(void *data)
+-{
+-	put_device(data);
+-}
+-
+-struct sprd_pmsys *sprd_pmsys_get(struct device *consumer)
+-{
+-	struct platform_device *pdev;
+-	struct device_node *np;
+-	struct sprd_pmsys *pm;
+-	int ret;
+-
+-	np = of_parse_phandle(consumer->of_node, "sprd,pm-sys", 0);
+-	if (!np)
+-		return ERR_PTR(-ENODEV);
+-	if (!of_device_is_compatible(np, "sprd,udx710-pmsys")) {
+-		of_node_put(np);
+-		return ERR_PTR(-EINVAL);
+-	}
+-	pdev = of_find_device_by_node(np);
+-	of_node_put(np);
+-	if (!pdev)
+-		return ERR_PTR(-EPROBE_DEFER);
+-	device_lock(&pdev->dev);
+-	pm = device_is_bound(&pdev->dev) ? dev_get_drvdata(&pdev->dev) : NULL;
+-	device_unlock(&pdev->dev);
+-	if (!pm) {
+-		put_device(&pdev->dev);
+-		return ERR_PTR(-EPROBE_DEFER);
+-	}
+-	/* Both drivers are built-in and do not expose manual unbind. */
+-	if (!device_link_add(consumer, &pdev->dev,
+-			     DL_FLAG_AUTOREMOVE_CONSUMER)) {
+-		put_device(&pdev->dev);
+-		return ERR_PTR(-ENOMEM);
+-	}
+-	ret = devm_add_action_or_reset(consumer, pmsys_put_device, &pdev->dev);
+-	return ret ? ERR_PTR(ret) : pm;
+-}
+-EXPORT_SYMBOL_GPL(sprd_pmsys_get);
+-
+-int sprd_pmsys_start(struct sprd_pmsys *pm)
+-{
+-	unsigned int reset;
+-	int ret = 0;
+-
+-	mutex_lock(&pm->lock);
+-	if (pm->released)
+-		goto out;
+-	ret = regmap_read(pm->aon, PMSYS_RESET, &reset);
+-	if (ret)
+-		goto out;
+-	if ((reset & (PMSYS_CORE_RESET | PMSYS_SYS_RESET)) !=
+-	    PMSYS_CORE_RESET) {
+-		ret = -EIO;
+-		goto out;
+-	}
+-	/* SRAM writes completed in probe, before SIPC registered
+-	 * its receiver; release the CM4 after both are ready.
+-	 */
+-	/* Complete SRAM image writes before the start callback releases reset. */
+-	wmb();
+-	ret = regmap_update_bits(pm->aon, PMSYS_RESET, PMSYS_CORE_RESET, 0);
+-	if (ret)
+-		goto out;
+-	ret = regmap_read(pm->aon, PMSYS_RESET, &reset);
+-	if (!ret && (reset & PMSYS_CORE_RESET))
+-		ret = -EIO;
+-	if (!ret) {
+-		pm->released = true;
+-		dev_info(
+-			pm->dev,
+-			"CM4 released after SIPC receiver registration; reset=%08x\n",
+-			reset);
+-	}
+-out:
+-	mutex_unlock(&pm->lock);
+-	return ret;
+-}
+-EXPORT_SYMBOL_GPL(sprd_pmsys_start);
+-
+-static int sprd_pmsys_probe(struct platform_device *pdev)
+-{
+-	struct device *dev = &pdev->dev;
+-	struct sprd_pmsys *pm;
+-	u8 *image;
+-	struct resource *res;
+-	unsigned int reset;
+-	u32 i;
+-	int ret;
+-
+-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+-	if (!res || res->start != PMSYS_SRAM_BASE ||
+-	    resource_size(res) != PMSYS_SRAM_SIZE)
+-		return -EINVAL;
+-	pm = devm_kzalloc(dev, sizeof(*pm), GFP_KERNEL);
+-	if (!pm)
+-		return -ENOMEM;
+-	pm->dev = dev;
+-	mutex_init(&pm->lock);
+-	pm->aon = syscon_regmap_lookup_by_phandle(dev->of_node, "sprd,aon-apb");
+-	if (IS_ERR(pm->aon))
+-		return PTR_ERR(pm->aon);
+-	pm->sram = devm_ioremap_resource(dev, res);
+-	if (IS_ERR(pm->sram))
+-		return PTR_ERR(pm->sram);
+-	ret = pmsys_read_original(dev, &image);
+-	if (ret)
+-		return dev_err_probe(
+-			dev, ret, "Original NAND PM_SYS image unavailable\n");
+-
+-	/* The original UDX710 boot path holds CM4 core reset and releases its
+-	 * system reset. Re-establish that state for every kernel boot before
+-	 * replacing the old resume vector (0x1a9) with the cold entry (0x275).
+-	 */
+-	ret = regmap_update_bits(pm->aon, PMSYS_RESET, PMSYS_CORE_RESET,
+-				 PMSYS_CORE_RESET);
+-	if (ret)
+-		goto release_fw;
+-	udelay(2);
+-	ret = regmap_update_bits(pm->aon, PMSYS_RESET, PMSYS_SYS_RESET, 0);
+-	if (ret)
+-		goto release_fw;
+-	ret = regmap_read(pm->aon, PMSYS_RESET, &reset);
+-	if (ret)
+-		goto release_fw;
+-	if ((reset & (PMSYS_CORE_RESET | PMSYS_SYS_RESET)) !=
+-	    PMSYS_CORE_RESET) {
+-		ret = -EIO;
+-		goto release_fw;
+-	}
+-	/* AON SRAM requires individual 32-bit accesses: do not substitute a
+-	 * wide memcpy_toio implementation (same constraint as stock cproc).
+-	 */
+-	for (i = 0; i < PMSYS_IMAGE_SIZE; i += sizeof(u32)) {
+-		writel_relaxed(get_unaligned_le32(image + i), pm->sram + i);
+-		if (!(i & 0xfff))
+-			cond_resched();
+-	}
+-	/* Complete SRAM image writes before the start callback releases reset. */
+-	wmb();
+-
+-	platform_set_drvdata(pdev, pm);
+-	dev_info(
+-		dev,
+-		"original NAND PM_SYS image prepared (%u bytes), core held for SIPC\n",
+-		PMSYS_IMAGE_SIZE);
+-	ret = 0;
+-release_fw:
+-	kfree(image);
+-	return ret;
+-}
+-
+-static const struct of_device_id sprd_pmsys_of_match[] = {
+-	{ .compatible = "sprd,udx710-pmsys" },
+-	{}
+-};
+-MODULE_DEVICE_TABLE(of, sprd_pmsys_of_match);
+-
+-static struct platform_driver sprd_pmsys_driver = {
+-	.probe = sprd_pmsys_probe,
+-	.driver = {
+-		.name = "udx710-pmsys",
+-		.of_match_table = sprd_pmsys_of_match,
+-		.dev_groups = pmsys_groups,
+-		.suppress_bind_attrs = true,
+-	},
+-};
+-static int __init sprd_pmsys_init(void)
+-{
+-	int ret = platform_driver_register(&sprd_pmsys_driver);
+-
+-	if (ret)
+-		return ret;
+-	ret = ubi_register_volume_notifier(&pmsys_ubi_notifier, 0);
+-	if (ret)
+-		platform_driver_unregister(&sprd_pmsys_driver);
+-	return ret;
+-}
+-module_init(sprd_pmsys_init);
+-
+-static void __exit sprd_pmsys_exit(void)
+-{
+-	ubi_unregister_volume_notifier(&pmsys_ubi_notifier);
+-	cancel_work_sync(&pmsys_reprobe_work);
+-	platform_driver_unregister(&sprd_pmsys_driver);
+-}
+-module_exit(sprd_pmsys_exit);
+-MODULE_DESCRIPTION("UDX710 PM_SYS CM4 image and startup provider");
+-MODULE_LICENSE("GPL");
+diff --git a/drivers/thermal/sprd_thermal.c b/drivers/thermal/sprd_thermal.c
+index 61265928d..19f5f900e 100644
+--- a/drivers/thermal/sprd_thermal.c
++++ b/drivers/thermal/sprd_thermal.c
+@@ -182,11 +182,7 @@ static int sprd_thm_sensor_calibration(struct device_node *np,
+ 	if (thm->var_data->strict_calibration) {
+ 		if (dt_offset < 0 || dt_offset > 255 || thm->ratio_off > 127)
+ 			return -ERANGE;
+-		/* No known validity marker: do not accept ambiguous erased cells. */
+-		if ((thm->ratio_sign == 1 && !thm->ratio_off && !dt_offset) ||
+-		    (thm->ratio_sign == -1 && thm->ratio_off == 127 &&
+-		     dt_offset == 255))
+-			return -ENODATA;
++
+ 	}
+ 	ratio += thm->ratio_sign * thm->ratio_off;
+ 
+diff --git a/drivers/tty/serial/Kconfig b/drivers/tty/serial/Kconfig
+index 08af11827..3756f8f30 100644
+--- a/drivers/tty/serial/Kconfig
++++ b/drivers/tty/serial/Kconfig
+@@ -1395,10 +1395,12 @@ config SERIAL_SPRD
+ 
+ config SERIAL_SPRD_EX
+ 	bool "Spreadtrum UDX710 SBUF-assisted UART extension"
+-	depends on SERIAL_SPRD && SPRD_SIPC_V2 && OF && COMMON_CLK && EXPERT
++	depends on SERIAL_SPRD=y && SPRD_SIPC_V2 && OF && COMMON_CLK && EXPERT
+ 	help
+-	  Support the ttySE serial consumer on Spreadtrum UDX710 using SBUF
+-	  notifications, bounded PIO work and the UART AP reset controller.
++	  Support the PM_SYS-assisted UART port on Spreadtrum UDX710 using
++	  SBUF notifications and shared PIO helpers. The port uses the same
++	  serial core driver as the AP UARTs. The firmware session stays active
++	  across TTY closes and requires a built-in driver.
+ 
+ config SERIAL_SPRD_CONSOLE
+ 	bool "Spreadtrum UART console support"
+diff --git a/drivers/tty/serial/sprd_serial.c b/drivers/tty/serial/sprd_serial.c
+index 25d25a95c..21c441ed2 100644
+--- a/drivers/tty/serial/sprd_serial.c
++++ b/drivers/tty/serial/sprd_serial.c
+@@ -59,7 +59,6 @@ struct sprd_uart_port {
+ };
+ 
+ static struct sprd_uart_port *sprd_port[UART_NR_MAX];
+-static int sprd_ports_num;
+ 
+ static int sprd_start_dma_rx(struct uart_port *port);
+ static int sprd_tx_dma_config(struct uart_port *port);
+@@ -791,7 +790,6 @@ static int sprd_console_setup(struct console *co, char *options)
+ 				parity, bits, flow);
+ }
+ 
+-static struct uart_driver sprd_uart_driver;
+ static struct console sprd_console = {
+ 	.name = SPRD_TTY_NAME,
+ 	.write = sprd_console_write,
+@@ -846,7 +844,7 @@ OF_EARLYCON_DECLARE(sprd_serial, "sprd,sc9836-uart",
+ #define SPRD_CONSOLE		NULL
+ #endif
+ 
+-static struct uart_driver sprd_uart_driver = {
++struct uart_driver sprd_uart_driver = {
+ 	.owner = THIS_MODULE,
+ 	.driver_name = "sprd_serial",
+ 	.dev_name = SPRD_TTY_NAME,
+@@ -864,11 +862,8 @@ static void sprd_remove(struct platform_device *dev)
+ 		uart_remove_one_port(&sprd_uart_driver, &sup->port);
+ 		sprd_port[sup->port.line] = NULL;
+ 		sprd_rx_free_buf(sup);
+-		sprd_ports_num--;
+ 	}
+ 
+-	if (!sprd_ports_num)
+-		uart_unregister_driver(&sprd_uart_driver);
+ }
+ 
+ static bool sprd_uart_is_console(struct uart_port *uport)
+@@ -989,15 +984,6 @@ static int sprd_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return ret;
+ 
+-	if (!sprd_ports_num) {
+-		ret = uart_register_driver(&sprd_uart_driver);
+-		if (ret < 0) {
+-			pr_err("Failed to register SPRD-UART driver\n");
+-			goto free_rx_buf;
+-		}
+-	}
+-
+-	sprd_ports_num++;
+ 	sprd_port[index] = sport;
+ 
+ 	ret = uart_add_one_port(&sprd_uart_driver, up);
+@@ -1010,9 +996,6 @@ static int sprd_probe(struct platform_device *pdev)
+ 
+ clean_port:
+ 	sprd_port[index] = NULL;
+-	if (--sprd_ports_num == 0)
+-		uart_unregister_driver(&sprd_uart_driver);
+-free_rx_buf:
+ 	sprd_rx_free_buf(sport);
+ 	return ret;
+ }
+@@ -1056,7 +1039,36 @@ static struct platform_driver sprd_platform_driver = {
+ 	},
+ };
+ 
+-module_platform_driver(sprd_platform_driver);
++static int __init sprd_serial_init(void)
++{
++	int ret;
++
++	ret = uart_register_driver(&sprd_uart_driver);
++	if (ret)
++		return ret;
++	ret = platform_driver_register(&sprd_platform_driver);
++	if (ret)
++		goto unregister_uart;
++	ret = sprd_serial_ex_register();
++	if (ret)
++		goto unregister_platform;
++	return 0;
++
++unregister_platform:
++	platform_driver_unregister(&sprd_platform_driver);
++unregister_uart:
++	uart_unregister_driver(&sprd_uart_driver);
++	return ret;
++}
++module_init(sprd_serial_init);
++
++/* SERIAL_SPRD_EX requires SERIAL_SPRD=y: its firmware session cannot unbind. */
++static void __exit sprd_serial_exit(void)
++{
++	platform_driver_unregister(&sprd_platform_driver);
++	uart_unregister_driver(&sprd_uart_driver);
++}
++module_exit(sprd_serial_exit);
+ 
+ MODULE_LICENSE("GPL");
+ MODULE_DESCRIPTION("Spreadtrum SoC serial driver series");
+diff --git a/drivers/tty/serial/sprd_serial_common.h b/drivers/tty/serial/sprd_serial_common.h
+index cb14cf5b5..b0fb418c0 100644
+--- a/drivers/tty/serial/sprd_serial_common.h
++++ b/drivers/tty/serial/sprd_serial_common.h
+@@ -15,6 +15,17 @@
+ #include <linux/tty.h>
+ #include <linux/tty_flip.h>
+ 
++extern struct uart_driver sprd_uart_driver;
++
++#if IS_ENABLED(CONFIG_SERIAL_SPRD_EX)
++int sprd_serial_ex_register(void);
++#else
++static inline int sprd_serial_ex_register(void)
++{
++	return 0;
++}
++#endif
++
+ #define SPRD_FIFO_SIZE 128
+ #define SPRD_DEF_RATE 26000000
+ #define SPRD_BAUD_IO_LIMIT 3000000
+diff --git a/drivers/tty/serial/sprd_serial_ex.c b/drivers/tty/serial/sprd_serial_ex.c
+index f810690fd..e057cf9e3 100644
+--- a/drivers/tty/serial/sprd_serial_ex.c
++++ b/drivers/tty/serial/sprd_serial_ex.c
+@@ -76,8 +76,6 @@ struct sprd_ex {
+ 	int fault;
+ };
+ 
+-static struct uart_driver sprd_ex_uart_driver;
+-
+ static struct sprd_ex *to_ex(struct uart_port *port)
+ {
+ 	return container_of(port, struct sprd_ex, port);
+@@ -735,7 +733,7 @@ static int ex_probe(struct platform_device *pdev)
+ 	ex->rx_enabled = true;
+ 	ex->tx_empty = true;
+ 	serial_out(&ex->port, SPRD_IEN, EX_RX_IRQS);
+-	ret = uart_add_one_port(&sprd_ex_uart_driver, &ex->port);
++	ret = uart_add_one_port(&sprd_uart_driver, &ex->port);
+ 	if (ret)
+ 		goto retained;
+ 	platform_set_drvdata(pdev, ex);
+@@ -799,32 +797,10 @@ static struct platform_driver ex_platform_driver = {
+ 	},
+ };
+ 
+-static struct uart_driver sprd_ex_uart_driver = {
+-	.owner = THIS_MODULE,
+-	.driver_name = "sprd-serial-ex",
+-	.dev_name = "ttySE",
+-	.nr = 2,
+-};
+-
+-static int __init ex_init(void)
+-{
+-	int ret = uart_register_driver(&sprd_ex_uart_driver);
+-
+-	if (ret)
+-		return ret;
+-	ret = platform_driver_register(&ex_platform_driver);
+-	if (ret)
+-		uart_unregister_driver(&sprd_ex_uart_driver);
+-	return ret;
+-}
+-module_init(ex_init);
+-
+-static void __exit ex_exit(void)
++int __init sprd_serial_ex_register(void)
+ {
+-	platform_driver_unregister(&ex_platform_driver);
+-	uart_unregister_driver(&sprd_ex_uart_driver);
++	return platform_driver_register(&ex_platform_driver);
+ }
+-module_exit(ex_exit);
+ 
+ MODULE_DESCRIPTION("UDX710 PM_SYS interrupt-proxy UART");
+ MODULE_LICENSE("GPL");
+diff --git a/drivers/usb/gadget/Kconfig b/drivers/usb/gadget/Kconfig
+index 5e36a9d5b..76521555e 100644
+--- a/drivers/usb/gadget/Kconfig
++++ b/drivers/usb/gadget/Kconfig
+@@ -237,16 +237,6 @@ config USB_CONFIGFS
+ 	  appropriate symbolic links.
+ 	  For more information see Documentation/usb/gadget_configfs.rst.
+ 
+-config USB_CONFIGFS_VSER
+-	bool "Spreadtrum vendor serial misc-device function"
+-	depends on USB_CONFIGFS=y && TTY
+-	select USB_U_SERIAL
+-	help
+-	  Provide the captured vser.gs0 vendor-specific bulk interface and
+-	  /dev/vser with the class 0x22 port-open handshake. This is not CDC
+-	  ACM. Only normal AP byte transport is supported; vendor test/IQ
+-	  requests fail. Open files hold references across configfs removal.
+-
+ config USB_CONFIGFS_SERIAL
+ 	bool "Generic serial bulk in/out"
+ 	depends on USB_CONFIGFS
+diff --git a/drivers/usb/gadget/function/Makefile b/drivers/usb/gadget/function/Makefile
+index 53ccbf4de..7ce163727 100644
+--- a/drivers/usb/gadget/function/Makefile
++++ b/drivers/usb/gadget/function/Makefile
+@@ -56,5 +56,3 @@ usb_f_printer-y			:= f_printer.o
+ obj-$(CONFIG_USB_F_PRINTER)	+= usb_f_printer.o
+ usb_f_tcm-y			:= f_tcm.o
+ obj-$(CONFIG_USB_F_TCM)		+= usb_f_tcm.o
+-
+-obj-$(CONFIG_USB_CONFIGFS_VSER) += f_vserial.o
+diff --git a/drivers/usb/gadget/function/f_vserial.c b/drivers/usb/gadget/function/f_vserial.c
+deleted file mode 100644
+index 0a757c4c3..000000000
+--- a/drivers/usb/gadget/function/f_vserial.c
++++ /dev/null
+@@ -1,668 +0,0 @@
+-// SPDX-License-Identifier: GPL-2.0-only
+-/*
+- * Spreadtrum vendor serial function, AP mainline adaptation.
+- * Wire descriptors and class 0x22 port-open handshake derive from the GPL
+- * BSP f_vserial.c at d834a127aa46356c63bd5a59bc6d86c66ea371be.
+- * The misc-device lifetime and request ownership are independently managed.
+- */
+-#include <linux/completion.h>
+-#include <linux/configfs.h>
+-#include <linux/kref.h>
+-#include <linux/miscdevice.h>
+-#include <linux/module.h>
+-#include <linux/mutex.h>
+-#include <linux/poll.h>
+-#include <linux/rwsem.h>
+-#include <linux/sizes.h>
+-#include <linux/slab.h>
+-#include <linux/usb/composite.h>
+-#include <linux/uaccess.h>
+-
+-#include "u_serial.h"
+-
+-#define VSER_SIZE SZ_16K
+-#define VSER_TX_COUNT 4
+-
+-struct vser {
+-	struct usb_function_instance instance;
+-	struct usb_function function;
+-	struct miscdevice misc;
+-	struct kref ref;
+-	struct rw_semaphore io_sem;
+-	struct mutex read_lock, write_lock;
+-	spinlock_t lock;
+-	wait_queue_head_t wait;
+-	struct completion rx_done;
+-	struct usb_ep *in, *out;
+-	struct usb_request *rx;
+-	struct list_head tx_idle;
+-	unsigned int tx_available;
+-	atomic_t opens, allocated;
+-	unsigned int interface;
+-	u32 generation;
+-	u32 rx_generation;
+-	unsigned int rx_offset, rx_remaining;
+-	bool bound, enabled, online, dead, tx_error, faulted;
+-};
+-
+-static atomic_t vser_active = ATOMIC_INIT(0);
+-
+-static struct usb_interface_descriptor vser_intf = {
+-	.bLength = sizeof(vser_intf),
+-	.bDescriptorType = USB_DT_INTERFACE,
+-	.bNumEndpoints = 2,
+-	.bInterfaceClass = USB_CLASS_VENDOR_SPEC,
+-};
+-#define VSER_EP(name, direction, packet)                \
+-	static struct usb_endpoint_descriptor name = {  \
+-		.bLength = USB_DT_ENDPOINT_SIZE,        \
+-		.bDescriptorType = USB_DT_ENDPOINT,     \
+-		.bEndpointAddress = direction,          \
+-		.bmAttributes = USB_ENDPOINT_XFER_BULK, \
+-		.wMaxPacketSize = cpu_to_le16(packet),  \
+-	}
+-VSER_EP(vser_fs_in, USB_DIR_IN, 64);
+-VSER_EP(vser_fs_out, USB_DIR_OUT, 64);
+-VSER_EP(vser_hs_in, USB_DIR_IN, 512);
+-VSER_EP(vser_hs_out, USB_DIR_OUT, 512);
+-VSER_EP(vser_ss_in, USB_DIR_IN, 1024);
+-VSER_EP(vser_ss_out, USB_DIR_OUT, 1024);
+-static struct usb_ss_ep_comp_descriptor vser_ss_comp = {
+-	.bLength = sizeof(vser_ss_comp),
+-	.bDescriptorType = USB_DT_SS_ENDPOINT_COMP,
+-};
+-static struct usb_descriptor_header *vser_fs[] = {
+-	(void *)&vser_intf,
+-	(void *)&vser_fs_in,
+-	(void *)&vser_fs_out,
+-	NULL,
+-};
+-static struct usb_descriptor_header *vser_hs[] = {
+-	(void *)&vser_intf,
+-	(void *)&vser_hs_in,
+-	(void *)&vser_hs_out,
+-	NULL,
+-};
+-static struct usb_descriptor_header *vser_ss[] = {
+-	(void *)&vser_intf,   (void *)&vser_ss_in,   (void *)&vser_ss_comp,
+-	(void *)&vser_ss_out, (void *)&vser_ss_comp, NULL,
+-};
+-
+-static struct vser *func_to_vser(struct usb_function *f)
+-{
+-	return container_of(f, struct vser, function);
+-}
+-
+-static void vser_release_ref(struct kref *ref)
+-{
+-	struct vser *v = container_of(ref, struct vser, ref);
+-
+-	atomic_set(&vser_active, 0);
+-	kfree(v);
+-}
+-
+-static bool vser_ready(struct vser *v)
+-{
+-	return READ_ONCE(v->bound) && READ_ONCE(v->online) &&
+-	       READ_ONCE(v->enabled) && !READ_ONCE(v->dead) &&
+-	       !READ_ONCE(v->faulted);
+-}
+-
+-static void vser_tx_put(struct vser *v, struct usb_request *req)
+-{
+-	unsigned long flags;
+-
+-	spin_lock_irqsave(&v->lock, flags);
+-	list_add_tail(&req->list, &v->tx_idle);
+-	v->tx_available++;
+-	spin_unlock_irqrestore(&v->lock, flags);
+-	wake_up_all(&v->wait);
+-}
+-
+-static struct usb_request *vser_tx_get(struct vser *v)
+-{
+-	struct usb_request *req = NULL;
+-	unsigned long flags;
+-
+-	spin_lock_irqsave(&v->lock, flags);
+-	if (!list_empty(&v->tx_idle)) {
+-		req = list_first_entry(&v->tx_idle, struct usb_request, list);
+-		list_del_init(&req->list);
+-		v->tx_available--;
+-	}
+-	spin_unlock_irqrestore(&v->lock, flags);
+-	return req;
+-}
+-
+-static void vser_tx_complete(struct usb_ep *ep, struct usb_request *req)
+-{
+-	struct vser *v = req->context;
+-
+-	if (req->status)
+-		WRITE_ONCE(v->tx_error, true);
+-	vser_tx_put(v, req);
+-}
+-
+-static void vser_rx_complete(struct usb_ep *ep, struct usb_request *req)
+-{
+-	struct vser *v = req->context;
+-
+-	complete(&v->rx_done);
+-}
+-
+-/* Serialize queue publication against the transition to disabled. Completion
+- * is not invoked synchronously from usb_ep_queue(), as required by gadget API.
+- */
+-static int vser_queue(struct vser *v, struct usb_ep *ep,
+-		      struct usb_request *req, u32 generation)
+-{
+-	unsigned long flags;
+-	int ret;
+-
+-	spin_lock_irqsave(&v->lock, flags);
+-	ret = vser_ready(v) && v->generation == generation ?
+-		      usb_ep_queue(ep, req, GFP_ATOMIC) :
+-		      -ENOTCONN;
+-	spin_unlock_irqrestore(&v->lock, flags);
+-	return ret;
+-}
+-
+-static int vser_wait_online(struct vser *v, struct file *file)
+-{
+-	int ret;
+-
+-	if (file->f_flags & O_NONBLOCK)
+-		return vser_ready(v) ? 0 : -EAGAIN;
+-	ret = wait_event_interruptible(v->wait, vser_ready(v) ||
+-							READ_ONCE(v->dead) ||
+-							READ_ONCE(v->faulted));
+-	if (ret)
+-		return ret;
+-	return READ_ONCE(v->dead) ? -ENODEV : READ_ONCE(v->faulted) ? -EIO : 0;
+-}
+-
+-static ssize_t vser_read(struct file *file, char __user *buf, size_t count,
+-			 loff_t *pos)
+-{
+-	struct vser *v = file->private_data;
+-	struct usb_request *req;
+-	u32 generation;
+-	int ret;
+-
+-	if (!count)
+-		return 0;
+-	if (count > VSER_SIZE)
+-		return -EINVAL;
+-	if (file->f_flags & O_NONBLOCK) {
+-		if (!mutex_trylock(&v->read_lock))
+-			return -EAGAIN;
+-	} else {
+-		ret = mutex_lock_interruptible(&v->read_lock);
+-		if (ret)
+-			return ret;
+-	}
+-	/* A completed USB packet may span many userspace stream reads. */
+-	if (!v->rx_remaining) {
+-		if (file->f_flags & O_NONBLOCK) {
+-			ret = -EAGAIN;
+-			goto unlock;
+-		}
+-		ret = vser_wait_online(v, file);
+-		if (ret)
+-			goto unlock;
+-	}
+-	down_read(&v->io_sem);
+-	generation = READ_ONCE(v->generation);
+-	if (v->rx_remaining) {
+-		if (v->rx_generation != generation || !v->rx) {
+-			v->rx_remaining = 0;
+-			v->rx_offset = 0;
+-			ret = -ENOTCONN;
+-			goto release;
+-		}
+-		goto copy;
+-	}
+-	if (!vser_ready(v)) {
+-		ret = -ENOTCONN;
+-		goto release;
+-	}
+-	req = v->rx;
+-retry:
+-	reinit_completion(&v->rx_done);
+-	req->length = ALIGN(count, v->out->maxpacket);
+-	ret = vser_queue(v, v->out, req, generation);
+-	if (ret)
+-		goto release;
+-	ret = wait_for_completion_interruptible(&v->rx_done);
+-	if (ret) {
+-		/* Do not reuse/free a request until its UDC ownership is returned. */
+-		usb_ep_dequeue(v->out, req);
+-		wait_for_completion(&v->rx_done);
+-		/* Completion can win the signal/dequeue race. Deliver its bytes,
+-		 * rather than silently dropping a successful USB transfer.
+-		 */
+-		if (req->status || !req->actual)
+-			goto release;
+-	}
+-	if (req->status) {
+-		ret = req->status;
+-		goto release;
+-	}
+-	if (req->actual > req->length || req->actual > VSER_SIZE) {
+-		ret = -EOVERFLOW;
+-		goto release;
+-	}
+-	if (!req->actual)
+-		goto retry;
+-	v->rx_offset = 0;
+-	v->rx_remaining = req->actual;
+-	v->rx_generation = generation;
+-copy:
+-	if (READ_ONCE(v->generation) != v->rx_generation ||
+-	    READ_ONCE(v->dead) || READ_ONCE(v->faulted)) {
+-		v->rx_remaining = 0;
+-		v->rx_offset = 0;
+-		ret = -ENOTCONN;
+-		goto release;
+-	}
+-	ret = min_t(size_t, count, v->rx_remaining);
+-	if (copy_to_user(buf, v->rx->buf + v->rx_offset, ret)) {
+-		ret = -EFAULT;
+-	} else {
+-		v->rx_offset += ret;
+-		v->rx_remaining -= ret;
+-	}
+-release:
+-	up_read(&v->io_sem);
+-	if (v->rx_remaining)
+-		wake_up_all(&v->wait);
+-unlock:
+-	mutex_unlock(&v->read_lock);
+-	return ret;
+-}
+-
+-static ssize_t vser_write(struct file *file, const char __user *buf,
+-			  size_t count, loff_t *pos)
+-{
+-	struct vser *v = file->private_data;
+-	struct usb_request *req;
+-	size_t done = 0, amount;
+-	u32 generation;
+-	int ret;
+-
+-	if (!count)
+-		return 0;
+-	ret = mutex_lock_interruptible(&v->write_lock);
+-	if (ret)
+-		return ret;
+-	ret = vser_wait_online(v, file);
+-	if (ret)
+-		goto unlock;
+-	down_read(&v->io_sem);
+-	generation = READ_ONCE(v->generation);
+-	while (done < count) {
+-		if (!vser_ready(v) || READ_ONCE(v->tx_error) ||
+-		    generation != READ_ONCE(v->generation)) {
+-			ret = -EIO;
+-			break;
+-		}
+-		req = vser_tx_get(v);
+-		if (!req) {
+-			if (file->f_flags & O_NONBLOCK) {
+-				ret = -EAGAIN;
+-				break;
+-			}
+-			ret = wait_event_interruptible(
+-				v->wait,
+-				READ_ONCE(v->tx_available) || !vser_ready(v) ||
+-					READ_ONCE(v->tx_error) ||
+-					generation != READ_ONCE(v->generation));
+-			if (ret)
+-				break;
+-			continue;
+-		}
+-		amount = min_t(size_t, count - done, VSER_SIZE);
+-		if (copy_from_user(req->buf, buf + done, amount)) {
+-			vser_tx_put(v, req);
+-			ret = -EFAULT;
+-			break;
+-		}
+-		req->length = amount;
+-		ret = vser_queue(v, v->in, req, generation);
+-		if (ret) {
+-			vser_tx_put(v, req);
+-			break;
+-		}
+-		done += amount;
+-	}
+-	up_read(&v->io_sem);
+-unlock:
+-	mutex_unlock(&v->write_lock);
+-	return done ? done : ret;
+-}
+-
+-static int vser_open(struct inode *inode, struct file *file)
+-{
+-	struct miscdevice *misc = file->private_data;
+-	struct vser *v = container_of(misc, struct vser, misc);
+-
+-	if (READ_ONCE(v->dead))
+-		return -ENODEV;
+-	if (atomic_inc_return(&v->opens) > 2) {
+-		atomic_dec(&v->opens);
+-		return -EBUSY;
+-	}
+-	kref_get(&v->ref);
+-	file->private_data = v;
+-	return stream_open(inode, file);
+-}
+-
+-static int vser_close(struct inode *inode, struct file *file)
+-{
+-	struct vser *v = file->private_data;
+-
+-	atomic_dec(&v->opens);
+-	kref_put(&v->ref, vser_release_ref);
+-	return 0;
+-}
+-
+-static __poll_t vser_poll(struct file *file, poll_table *wait)
+-{
+-	struct vser *v = file->private_data;
+-
+-	poll_wait(file, &v->wait, wait);
+-	if (READ_ONCE(v->dead))
+-		return EPOLLHUP | EPOLLERR;
+-	if (READ_ONCE(v->tx_error) || READ_ONCE(v->faulted))
+-		return EPOLLERR;
+-	return (vser_ready(v) && READ_ONCE(v->tx_available) ?
+-			EPOLLOUT | EPOLLWRNORM :
+-			0) |
+-	       (READ_ONCE(v->rx_remaining) && READ_ONCE(v->rx_generation) ==
+-						      READ_ONCE(v->generation) ?
+-			EPOLLIN | EPOLLRDNORM :
+-			0);
+-}
+-
+-static const struct file_operations vser_fops = {
+-	.owner = THIS_MODULE,
+-	.open = vser_open,
+-	.release = vser_close,
+-	.read = vser_read,
+-	.write = vser_write,
+-	.poll = vser_poll,
+-};
+-
+-static struct usb_request *vser_alloc_req(struct vser *v, struct usb_ep *ep,
+-					  bool tx)
+-{
+-	struct usb_request *req = gs_alloc_req(ep, VSER_SIZE, GFP_KERNEL);
+-
+-	if (!req)
+-		return NULL;
+-	req->context = v;
+-	req->complete = tx ? vser_tx_complete : vser_rx_complete;
+-	INIT_LIST_HEAD(&req->list);
+-	return req;
+-}
+-
+-static void vser_free_req(struct usb_ep *ep, struct usb_request *req)
+-{
+-	if (req)
+-		gs_free_req(ep, req);
+-}
+-
+-static void vser_free_requests(struct vser *v)
+-{
+-	struct usb_request *req;
+-
+-	vser_free_req(v->out, v->rx);
+-	v->rx = NULL;
+-	while ((req = vser_tx_get(v)))
+-		vser_free_req(v->in, req);
+-}
+-
+-static void vser_disable(struct usb_function *f)
+-{
+-	struct vser *v = func_to_vser(f);
+-	unsigned long flags;
+-	bool enabled;
+-
+-	spin_lock_irqsave(&v->lock, flags);
+-	enabled = v->enabled;
+-	v->enabled = false;
+-	v->online = false;
+-	v->generation++;
+-	spin_unlock_irqrestore(&v->lock, flags);
+-	wake_up_all(&v->wait);
+-	if (enabled) {
+-		int out_ret = usb_ep_disable(v->out);
+-		int in_ret = usb_ep_disable(v->in);
+-
+-		if (out_ret || in_ret) {
+-			WRITE_ONCE(v->faulted, true);
+-			pr_err("vser: endpoint drain failed (%d, %d); resources pinned\n",
+-			       out_ret, in_ret);
+-			wake_up_all(&v->wait);
+-		}
+-	}
+-}
+-
+-static int vser_bind(struct usb_configuration *c, struct usb_function *f)
+-{
+-	struct vser *v = func_to_vser(f);
+-	struct usb_request *req;
+-	int ret, i;
+-
+-	if (READ_ONCE(v->faulted))
+-		return -EIO;
+-	ret = usb_interface_id(c, f);
+-	if (ret < 0)
+-		return ret;
+-	v->interface = ret;
+-	vser_intf.bInterfaceNumber = ret;
+-	vser_fs_in.bEndpointAddress = USB_DIR_IN;
+-	vser_fs_out.bEndpointAddress = USB_DIR_OUT;
+-	v->in = usb_ep_autoconfig(c->cdev->gadget, &vser_fs_in);
+-	v->out = usb_ep_autoconfig(c->cdev->gadget, &vser_fs_out);
+-	if (!v->in || !v->out)
+-		return -ENODEV;
+-	vser_hs_in.bEndpointAddress = vser_ss_in.bEndpointAddress =
+-		vser_fs_in.bEndpointAddress;
+-	vser_hs_out.bEndpointAddress = vser_ss_out.bEndpointAddress =
+-		vser_fs_out.bEndpointAddress;
+-	ret = usb_assign_descriptors(f, vser_fs, vser_hs, vser_ss, vser_ss);
+-	if (ret)
+-		return ret;
+-	v->rx = vser_alloc_req(v, v->out, false);
+-	if (!v->rx)
+-		goto nomem;
+-	for (i = 0; i < VSER_TX_COUNT; i++) {
+-		req = vser_alloc_req(v, v->in, true);
+-		if (!req)
+-			goto nomem;
+-		vser_tx_put(v, req);
+-	}
+-	WRITE_ONCE(v->bound, true);
+-	return 0;
+-nomem:
+-	vser_free_requests(v);
+-	usb_free_all_descriptors(f);
+-	return -ENOMEM;
+-}
+-
+-static void vser_unbind(struct usb_configuration *c, struct usb_function *f)
+-{
+-	struct vser *v = func_to_vser(f);
+-
+-	WRITE_ONCE(v->bound, false);
+-	vser_disable(f);
+-	if (READ_ONCE(v->faulted)) {
+-		/* No successful drain means no safe request retirement. */
+-		get_device(&c->cdev->gadget->dev);
+-		return;
+-	}
+-	/* disable returns queued requests; wait out existing user buffer accesses. */
+-	down_write(&v->io_sem);
+-	vser_free_requests(v);
+-	usb_free_all_descriptors(f);
+-	up_write(&v->io_sem);
+-}
+-
+-static int vser_set_alt(struct usb_function *f, unsigned int intf,
+-			unsigned int alt)
+-{
+-	struct vser *v = func_to_vser(f);
+-	int ret;
+-
+-	if (intf != v->interface || alt)
+-		return -EINVAL;
+-	vser_disable(f);
+-	if (READ_ONCE(v->faulted))
+-		return -EIO;
+-	ret = config_ep_by_speed(f->config->cdev->gadget, f, v->in);
+-	if (ret)
+-		return ret;
+-	ret = config_ep_by_speed(f->config->cdev->gadget, f, v->out);
+-	if (ret)
+-		return ret;
+-	ret = usb_ep_enable(v->in);
+-	if (ret)
+-		return ret;
+-	ret = usb_ep_enable(v->out);
+-	if (ret) {
+-		int cleanup = usb_ep_disable(v->in);
+-
+-		if (cleanup) {
+-			WRITE_ONCE(v->faulted, true);
+-			pr_err("vser: endpoint-enable rollback failed: %d\n",
+-			       cleanup);
+-		}
+-		return ret;
+-	}
+-	WRITE_ONCE(v->enabled, true);
+-	return 0;
+-}
+-
+-static int vser_setup(struct usb_function *f,
+-		      const struct usb_ctrlrequest *ctrl)
+-{
+-	struct vser *v = func_to_vser(f);
+-	struct usb_composite_dev *cdev = f->config->cdev;
+-	unsigned long flags;
+-	int ret;
+-
+-	if (ctrl->bRequestType !=
+-		    (USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE) ||
+-	    ctrl->bRequest != 0x22 ||
+-	    le16_to_cpu(ctrl->wIndex) != v->interface ||
+-	    le16_to_cpu(ctrl->wLength) || !READ_ONCE(v->enabled))
+-		return -EOPNOTSUPP;
+-	/* Vendor resize/test/IQ controls are unsupported, never successful no-ops. */
+-	cdev->req->length = 0;
+-	cdev->req->zero = 0;
+-	ret = usb_ep_queue(cdev->gadget->ep0, cdev->req, GFP_ATOMIC);
+-	if (ret)
+-		return ret;
+-	spin_lock_irqsave(&v->lock, flags);
+-	v->online = (le16_to_cpu(ctrl->wValue) & 0xff) == 1;
+-	if (v->online)
+-		v->tx_error = false;
+-	spin_unlock_irqrestore(&v->lock, flags);
+-	wake_up_all(&v->wait);
+-	return 0;
+-}
+-
+-static void vser_free_func(struct usb_function *f)
+-{
+-	struct vser *v = func_to_vser(f);
+-
+-	if (READ_ONCE(v->faulted))
+-		return; /* Explicit bounded quarantine; never release an uncertain DMA owner. */
+-	atomic_set(&v->allocated, 0);
+-	kref_put(&v->ref, vser_release_ref);
+-}
+-
+-static void vser_free_instance(struct usb_function_instance *instance)
+-{
+-	struct vser *v = container_of(instance, struct vser, instance);
+-
+-	WRITE_ONCE(v->dead, true);
+-	wake_up_all(&v->wait);
+-	misc_deregister(&v->misc);
+-	kref_put(&v->ref, vser_release_ref);
+-}
+-
+-static void vser_item_release(struct config_item *item)
+-{
+-	struct vser *v = container_of(to_config_group(item), struct vser,
+-				      instance.group);
+-
+-	usb_put_function_instance(&v->instance);
+-}
+-
+-static struct configfs_item_operations vser_item_ops = {
+-	.release = vser_item_release
+-};
+-static const struct config_item_type vser_type = {
+-	.ct_item_ops = &vser_item_ops,
+-	.ct_owner = THIS_MODULE,
+-};
+-
+-static struct usb_function_instance *vser_alloc_instance(void)
+-{
+-	struct vser *v;
+-	int ret;
+-
+-	if (atomic_cmpxchg(&vser_active, 0, 1))
+-		return ERR_PTR(-EBUSY);
+-	v = kzalloc_obj(*v, GFP_KERNEL);
+-	if (!v) {
+-		atomic_set(&vser_active, 0);
+-		return ERR_PTR(-ENOMEM);
+-	}
+-	kref_init(&v->ref);
+-	init_rwsem(&v->io_sem);
+-	mutex_init(&v->read_lock);
+-	mutex_init(&v->write_lock);
+-	spin_lock_init(&v->lock);
+-	init_waitqueue_head(&v->wait);
+-	init_completion(&v->rx_done);
+-	INIT_LIST_HEAD(&v->tx_idle);
+-	atomic_set(&v->opens, 0);
+-	atomic_set(&v->allocated, 0);
+-	v->instance.free_func_inst = vser_free_instance;
+-	v->misc.minor = MISC_DYNAMIC_MINOR;
+-	v->misc.name = "vser";
+-	v->misc.fops = &vser_fops;
+-	v->misc.mode = 0600;
+-	/* One captured vser.gs0; open files and fault quarantine retain singleton ownership. */
+-	ret = misc_register(&v->misc);
+-	if (ret) {
+-		kref_put(&v->ref, vser_release_ref);
+-		return ERR_PTR(ret);
+-	}
+-	config_group_init_type_name(&v->instance.group, "", &vser_type);
+-	return &v->instance;
+-}
+-
+-static struct usb_function *
+-vser_alloc_function(struct usb_function_instance *instance)
+-{
+-	struct vser *v = container_of(instance, struct vser, instance);
+-
+-	if (atomic_cmpxchg(&v->allocated, 0, 1))
+-		return ERR_PTR(-EBUSY);
+-	kref_get(&v->ref);
+-	v->function.name = "vser";
+-	v->function.bind = vser_bind;
+-	v->function.unbind = vser_unbind;
+-	v->function.set_alt = vser_set_alt;
+-	v->function.disable = vser_disable;
+-	v->function.setup = vser_setup;
+-	v->function.free_func = vser_free_func;
+-	return &v->function;
+-}
+-DECLARE_USB_FUNCTION_INIT(vser, vser_alloc_instance, vser_alloc_function);
+-MODULE_LICENSE("GPL");
+-MODULE_DESCRIPTION("Spreadtrum vendor serial AP misc-device USB function");
+diff --git a/drivers/watchdog/Kconfig b/drivers/watchdog/Kconfig
+index f7d0a0c2c..1cd08d614 100644
+--- a/drivers/watchdog/Kconfig
++++ b/drivers/watchdog/Kconfig
+@@ -1132,6 +1132,16 @@ config SPRD_WATCHDOG
+ 	  Say Y here to include watchdog timer supported
+ 	  by Spreadtrum system.
+ 
++config SC27XX_WATCHDOG
++	tristate "Spreadtrum SC2730 PMIC watchdog"
++	depends on OF && MFD_SC27XX_PMIC
++	select WATCHDOG_CORE
++	help
++	  Support the 32 kHz watchdog in the SC2730 PMIC over its parent
++	  ADI regmap. Once started, this watchdog cannot be stopped.
++	  The hardware supports 1 through 131071 seconds, defaulting to 60.
++	  When built as a module this driver is called sc27xx_wdt.
++
+ config PM8916_WATCHDOG
+ 	tristate "Qualcomm PM8916 pmic watchdog"
+ 	depends on OF && MFD_SPMI_PMIC
+diff --git a/drivers/watchdog/Makefile b/drivers/watchdog/Makefile
+index 9ac406677..8fd58fc46 100644
+--- a/drivers/watchdog/Makefile
++++ b/drivers/watchdog/Makefile
+@@ -96,6 +96,7 @@ obj-$(CONFIG_STM32_WATCHDOG) += stm32_iwdg.o
+ obj-$(CONFIG_UNIPHIER_WATCHDOG) += uniphier_wdt.o
+ obj-$(CONFIG_RTD119X_WATCHDOG) += rtd119x_wdt.o
+ obj-$(CONFIG_SPRD_WATCHDOG) += sprd_wdt.o
++obj-$(CONFIG_SC27XX_WATCHDOG) += sc27xx_wdt.o
+ obj-$(CONFIG_PM8916_WATCHDOG) += pm8916_wdt.o
+ obj-$(CONFIG_ARM_SMC_WATCHDOG) += arm_smc_wdt.o
+ obj-$(CONFIG_GXP_WATCHDOG) += gxp-wdt.o
+diff --git a/drivers/watchdog/sc27xx_wdt.c b/drivers/watchdog/sc27xx_wdt.c
+new file mode 100644
+index 000000000..c1e6abf13
+--- /dev/null
++++ b/drivers/watchdog/sc27xx_wdt.c
+@@ -0,0 +1,218 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* SC2730 PMIC watchdog, accessed through the parent ADI regmap. */
++#include <linux/bitops.h>
++#include <linux/delay.h>
++#include <linux/module.h>
++#include <linux/limits.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/watchdog.h>
++
++#define SC27XX_WDT_LOAD_LOW	0x00
++#define SC27XX_WDT_LOAD_HIGH	0x04
++#define SC27XX_WDT_CTRL		0x08
++#define SC27XX_WDT_RAW		0x10
++#define SC27XX_WDT_COUNT_LOW	0x18
++#define SC27XX_WDT_COUNT_HIGH	0x1c
++#define SC27XX_WDT_LOCK		0x20
++#define SC27XX_WDT_INT_EN	BIT(0)
++#define SC27XX_WDT_COUNT_EN	BIT(1)
++#define SC27XX_WDT_NEW_VERSION	BIT(2)
++#define SC27XX_WDT_RESET_EN	BIT(3)
++#define SC27XX_WDT_RESET_RAW	BIT(3)
++#define SC27XX_WDT_LOAD_BUSY	BIT(4)
++#define SC27XX_WDT_UNLOCK	0xe551
++#define SC27XX_WDT_RELOCK	0x1aae
++#define SC27XX_WDT_RATE		32768U
++#define SC2730_MODULE_EN		0x1808
++#define SC2730_RTC_CLK_EN	0x1810
++#define SC2730_WDT_GATE		BIT(2)
++
++struct sc27xx_wdt {
++	struct regmap *regmap;
++	unsigned int base;
++	struct watchdog_device wdd;
++};
++
++static int sc27xx_wdt_wait_load(struct sc27xx_wdt *wdt)
++{
++	unsigned int raw;
++
++	return regmap_read_poll_timeout(wdt->regmap, wdt->base + SC27XX_WDT_RAW,
++				       raw, !(raw & SC27XX_WDT_LOAD_BUSY), 10, 640);
++}
++
++static int sc27xx_wdt_load(struct sc27xx_wdt *wdt, unsigned int seconds)
++{
++	u32 ticks = seconds * SC27XX_WDT_RATE;
++	int ret, lock_ret;
++
++	ret = sc27xx_wdt_wait_load(wdt);
++	if (ret)
++		return ret;
++	ret = regmap_write(wdt->regmap, wdt->base + SC27XX_WDT_LOCK,
++			   SC27XX_WDT_UNLOCK);
++	if (ret)
++		return ret;
++	ret = regmap_write(wdt->regmap, wdt->base + SC27XX_WDT_LOAD_HIGH,
++			   ticks >> 16);
++	if (!ret)
++		ret = regmap_write(wdt->regmap, wdt->base + SC27XX_WDT_LOAD_LOW,
++				   ticks & 0xffff);
++	/* Relock even if an ADI write fails; do not replay a partial load. */
++	lock_ret = regmap_write(wdt->regmap, wdt->base + SC27XX_WDT_LOCK,
++				SC27XX_WDT_RELOCK);
++	if (ret || lock_ret)
++		return ret ? ret : lock_ret;
++	udelay(100);
++	return sc27xx_wdt_wait_load(wdt);
++}
++
++static int sc27xx_wdt_ping(struct watchdog_device *wdd)
++{
++	return sc27xx_wdt_load(watchdog_get_drvdata(wdd), wdd->timeout);
++}
++
++static int sc27xx_wdt_start(struct watchdog_device *wdd)
++{
++	struct sc27xx_wdt *wdt = watchdog_get_drvdata(wdd);
++	int ret, lock_ret;
++
++	ret = sc27xx_wdt_ping(wdd);
++	if (ret)
++		return ret;
++	ret = regmap_write(wdt->regmap, wdt->base + SC27XX_WDT_LOCK,
++			   SC27XX_WDT_UNLOCK);
++	if (ret)
++		return ret;
++	ret = regmap_update_bits(wdt->regmap, wdt->base + SC27XX_WDT_CTRL,
++				SC27XX_WDT_INT_EN | SC27XX_WDT_COUNT_EN |
++				SC27XX_WDT_NEW_VERSION | SC27XX_WDT_RESET_EN,
++				SC27XX_WDT_COUNT_EN | SC27XX_WDT_NEW_VERSION |
++				SC27XX_WDT_RESET_EN);
++	lock_ret = regmap_write(wdt->regmap, wdt->base + SC27XX_WDT_LOCK,
++				SC27XX_WDT_RELOCK);
++	return ret ? ret : lock_ret;
++}
++
++static int sc27xx_wdt_stop(struct watchdog_device *wdd)
++{
++	/* This PMIC watchdog is deliberately nowayout, including during shutdown. */
++	return -EBUSY;
++}
++
++static int sc27xx_wdt_set_timeout(struct watchdog_device *wdd, unsigned int timeout)
++{
++	int ret = sc27xx_wdt_load(watchdog_get_drvdata(wdd), timeout);
++
++	if (!ret)
++		wdd->timeout = timeout;
++	return ret;
++}
++
++static unsigned int sc27xx_wdt_get_timeleft(struct watchdog_device *wdd)
++{
++	struct sc27xx_wdt *wdt = watchdog_get_drvdata(wdd);
++	unsigned int high, low, again;
++	int ret;
++
++	/* ADI exposes two 16-bit halves; retry only an observed rollover. */
++	for (unsigned int i = 0; i < 4; i++) {
++		ret = regmap_read(wdt->regmap, wdt->base + SC27XX_WDT_COUNT_HIGH, &high);
++		if (ret)
++			return 0;
++		ret = regmap_read(wdt->regmap, wdt->base + SC27XX_WDT_COUNT_LOW, &low);
++		if (ret)
++			return 0;
++		ret = regmap_read(wdt->regmap, wdt->base + SC27XX_WDT_COUNT_HIGH, &again);
++		if (ret)
++			return 0;
++		if (high == again)
++			return ((high << 16) | (low & 0xffff)) / SC27XX_WDT_RATE;
++	}
++	return 0;
++}
++
++static const struct watchdog_info sc27xx_wdt_info = {
++	.identity = "SC2730 PMIC Watchdog",
++	.options = WDIOF_SETTIMEOUT | WDIOF_KEEPALIVEPING | WDIOF_CARDRESET,
++};
++
++static const struct watchdog_ops sc27xx_wdt_ops = {
++	.owner = THIS_MODULE,
++	.start = sc27xx_wdt_start,
++	.stop = sc27xx_wdt_stop,
++	.ping = sc27xx_wdt_ping,
++	.set_timeout = sc27xx_wdt_set_timeout,
++	.get_timeleft = sc27xx_wdt_get_timeleft,
++};
++
++static int sc27xx_wdt_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct sc27xx_wdt *wdt;
++	unsigned int control, raw;
++	int ret;
++
++	wdt = devm_kzalloc(dev, sizeof(*wdt), GFP_KERNEL);
++	if (!wdt)
++		return -ENOMEM;
++	wdt->regmap = dev_get_regmap(dev->parent, NULL);
++	if (!wdt->regmap)
++		return -ENODEV;
++	ret = of_property_read_u32(dev->of_node, "reg", &wdt->base);
++	if (ret)
++		return ret;
++	ret = regmap_update_bits(wdt->regmap, SC2730_MODULE_EN,
++				SC2730_WDT_GATE, SC2730_WDT_GATE);
++	if (ret)
++		return ret;
++	ret = regmap_update_bits(wdt->regmap, SC2730_RTC_CLK_EN,
++				SC2730_WDT_GATE, SC2730_WDT_GATE);
++	if (ret)
++		return ret;
++	ret = regmap_read(wdt->regmap, wdt->base + SC27XX_WDT_CTRL, &control);
++	if (ret)
++		return ret;
++	ret = regmap_read(wdt->regmap, wdt->base + SC27XX_WDT_RAW, &raw);
++	if (ret)
++		return ret;
++
++	wdt->wdd.info = &sc27xx_wdt_info;
++	wdt->wdd.ops = &sc27xx_wdt_ops;
++	wdt->wdd.parent = dev;
++	wdt->wdd.min_timeout = 1;
++	wdt->wdd.max_timeout = U32_MAX / SC27XX_WDT_RATE;
++	wdt->wdd.timeout = 60;
++	/* Firmware may already have consumed the reset latch; do not invent history. */
++	wdt->wdd.bootstatus = raw & SC27XX_WDT_RESET_RAW ? WDIOF_CARDRESET : 0;
++	watchdog_set_drvdata(&wdt->wdd, wdt);
++	watchdog_set_nowayout(&wdt->wdd, true);
++	ret = watchdog_init_timeout(&wdt->wdd, 0, dev);
++	if (ret)
++		return ret;
++	if ((control & (SC27XX_WDT_COUNT_EN | SC27XX_WDT_NEW_VERSION |
++			SC27XX_WDT_RESET_EN)) ==
++	    (SC27XX_WDT_COUNT_EN | SC27XX_WDT_NEW_VERSION | SC27XX_WDT_RESET_EN))
++		set_bit(WDOG_HW_RUNNING, &wdt->wdd.status);
++	/* Standard bounded boot handling may ping inherited hardware until first open. */
++	return devm_watchdog_register_device(dev, &wdt->wdd);
++}
++
++static const struct of_device_id sc27xx_wdt_match[] = {
++	{ .compatible = "sprd,sc2730-wdt" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, sc27xx_wdt_match);
++
++static struct platform_driver sc27xx_wdt_driver = {
++	.probe = sc27xx_wdt_probe,
++	.driver = {
++		.name = "sc27xx-wdt",
++		.of_match_table = sc27xx_wdt_match,
++	},
++};
++module_platform_driver(sc27xx_wdt_driver);
++MODULE_DESCRIPTION("SC2730 PMIC watchdog driver");
++MODULE_LICENSE("GPL");
+diff --git a/include/linux/sprd_cp.h b/include/linux/sprd_cp.h
+deleted file mode 100644
+index 31d1aa593..000000000
+--- a/include/linux/sprd_cp.h
++++ /dev/null
+@@ -1,27 +0,0 @@
+-/* SPDX-License-Identifier: GPL-2.0-only */
+-/*
+- * Copyright (C) 2019 Spreadtrum Communications Inc.
+- *
+- * This software is licensed under the terms of the GNU General Public
+- * License version 2, as published by the Free Software Foundation, and
+- * may be copied, distributed, and modified under those terms.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- */
+-
+-#ifndef _SPRD_CP_H_
+-#define _SPRD_CP_H_
+-
+-#include <linux/ioctl.h>
+-
+-#define SPRD_CP_IOC_MAGIC 'c'
+-
+-/* Query MODEM image load status. */
+-#define SPRD_CP_IOCGLDSTAT _IOR(SPRD_CP_IOC_MAGIC, 0, int)
+-/* Clear MODEM image load status. */
+-#define SPRD_CP_IOCCLDSTAT _IO(SPRD_CP_IOC_MAGIC, 1)
+-
+-#endif /*!_SPRD_CP_H_ */
+diff --git a/include/linux/sprd_pmsys.h b/include/linux/sprd_pmsys.h
+deleted file mode 100644
+index c95646e5b..000000000
+--- a/include/linux/sprd_pmsys.h
++++ /dev/null
+@@ -1,26 +0,0 @@
+-/* SPDX-License-Identifier: GPL-2.0-only */
+-#ifndef _LINUX_SPRD_PMSYS_H
+-#define _LINUX_SPRD_PMSYS_H
+-
+-#include <linux/err.h>
+-#include <linux/kconfig.h>
+-struct device;
+-struct sprd_pmsys;
+-
+-#if IS_REACHABLE(CONFIG_SPRD_UDX710_PMSYS)
+-/* The image is prepared with CM4 held. Release only after SIPC has installed
+- * its mailbox receiver, so the firmware's initial OPEN messages are retained.
+- */
+-struct sprd_pmsys *sprd_pmsys_get(struct device *consumer);
+-int sprd_pmsys_start(struct sprd_pmsys *pmsys);
+-#else
+-static inline struct sprd_pmsys *sprd_pmsys_get(struct device *consumer)
+-{
+-	return ERR_PTR(-EOPNOTSUPP);
+-}
+-static inline int sprd_pmsys_start(struct sprd_pmsys *pmsys)
+-{
+-	return -EOPNOTSUPP;
+-}
+-#endif
+-#endif
+diff --git a/sound/soc/sprd/sprd-mcdt.c b/sound/soc/sprd/sprd-mcdt.c
+index d9a7bbd6c..322703d6d 100644
+--- a/sound/soc/sprd/sprd-mcdt.c
++++ b/sound/soc/sprd/sprd-mcdt.c
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: GPL-2.0
+ // Copyright (C) 2019 Spreadtrum Communications Inc.
+ 
++#include <linux/clk.h>
+ #include <linux/errno.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+@@ -107,6 +108,8 @@ enum sprd_mcdt_fifo_sts {
+ 
+ struct sprd_mcdt_dev {
+ 	struct device *dev;
++	struct clk *clk;
++	u32 ap_offset;
+ 	void __iomem *base;
+ 	spinlock_t lock;
+ 	struct sprd_mcdt_chan chan[MCDT_CHANNEL_NUM];
+@@ -846,6 +849,8 @@ struct sprd_mcdt_chan *sprd_mcdt_request_chan(u8 channel,
+ 
+ 	list_for_each_entry(temp, &sprd_mcdt_chan_list, list) {
+ 		if (temp->type == type && temp->id == channel) {
++			if (clk_prepare_enable(temp->mcdt->clk))
++				return NULL;
+ 			list_del_init(&temp->list);
+ 			break;
+ 		}
+@@ -877,6 +882,7 @@ void sprd_mcdt_free_chan(struct sprd_mcdt_chan *chan)
+ 	}
+ 
+ 	list_add_tail(&chan->list, &sprd_mcdt_chan_list);
++	clk_disable_unprepare(chan->mcdt->clk);
+ }
+ EXPORT_SYMBOL_GPL(sprd_mcdt_free_chan);
+ 
+@@ -899,6 +905,7 @@ static void sprd_mcdt_init_chans(struct sprd_mcdt_dev *mcdt,
+ 				(i - MCDT_ADC_CHANNEL_NUM) * 4;
+ 		}
+ 
++		chan->fifo_phys -= mcdt->ap_offset;
+ 		chan->mcdt = mcdt;
+ 		INIT_LIST_HEAD(&chan->list);
+ 
+@@ -921,6 +928,11 @@ static int sprd_mcdt_probe(struct platform_device *pdev)
+ 	if (IS_ERR(mcdt->base))
+ 		return PTR_ERR(mcdt->base);
+ 
++	mcdt->clk = devm_clk_get_optional(&pdev->dev, NULL);
++	if (IS_ERR(mcdt->clk))
++		return dev_err_probe(&pdev->dev, PTR_ERR(mcdt->clk), "MCDT clock\n");
++	if (of_device_is_compatible(pdev->dev.of_node, "sprd,roc1-mcdt"))
++		of_property_read_u32(pdev->dev.of_node, "sprd,ap-addr-offset", &mcdt->ap_offset);
+ 	mcdt->dev = &pdev->dev;
+ 	spin_lock_init(&mcdt->lock);
+ 	platform_set_drvdata(pdev, mcdt);
+@@ -951,6 +963,7 @@ static void sprd_mcdt_remove(struct platform_device *pdev)
+ 
+ static const struct of_device_id sprd_mcdt_of_match[] = {
+ 	{ .compatible = "sprd,sc9860-mcdt", },
++	{ .compatible = "sprd,roc1-mcdt", },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(of, sprd_mcdt_of_match);

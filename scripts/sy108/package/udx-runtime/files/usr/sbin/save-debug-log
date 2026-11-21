@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+[ "$(cat /etc/udx-openwrt-root 2>/dev/null)" = 'OpenWrt production root' ] || exit 64
+if [ "${UDX_RUNTIME_LOG_WORKER:-0}" != 1 ]; then
+	exec /usr/sbin/udx-runtime --checkpoint
+fi
+/usr/libexec/udx-verify-root running >/dev/null
+umask 077
+# /etc is the standard overlay upper filesystem; no separate userdata mount.
+dir=/etc/udx-runtime
+mkdir -p "$dir"
+{
+	echo UDX_OPENWRT_SYSTEM_LOG
+	cat /proc/sys/kernel/random/boot_id /etc/udx-system-build /proc/uptime
+	dmesg | tail -c 524288
+} > "$dir/current.log.new"
+[ ! -f "$dir/current.log" ] || mv "$dir/current.log" "$dir/previous.log"
+mv "$dir/current.log.new" "$dir/current.log"

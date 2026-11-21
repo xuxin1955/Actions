@@ -1,0 +1,719 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: zh_CN\n"
+
+msgid "4G LTE only"
+msgstr "仅 4G LTE"
+
+msgid "5G / 4G / 3G / 2G automatic"
+msgstr "5G / 4G / 3G / 2G 自动"
+
+msgid "5G / 4G automatic (SA + NSA)"
+msgstr "5G / 4G 自动（SA + NSA）"
+
+msgid "5G NSA"
+msgstr "5G NSA"
+
+msgid "5G SA only"
+msgstr "仅 5G SA"
+
+msgid "A previous send result needs checking"
+msgstr "请查看上次发送结果"
+
+msgid "ACM console"
+msgstr "ACM 控制台"
+
+msgid "AMBR downlink"
+msgstr "AMBR 下行速率"
+
+msgid "AMBR uplink"
+msgstr "AMBR 上行速率"
+
+msgid "APN mode"
+msgstr "APN 模式"
+
+msgid "APN settings"
+msgstr "APN 设置"
+
+msgid "AT command"
+msgstr "AT 指令"
+
+msgid "AT terminal"
+msgstr "AT 终端"
+
+msgid "AT terminal and IMEI"
+msgstr "AT 终端与 IMEI"
+
+msgid "Action"
+msgstr "操作"
+
+msgid "Active SIM"
+msgstr "当前 SIM"
+
+msgid "Airplane mode"
+msgstr "飞行模式"
+
+msgid "Applied bands"
+msgstr "当前频段限制"
+
+msgid "Apply"
+msgstr "应用"
+
+msgid "Apply APN"
+msgstr "应用 APN"
+
+msgid "Apply USB configuration"
+msgstr "应用 USB 组合"
+
+msgid "Apply bands"
+msgstr "应用频段"
+
+msgid "Apply network settings"
+msgstr "应用网络设置"
+
+msgid "Apply result"
+msgstr "应用结果"
+
+msgid "Apply settings"
+msgstr "应用设置"
+
+msgid "Authenticated ACM console"
+msgstr "ACM 认证终端"
+
+msgid "Authentication"
+msgstr "认证"
+
+msgid "Automatic"
+msgstr "自动"
+
+msgid "Automatic operator selection"
+msgstr "自动选网"
+
+msgid "Available"
+msgstr "可用"
+
+msgid "Available memory"
+msgstr "可用内存"
+
+msgid "Band"
+msgstr "频段"
+
+msgid "Band locking"
+msgstr "频段锁定"
+
+msgid "Bands, cells and APN"
+msgstr "频段、小区与 APN"
+
+msgid "Bandwidth"
+msgstr "带宽"
+
+msgid "Board and system"
+msgstr "板级与系统"
+
+msgid "Board information"
+msgstr "板级信息"
+
+msgid "Board name"
+msgstr "板卡名称"
+
+msgid "Boot and storage"
+msgstr "启动与存储"
+
+msgid "Boot information"
+msgstr "启动信息"
+
+msgid "Boot policy"
+msgstr "启动策略"
+
+msgid "Buffered"
+msgstr "缓冲区"
+
+msgid "CP/NV error"
+msgstr "CP/NV 错误"
+
+msgid "CPU clocks"
+msgstr "CPU 时钟"
+
+msgid "CPU governor"
+msgstr "CPU 调频策略"
+
+msgid "CPU maximum frequency"
+msgstr "CPU 最高频率"
+
+msgid "CPU minimum frequency"
+msgstr "CPU 最低频率"
+
+msgid "CPU policy"
+msgstr "CPU 策略"
+
+msgid "Cell locks"
+msgstr "小区锁定"
+
+msgid "Cellular settings"
+msgstr "蜂窝设置"
+
+msgid "Changing USB mode restarts the device. Changing ACM reconnects USB."
+msgstr "切换 USB 模式会重启设备；切换 ACM 会重新连接 USB。"
+
+msgid "Check send result"
+msgstr "查看发送结果"
+
+msgid "Check the previous send result before starting another message"
+msgstr "请先查看上次发送结果，再开始新消息"
+
+msgid "China Broadnet"
+msgstr "中国广电"
+
+msgid "China Mobile"
+msgstr "中国移动"
+
+msgid "China Telecom"
+msgstr "中国电信"
+
+msgid "China Unicom"
+msgstr "中国联通"
+
+msgid "Clear folder"
+msgstr "清空"
+
+msgid "Completed"
+msgstr "已完成"
+
+msgid "Connected"
+msgstr "已连接"
+
+msgid "Connecting"
+msgstr "正在连接"
+
+msgid "Connection"
+msgstr "连接"
+
+msgid "Core service"
+msgstr "核心服务"
+
+msgid "Current"
+msgstr "当前"
+
+msgid "Current frequency"
+msgstr "当前频率"
+
+msgid "Current network"
+msgstr "当前网络"
+
+msgid "DDR clocks"
+msgstr "DDR 时钟"
+
+msgid "Data connection"
+msgstr "数据连接"
+
+msgid "Data roaming"
+msgstr "数据漫游"
+
+msgid "Data size"
+msgstr "数据大小"
+
+msgid "Delete selected"
+msgstr "删除所选"
+
+msgid "Delete template"
+msgstr "删除模板"
+
+msgid "Deletion incomplete"
+msgstr "部分短信未删除"
+
+msgid "Device"
+msgstr "设备"
+
+msgid "Device MAC"
+msgstr "设备 MAC"
+
+msgid "Direct reception"
+msgstr "直接接收"
+
+msgid "Disconnected"
+msgstr "未连接"
+
+msgid "Enter a 15-digit IMEI"
+msgstr "请输入 15 位 IMEI"
+
+msgid "Execute AT command"
+msgstr "执行 AT 指令"
+
+msgid "Execute quick command"
+msgstr "执行快捷指令"
+
+msgid "Filesystem"
+msgstr "文件系统"
+
+msgid "Filesystems"
+msgstr "文件系统"
+
+msgid "Firmware version"
+msgstr "固件版本"
+
+msgid "Forbidden"
+msgstr "不可注册"
+
+msgid "Free"
+msgstr "空闲"
+
+msgid "GBR downlink"
+msgstr "GBR 下行速率"
+
+msgid "GBR uplink"
+msgstr "GBR 上行速率"
+
+msgid "Governor"
+msgstr "调频策略"
+
+msgid "Hardware acceleration"
+msgstr "硬件加速"
+
+msgid "Hardware and platform"
+msgstr "硬件与平台"
+
+msgid "Host MAC"
+msgstr "主机 MAC"
+
+msgid "Hostname"
+msgstr "主机名"
+
+msgid "IMEI"
+msgstr "IMEI"
+
+msgid "IMEI Luhn check failed"
+msgstr "IMEI 校验位错误"
+
+msgid "IMEI index"
+msgstr "IMEI 编号"
+
+msgid "Identity"
+msgstr "编号"
+
+msgid "Inbox"
+msgstr "收件箱"
+
+msgid "Inbox limit"
+msgstr "收件箱上限"
+
+msgid "Kernel"
+msgstr "内核"
+
+msgid "LTE bands"
+msgstr "LTE 频段"
+
+msgid "Last error"
+msgstr "最近错误"
+
+msgid "Leave empty for all bands."
+msgstr "留空表示不限制频段。"
+
+msgid "Load average"
+msgstr "平均负载"
+
+msgid "Lock cell"
+msgstr "锁定小区"
+
+msgid "MBR downlink"
+msgstr "MBR 下行速率"
+
+msgid "MBR uplink"
+msgstr "MBR 上行速率"
+
+msgid "Manual"
+msgstr "手动"
+
+msgid "Maximum frequency"
+msgstr "最高频率"
+
+msgid "Memory"
+msgstr "内存"
+
+msgid "Message"
+msgstr "短信内容"
+
+msgid "Minimum frequency"
+msgstr "最低频率"
+
+msgid "Minimum frequency must not exceed maximum frequency."
+msgstr "最低频率不能高于最高频率。"
+
+msgid "Mobile data"
+msgstr "移动数据"
+
+msgid "Mode"
+msgstr "模式"
+
+msgid "Model"
+msgstr "型号"
+
+msgid "Modem reset is not supported in this version."
+msgstr "当前版本暂不支持基带复位。"
+
+msgid "Modem service"
+msgstr "基带服务"
+
+msgid "Modem storage"
+msgstr "基带存储"
+
+msgid "Mount point"
+msgstr "挂载点"
+
+msgid "NCM hardware acceleration"
+msgstr "NCM 硬件加速"
+
+msgid "NCM software mode"
+msgstr "NCM 软件模式"
+
+msgid "NR bands"
+msgstr "NR 频段"
+
+msgid "Neighbor"
+msgstr "邻区"
+
+msgid "Network control"
+msgstr "网络控制"
+
+msgid "Network mode"
+msgstr "网络模式"
+
+msgid "New template name"
+msgstr "新模板名称"
+
+msgid "No"
+msgstr "否"
+
+msgid "No messages selected"
+msgstr "未选择短信"
+
+msgid "No pending message"
+msgstr "没有待确认的短信"
+
+msgid "None"
+msgstr "无"
+
+msgid "Number"
+msgstr "号码"
+
+msgid "Off"
+msgstr "关闭"
+
+msgid "On"
+msgstr "已开启"
+
+msgid "Open network management"
+msgstr "打开网络管理"
+
+msgid "Operation failed"
+msgstr "操作失败"
+
+msgid "Operation timed out; it was not submitted again"
+msgstr "操作等待超时，未重复提交"
+
+msgid "Operator"
+msgstr "运营商"
+
+msgid "Operators"
+msgstr "运营商"
+
+msgid "Overview and network control"
+msgstr "总览与网络控制"
+
+msgid "PDP type"
+msgstr "PDP 类型"
+
+msgid "Page cache"
+msgstr "页缓存"
+
+msgid "Password"
+msgstr "密码"
+
+msgid "Platform services"
+msgstr "平台服务"
+
+msgid "Quick command"
+msgstr "快捷指令"
+
+msgid "Radio"
+msgstr "射频"
+
+msgid "Read"
+msgstr "已读"
+
+msgid "Read IMEI"
+msgstr "读取 IMEI"
+
+msgid "Read SIM operator APNs"
+msgstr "读取 SIM 运营商 APN"
+
+msgid "Read band and cell locks"
+msgstr "读取频段与小区锁定"
+
+msgid "Read messages"
+msgstr "读取短信"
+
+msgid "Read only"
+msgstr "只读"
+
+msgid "Readback"
+msgstr "回读结果"
+
+msgid "Recipient number"
+msgstr "收件号码"
+
+msgid "Refresh"
+msgstr "刷新"
+
+msgid "Refresh cells"
+msgstr "刷新小区"
+
+msgid "Refresh network information"
+msgstr "刷新网络信息"
+
+msgid "Register"
+msgstr "注册"
+
+msgid "Register manually"
+msgstr "手动注册"
+
+msgid "Reserved eraseblocks"
+msgstr "预留擦除块"
+
+msgid "Response"
+msgstr "返回结果"
+
+msgid "Restart modem"
+msgstr "重启基带"
+
+msgid "Root filesystem"
+msgstr "根文件系统"
+
+msgid "Root marker"
+msgstr "根分区标识"
+
+msgid "Running system"
+msgstr "当前系统"
+
+msgid "Runtime error"
+msgstr "平台运行错误"
+
+msgid "SIM slot"
+msgstr "SIM 卡槽"
+
+msgid "SIM status"
+msgstr "SIM 状态"
+
+msgid "SMS management"
+msgstr "短信管理"
+
+msgid "SY108"
+msgstr "SY108"
+
+msgid "Save as template"
+msgstr "保存为模板"
+
+msgid "Saved template"
+msgstr "已保存模板"
+
+msgid "Scan operators"
+msgstr "扫描运营商"
+
+msgid "Searching for network"
+msgstr "正在搜网"
+
+msgid "Select"
+msgstr "选择"
+
+msgid "Select a template"
+msgstr "选择模板"
+
+msgid "Select message"
+msgstr "选择短信"
+
+msgid "Send"
+msgstr "发送"
+
+msgid "Send message"
+msgstr "发送短信"
+
+msgid "Send result unavailable"
+msgstr "未获得发送结果"
+
+msgid "Sending"
+msgstr "正在发送"
+
+msgid "Sensor"
+msgstr "传感器"
+
+msgid "Sensors and clocks"
+msgstr "传感器与时钟"
+
+msgid "Sent"
+msgstr "已发送"
+
+msgid "Sent limit"
+msgstr "已发送保留数量"
+
+msgid "Serial number"
+msgstr "序列号"
+
+msgid "Serving"
+msgstr "主小区"
+
+msgid "Serving and neighboring cells"
+msgstr "主小区与邻区"
+
+msgid "Set the same minimum and maximum for a fixed CPU frequency."
+msgstr "将最低与最高频率设为同一值，可固定 CPU 频率。"
+
+msgid "Settings"
+msgstr "设置"
+
+msgid "Settings are saved and restored at startup."
+msgstr "设置会保存，并在开机时恢复。"
+
+msgid "Some messages were not deleted"
+msgstr "部分短信未删除"
+
+msgid "Speed"
+msgstr "速率"
+
+msgid "Start another message"
+msgstr "开始新消息"
+
+msgid "Status"
+msgstr "状态"
+
+msgid "Status uncertain"
+msgstr "状态待确认"
+
+msgid "Submitted to modem"
+msgstr "已提交到基带"
+
+msgid "Swap free"
+msgstr "交换空间空闲"
+
+msgid "Swap total"
+msgstr "交换空间总量"
+
+msgid "System"
+msgstr "系统"
+
+msgid "Target"
+msgstr "目标平台"
+
+msgid "Technology"
+msgstr "网络制式"
+
+msgid "Temperature"
+msgstr "温度"
+
+msgid "Temperatures"
+msgstr "温度"
+
+msgid "The modem supplies the IP configuration. Manage the APN and radio settings in UDX710; netifd manages this network interface."
+msgstr "IP 配置由基带提供。请在 UDX710 页面管理 APN 和射频设置；网络接口由 netifd 管理。"
+
+msgid "Time"
+msgstr "时间"
+
+msgid "Timeout"
+msgstr "超时秒数"
+
+msgid "Total"
+msgstr "总量"
+
+msgid "Type"
+msgstr "类型"
+
+msgid "UBI volumes"
+msgstr "UBI 卷"
+
+msgid "UDX710 cellular"
+msgstr "UDX710 蜂窝网络"
+
+msgid "USB configuration"
+msgstr "USB 网络组合"
+
+msgid "USB configuration failed"
+msgstr "USB 配置失败"
+
+msgid "USB mode"
+msgstr "USB 模式"
+
+msgid "USB reconnection timed out"
+msgstr "USB 重连超时"
+
+msgid "USB status"
+msgstr "USB 状态"
+
+msgid "Unchanged"
+msgstr "保持不变"
+
+msgid "Unknown"
+msgstr "未知"
+
+msgid "Unlock"
+msgstr "解锁"
+
+msgid "Unlock all bands"
+msgstr "解锁全部频段"
+
+msgid "Unlock all cells"
+msgstr "解锁全部小区"
+
+msgid "Unlocked"
+msgstr "未锁定"
+
+msgid "Unread"
+msgstr "未读"
+
+msgid "Unrestricted"
+msgstr "不限制"
+
+msgid "Uptime"
+msgstr "运行时间"
+
+msgid "Use APN"
+msgstr "使用此 APN"
+
+msgid "Use gateway metric"
+msgstr "网关跃点"
+
+msgid "Use template"
+msgstr "使用模板"
+
+msgid "Username"
+msgstr "用户名"
+
+msgid "Volume"
+msgstr "卷名"
+
+msgid "Waiting for"
+msgstr "等待"
+
+msgid "Waiting for SIM"
+msgstr "等待 SIM 卡"
+
+msgid "Waiting for packet attachment"
+msgstr "等待数据网络附着"
+
+msgid "Waiting for radio"
+msgstr "等待射频开启"
+
+msgid "Write IMEI"
+msgstr "写入 IMEI"
+
+msgid "Yes"
+msgstr "是"
+
+
+msgid "Available frequencies"
+msgstr "支持的频率"
+
+msgid "DDR is managed automatically by firmware. Monitoring only."
+msgstr "DDR 由固件自动调频，此处仅显示监测数据。"
+
+msgid "Apply CPU frequency settings"
+msgstr "应用 CPU 频率设置"

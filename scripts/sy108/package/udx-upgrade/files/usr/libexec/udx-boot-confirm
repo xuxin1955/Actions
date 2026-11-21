@@ -1,0 +1,10 @@
+#!/bin/sh
+# Confirm this boot after the ordinary management services become usable.
+tries=0
+while [ "$tries" -lt 24 ]; do
+	sleep 5
+	/usr/libexec/udx-boot-state accept 2>/dev/null && exit 0
+	tries=$((tries + 1))
+done
+logger -t sy108 'Boot confirmation failed; watchdog Recovery fallback remains active'
+exit 1

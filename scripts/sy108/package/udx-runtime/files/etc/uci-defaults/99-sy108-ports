@@ -1,0 +1,16 @@
+#!/bin/sh
+# Port inventory for LuCI; interface configuration remains owned by udx-usb
+# and udx-cellular. Preserve other board metadata and replace only network.
+set -eu
+path=$(mktemp /etc/.sy108-board-XXXXXX)
+trap 'rm -f "$path"' EXIT
+ucode -e '
+import { readfile } from "fs";
+let board = json(readfile("/etc/board.json"));
+board.network = { lan: { device: "uncm0", protocol: "none" } };
+if (readfile("/etc/udx-openwrt-root") != null)
+	board.network.wan = { device: "wwan0", protocol: "udx" };
+printf("%J\n", board);
+' > "$path"
+chmod 644 "$path"
+mv "$path" /etc/board.json

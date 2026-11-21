@@ -1,0 +1,36 @@
+#!/bin/sh
+
+# A fresh install (including a reinstall after removal, which leaves
+# luci.themes.Outline behind) registers and activates the theme. Upgrades
+# keep whatever theme the user picked.
+if [ "$PKG_UPGRADE" != 1 ]; then
+	uci batch <<-EOF
+		set luci.themes.Outline=/luci-static/outline
+		set luci.main.mediaurlbase=/luci-static/outline
+		commit luci
+	EOF
+fi
+
+# System › Outline Theme settings. Absent options mean the stock look, so
+# only the sections are created; nothing is overwritten on upgrade.
+[ -f /etc/config/outline ] || touch /etc/config/outline
+for s in appearance:appearance light:theme dark:theme branding:branding updates:updates; do
+	uci -q get "outline.${s%%:*}" >/dev/null || uci -q set "outline.${s%%:*}=${s#*:}"
+done
+uci -q commit outline
+
+# Brand images uploaded on the Branding page live outside the package's own
+# directory so a reinstall keeps them.
+[ -d /www/luci-static/outline-brand ] || mkdir -p /www/luci-static/outline-brand
+
+# luci-app-outline-theme (pre-release, never packaged) kept the generated
+# stylesheet here; the theme assembles it from the stored tokens now. Its
+# update options become the theme's single `repo` (only when customised).
+rm -rf /etc/outline
+r="$(uci -q get outline.updates.theme_repo)"
+[ -n "$r" ] && [ "$r" != tickcount/luci-theme-outline ] && uci -q set outline.updates.repo="$r"
+uci -q delete outline.updates.theme_repo
+uci -q delete outline.updates.app_repo
+uci -q commit outline
+
+exit 0

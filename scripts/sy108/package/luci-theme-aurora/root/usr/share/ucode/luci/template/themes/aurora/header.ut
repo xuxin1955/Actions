@@ -1,0 +1,476 @@
+{#
+ luci-theme-aurora:
+ Copyright 2025 eamonxg <eamonxiong@gmail.com>
+ This theme is derived from luci-theme-bootstrap UT template.
+ luci-theme-bootstrap:
+ Copyright 2008 Steven Barth <steven@midlink.org>
+ Copyright 2012 David Menting <david@nut-bolt.nl>
+ Copyright 2008-2022 Jo-Philipp Wich <jo@mein.io>
+ Licensed to the public under the Apache License 2.0.
+-#}
+
+{%
+	import { getuid, getspnam } from 'luci.core';
+	import { cursor } from 'uci';
+	import { lsdir, readfile } from 'fs';
+
+	const boardinfo = prefetched_boardinfo ?? (ubus.call('system', 'board') ?? {});
+	const hostname = striptags(boardinfo.hostname ?? '?');
+	const uci = cursor();
+	const tokens = prefetched_tokens ?? (uci.get_all('aurora', 'theme') || {});
+
+	const page_segs = length(ctx?.request_path) ? ctx.request_path : (ctx?.path || []);
+	const page = join('-', page_segs);
+	// On-demand patches — see "On-Demand Third-Party Patches" in DEVELOPMENT.md.
+	let patch_files = [], patch_scripts = [], patch_all = [];
+	if (!blank_page) {
+		let seg_prefixes = {}, acc = null;
+		for (let seg in page_segs)
+			seg_prefixes[acc = (acc == null ? seg : `${acc}-${seg}`)] = true;
+		for (let f in lsdir(`/www${media}/patches`) ?? []) {
+			if (substr(f, -4) == '.css') {
+				push(patch_all, f);
+				if (exists(seg_prefixes, substr(f, 0, -4)))
+					push(patch_files, substr(f, 0, -4));
+			}
+			else if (substr(f, -3) == '.js') {
+				push(patch_all, f);
+				if (exists(seg_prefixes, substr(f, 0, -3)))
+					push(patch_scripts, substr(f, 0, -3));
+			}
+		}
+		sort(patch_files);
+		sort(patch_scripts);
+		sort(patch_all);
+	}
+	// Both background tokens store a url('...') wrapper; preload wants the
+	// bare URL, and a data: URI (an inline LQIP-sized value) needs no preload.
+	function bg_preload_url(raw) {
+		const m = match(raw ?? '', /^url\(\s*['"]?([^'")\s]+)['"]?\s*\)$/);
+		const u = m ? m[1] : null;
+		return (u && index(u, 'data:') != 0) ? u : null;
+	}
+
+	let token_css_light = '', token_css_dark = '';
+	for (let key, val in tokens) {
+		if (index(key, 'light_') == 0)
+			token_css_light += `--${replace(substr(key, 6), '_', '-')}:${val};`;
+		else if (index(key, 'struct_') == 0)
+			token_css_light += `--${replace(substr(key, 7), '_', '-')}:${val};`;
+		else if (index(key, 'dark_') == 0)
+			token_css_dark += `--${replace(substr(key, 5), '_', '-')}:${val};`;
+	}
+
+	const nav_type = tokens.nav_type || 'mega-menu';
+	const toolbar_enabled = tokens.toolbar_enabled ? tokens.toolbar_enabled == '1' : true;
+	const icon_cache_version = tokens.icon_cache_version || '0';
+	const font_css = readfile(`/www${media}/fonts/aurora-font.css`);
+	const preload_raw = readfile(`/www${media}/fonts/preload.txt`);
+	// null = file absent (older config app): fall back to Lato below.
+	// '' = deliberately empty (pure-stack preset): preload nothing.
+	let font_preload = preload_raw == null ? null : trim(preload_raw);
+	if (font_preload && index(font_preload, '/luci-static/aurora/fonts/') != 0)
+		font_preload = '';
+	if (font_preload == null)
+		font_preload = (font_css && index(font_css, 'lato-v24-latin-regular') >= 0)
+			? `${media}/fonts/lato-v24-latin-regular.woff2` : '';
+	const logo_svg = tokens.logo_svg || 'logo.svg';
+	const favicon_png = tokens.favicon_png || '';
+	const favicon_ico = tokens.favicon_ico || 'favicon.ico';
+	const pwa_apple_touch = tokens.pwa_apple_touch || 'apple-touch-icon.png';
+
+	let toolbar_items = [];
+
+	if (!blank_page && toolbar_enabled) {
+		uci.foreach('aurora', 'toolbar_item', (section) => {
+			if (section.enabled == '1' && section.icon) {
+				push(toolbar_items, {
+					title: section.title || '',
+					url: section.url || '',
+					icon: section.icon
+				});
+			}
+		});
+	}
+
+	http.prepare_content('text/html; charset=UTF-8');
+-%}
+
+<!DOCTYPE html>
+<html lang="{{ dispatcher.lang }}">
+	<head>
+		<meta charset="utf-8">
+		<title>{{ dispatched?.title ? `${striptags(_(dispatched.title))} - ` : '' }}{{ hostname }}</title>
+		{% if (blank_page): %}
+		<script>
+			(function () {
+				const theme = localStorage.getItem('aurora.theme') || 'device';
+				const isDark = theme === 'dark' || (theme === 'device' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+				document.documentElement.setAttribute('data-darkmode', isDark);
+				{# A new session may see a different menu: drop the replayed nav. #}
+				try { sessionStorage.removeItem('aurora.nav'); } catch (e) {}
+			})();
+		</script>
+		{% else %}
+		<script>
+			const setTheme = (theme) => {
+				const current = ['light', 'dark', 'device'].includes(theme) ? theme : 'device';
+				const isDark = current === 'dark' || (current === 'device' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+				const next = String(isDark);
+				const prev = document.documentElement.getAttribute('data-darkmode');
+				const apply = () => document.documentElement.setAttribute('data-darkmode', next);
+
+				const navOpen = document.body?.classList.contains('mobile-navigation-open');
+
+				if (prev !== null && prev !== next && document.startViewTransition && !navOpen &&
+					!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+					// Typed: main.css leaves the page uncaptured for any other transition.
+					document.startViewTransition(window.ViewTransitionTypeSet ? { update: apply, types: ['theme'] } : apply);
+				} else {
+					apply();
+				}
+
+				localStorage.setItem('aurora.theme', current);
+			};
+
+			const syncSwitchers = () => {
+				const current = localStorage.getItem('aurora.theme') || 'device';
+				document.querySelectorAll('.theme-switcher .theme-option').forEach(opt => {
+					const active = opt.dataset.theme === current;
+					opt.classList.toggle('active', active);
+					opt.querySelector('input[type="radio"]')?.setAttribute('checked', active);
+				});
+			};
+
+			setTheme(localStorage.getItem('aurora.theme'));
+
+			window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+				const theme = localStorage.getItem('aurora.theme') || 'device';
+				if (theme === 'device') setTheme('device'), syncSwitchers();
+			});
+
+			document.addEventListener('DOMContentLoaded', () => {
+				syncSwitchers();
+				document.querySelectorAll('.theme-switcher .theme-option').forEach(opt => {
+					opt.addEventListener('click', () => (setTheme(opt.dataset.theme), syncSwitchers()));
+				});
+
+				const toolbarToggle = document.getElementById('toolbar-toggle');
+				const floatingToolbar = document.getElementById('floating-toolbar');
+				if (toolbarToggle && floatingToolbar) {
+					toolbarToggle.addEventListener('click', () => {
+						const collapsed = floatingToolbar.classList.toggle('collapsed');
+						toolbarToggle.dataset.tip = collapsed ? toolbarToggle.dataset.tipShow : toolbarToggle.dataset.tipHide;
+						toolbarToggle.setAttribute('aria-expanded', !collapsed);
+						localStorage.setItem('aurora.toolbarCollapsed', collapsed);
+					});
+				}
+			});
+		</script>
+		{% endif %}
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+		<meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)">
+		<meta name="theme-color" content="#0f172a" media="(prefers-color-scheme: dark)">
+		<meta name="color-scheme" content="light dark">
+		{% if (blank_page): %}
+		{% const _loginBgUrl = tokens.struct_login_bg ? bg_preload_url(tokens.struct_login_bg) : null; -%}
+		{% if (_loginBgUrl): %}
+		<link rel="preload" as="image" href="{{ entityencode(_loginBgUrl, true) }}">
+		{% endif %}
+		<link rel="stylesheet" href="{{ media }}/login.css">
+		{% else %}
+		{% const _mainBgUrl = tokens.struct_main_bg ? bg_preload_url(tokens.struct_main_bg) : null; -%}
+		{% if (_mainBgUrl): %}
+		<link rel="preload" as="image" href="{{ entityencode(_mainBgUrl, true) }}">
+		{% endif %}
+		<link rel="stylesheet" href="{{ media }}/main.css" data-luci-shell>
+		{% for (let patch in patch_files): %}
+		<link rel="stylesheet" href="{{ media }}/patches/{{ patch }}.css" data-luci-patch="{{ patch }}">
+		{% endfor %}
+		{% for (let patch in patch_scripts): %}
+		<script defer src="{{ media }}/patches/{{ patch }}.js" data-luci-patch="{{ patch }}"></script>
+		{% endfor %}
+		{% endif %}
+		{% if (font_preload): %}
+		<link rel="preload" as="font" type="font/woff2" crossorigin href="{{ font_preload }}">
+		{% endif %}
+		{% if (font_css): %}
+		<style data-luci-shell>{{ font_css }}</style>
+		{% endif %}
+		<link rel="icon" href="{{ media }}/images/{{ logo_svg }}?v={{ icon_cache_version }}" sizes="any" type="image/svg+xml">
+		{% if (favicon_png): %}
+		<link rel="icon" href="{{ media }}/images/{{ favicon_png }}?v={{ icon_cache_version }}" type="image/png">
+		{% endif %}
+		<link rel="icon" href="{{ media }}/images/{{ favicon_ico }}" sizes="32x32">
+		<link rel="apple-touch-icon" href="{{ media }}/images/{{ pwa_apple_touch }}?v={{ icon_cache_version }}">
+		<link rel="manifest" href="{{ media }}/images/app.webmanifest">
+		<meta name="application-name" content="LuCI Aurora">
+		<meta name="apple-mobile-web-app-capable" content="yes">
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+		<meta name="apple-mobile-web-app-title" content="{{ striptags(boardinfo.hostname ?? 'Aurora') }}">
+		<meta name="mobile-web-app-capable" content="yes">
+		{% if (dispatched?.css): %}
+		<link rel="stylesheet" href="{{ resource }}/{{ dispatched.css }}" data-luci-node-css="{{ entityencode(dispatched.css, true) }}">
+		{% endif %}
+		{% if (css): %}
+		<style title="text/css" data-luci-shell>{{ css }}</style>
+		{% endif %}
+		{% if (token_css_light || token_css_dark): %}
+		<style data-luci-shell>
+			:root { {{ token_css_light }} }
+			[data-darkmode="true"] { {{ token_css_dark }} }
+		</style>
+		{% endif %}
+		{% if (!blank_page): %}
+		<script src="{{ dispatcher.build_url('admin/translations', dispatcher.lang) }}"></script>
+		<script src="{{ resource }}/cbi.js"></script>
+		{% endif %}
+	</head>
+
+	<body class="lang_{{ dispatcher.lang }}" data-page="{{ entityencode(page, true) }}" data-nav-type="{{ nav_type }}" data-asset-version="{# PKG_VERSION #}"{% if (!blank_page): %} data-nav-stamp="{{ entityencode(join(':', [nav_type, dispatcher.lang, ctx?.authuser ?? '']), true) }}:{# PKG_VERSION #}"{% endif %}{% if (length(patch_all)): %} data-patches="{{ entityencode(join(' ', patch_all), true) }}"{% endif %}{% if (blank_page ? tokens.struct_login_bg : tokens.struct_main_bg): %} data-bg{% endif %}>
+		{% if (!blank_page): %}
+		{% if (nav_type == 'sidebar'): %}
+		{# First in body: once anything resolves body's style (the page-bg script does), the column would ease shut on load. #}
+		<script>
+			if (localStorage.getItem('aurora.sidebarCollapsed') === 'true') {
+				document.body.classList.add('sidebar-collapsed');
+			}
+		</script>
+		{% endif %}
+		{% if (tokens.struct_main_bg): %}
+		<div class="page-bg" aria-hidden="true"></div>
+		<script>
+			(function () {
+				var bg = document.querySelector('.page-bg');
+				if (!bg) return;
+				var val = getComputedStyle(bg).getPropertyValue('--page-bg').trim();
+				var m = val.match(/url\(["']?(.+?)["']?\)/);
+				if (!m) return;
+				var img = new Image();
+				img.onload = function () { bg.classList.add('full-loaded'); };
+				img.src = m[1];
+			}());
+		</script>
+		{% endif %}
+		<header>
+			<div class="header-content">
+				<div class="navigation-controls">
+					<button class="navigation-toggle" id="navigation-toggle" type="button" title="{{ _('Navigation') }}" aria-label="{{ _('Navigation') }}" aria-controls="mobile-menu-overlay" aria-expanded="false">
+						<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+							<line class="navigation-toggle-line navigation-toggle-line-top" x1="2.5" y1="5" x2="17.5" y2="5"/>
+							<line class="navigation-toggle-line navigation-toggle-line-middle" x1="2.5" y1="10" x2="17.5" y2="10"/>
+							<line class="navigation-toggle-line navigation-toggle-line-bottom" x1="2.5" y1="15" x2="17.5" y2="15"/>
+						</svg>
+					</button>
+				</div>
+				<a class="brand" href="/">{{ hostname }}</a>
+				<ul class="nav" id="topmenu" style="display:none"></ul>
+				{% if (nav_type == 'sidebar'): %}
+				<ol class="header-crumb" id="header-crumb"></ol>
+				{% endif %}
+				<button class="cmdk-trigger" id="cmdk-trigger" type="button" aria-label="{{ _('Navigation') }}"></button>
+				<div id="indicators" class="pull-right"></div>
+		</div>
+
+		{% if (nav_type == 'mega-menu'): %}
+			{%
+				/* boardinfo fields are not guaranteed on every platform; the
+				   summary tolerates a missing model/firmware line (hostname is
+				   always set by the kernel). */
+				const board_model = boardinfo.model ?? boardinfo.system ?? boardinfo.board_name;
+				const board_firmware = boardinfo.release?.description ??
+					trim(`${boardinfo.release?.distribution ?? ''} ${boardinfo.release?.version ?? ''}`);
+			-%}
+			<div class="desktop-menu-container">
+				{#
+					Curtain-reveal layer pair: .desktop-menu-sheet is the opaque
+					surface that slides down (translateY -100% → 0) and clips its
+					content; .desktop-menu-canvas counter-translates (100% → 0) so
+					the panels menu-aurora.js reparents into it appear static while
+					the sheet edge wipes over them — see _layout.css.
+				#}
+				<div class="desktop-menu-sheet"><div class="desktop-menu-canvas"></div></div>
+				<div class="desktop-menu-board" aria-hidden="true"><span class="board-label">{{ _('Device') }}</span>
+					<span class="board-line board-line-host" title="{{ entityencode(hostname, true) }}"><span class="board-text">{{ hostname }}</span></span>
+					{% if (board_model): %}
+					<span class="board-line board-line-model" title="{{ entityencode(striptags(board_model), true) }}"><span class="board-text">{{ striptags(board_model) }}</span></span>
+					{% endif %}
+					{% if (board_firmware): %}
+					<span class="board-line board-line-firmware" title="{{ entityencode(striptags(board_firmware), true) }}"><span class="board-text">{{ striptags(board_firmware) }}</span></span>
+					{% endif %}
+					{% if (boardinfo.kernel): %}
+					<span class="board-line board-line-kernel" title="{{ entityencode(striptags(boardinfo.kernel), true) }}"><span class="board-text">{{ striptags(boardinfo.kernel) }}</span></span>
+					{% endif %}
+				</div>
+			</div>
+		</header>
+
+		<div class="desktop-menu-overlay"></div>
+		{% else %}
+		</header>
+		{% endif %}
+
+		{% if (nav_type == 'sidebar'): %}
+		<aside class="sidebar-panel" id="sidebar-panel" aria-label="{{ _('Navigation') }}">
+			<nav class="sidebar-panel-inner">
+				<div class="sidebar-head">
+					<img class="sidebar-logo" src="{{ media }}/images/{{ logo_svg }}?v={{ icon_cache_version }}" alt="" aria-hidden="true">
+					<a class="sidebar-brand" href="/">{{ hostname }}</a>
+				</div>
+				<ul class="sidebar-list" id="sidebar-list" data-active-path="{{ entityencode(join('/', slice(ctx?.path ?? [], 1, 3)), true) }}"></ul>
+				<div class="sidebar-footer" id="sidebar-footer"></div>
+			</nav>
+		</aside>
+		{% endif %}
+		<script>
+			{% if (nav_type == 'sidebar'): %}
+			{# Shared with menu-aurora.js, which calls it after every render and route change. #}
+			function auroraCrumb() {
+				const list = document.getElementById('sidebar-list');
+				const group = list.querySelector('.is-active-group')?.querySelector('.nav-category-label')?.textContent;
+				const page = list.querySelector('.is-active-page')?.textContent;
+				const titles = [group, page !== group && page].filter(Boolean);
+				const li = (className, textContent) => Object.assign(document.createElement('li'), { className, textContent });
+				document.getElementById('header-crumb').replaceChildren(...titles.flatMap((title, i) =>
+					i ? [li('crumb-sep', '/'), li('current', title)] : [li(titles[1] ? '' : 'current', title)]));
+			}
+			{% endif %}
+			{# Paints the nav menu-aurora.js cached on its last render before first paint, inert until the module renders over it. #}
+			(() => {
+				try {
+					const body = document.body, cache = JSON.parse(sessionStorage.getItem('aurora.nav'));
+					{# The stamp (nav type, language, user, version) is rendered on body; a different user sees a different menu. #}
+					{# luci-base's one-session store loses its menu on ui.menu.flushCache() (package changes): never replay past that. #}
+					const luci = Object.values(JSON.parse(sessionStorage.getItem('luci-session-store')) ?? {})[0];
+					if (!luci?.menu || cache?.[0] !== body.dataset.navStamp) return;
+					for (const id in cache[1]) {
+						const el = document.getElementById(id);
+						el.innerHTML = cache[1][id];
+						el.style.display = '';
+						el.dataset.restored = '';
+						el.inert = true;
+					}
+					{% if (nav_type == 'sidebar'): %}
+					{# The marks renderNavigationItem derives from L.env.dispatchpath. #}
+					const list = document.getElementById('sidebar-list'), [group, page] = list.dataset.activePath.split('/');
+					for (const row of list.querySelectorAll('[data-section]')) {
+						const on = row.dataset.section === group, item = row.parentNode;
+						if (row.tagName === 'A') {
+							row.classList.toggle('is-active-page', on);
+							continue;
+						}
+						item.classList.toggle('is-active-group', on);
+						item.classList.toggle('is-expanded', on);
+					}
+					for (const link of list.querySelectorAll('.navigation-sublink'))
+						link.classList.toggle('is-active-page', !!page && link.pathname.endsWith(`/${group}/${page}`));
+					auroraCrumb();
+					{% endif %}
+				} catch (e) {}
+			})();
+		</script>
+
+		<div class="mobile-menu-overlay" id="mobile-menu-overlay">
+			<nav class="mobile-nav" aria-label="{{ _('Navigation') }}">
+				<div class="mobile-nav-body">
+					<div class="mobile-nav-label">{{ _('Navigation') }}</div>
+					<ul class="mobile-nav-list" id="mobile-nav-list">
+					</ul>
+				</div>
+				<div class="mobile-nav-footer">
+					<div class="mobile-nav-footer-action" id="mobile-nav-footer-action"></div>
+					<div class="theme-switcher mobile">
+						<label class="theme-option active" data-theme="device">
+							<input type="radio" name="mobile-theme" value="device" checked>
+							<span class="theme-icon">
+								<svg height="16" stroke-linejoin="round" viewBox="0 0 16 16" width="16"><path fill-rule="evenodd" clip-rule="evenodd" d="M0.5 3.25C0.5 1.45507 1.95507 0 3.75 0H8.25C10.0449 0 11.5 1.45507 11.5 3.25V11.25V12H10.75H1.25H0.5V11.25V3.25ZM3.75 1.5C2.7835 1.5 2 2.2835 2 3.25V10.5H10V3.25C10 2.2835 9.2165 1.5 8.25 1.5H3.75ZM3 3.5C3 2.94772 3.44772 2.5 4 2.5H8C8.55228 2.5 9 2.94772 9 3.5V7H3V3.5ZM6.5 9.5H9V8H6.5V9.5Z" fill="currentColor" transform="translate(2.5, 2)"></path></svg>
+							</span>
+						</label>
+						<label class="theme-option" data-theme="light">
+							<input type="radio" name="mobile-theme" value="light">
+							<span class="theme-icon">
+								<svg height="16" stroke-linejoin="round" viewBox="0 0 16 16" width="16"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.75 1V0.25H6.25V1V1.25V2H7.75V1.25V1ZM7 9C8.10457 9 9 8.10457 9 7C9 5.89543 8.10457 5 7 5C5.89543 5 5 5.89543 5 7C5 8.10457 5.89543 9 7 9ZM7 10.5C8.933 10.5 10.5 8.933 10.5 7C10.5 5.067 8.933 3.5 7 3.5C5.067 3.5 3.5 5.067 3.5 7C3.5 8.933 5.067 10.5 7 10.5ZM7.75 12V12.75V13V13.75H6.25V13V12.75V12H7.75ZM12 6.25H12.75H13H13.75V7.75H13H12.75H12V6.25ZM1 6.25H0.25V7.75H1H1.25H2V6.25H1.25H1ZM10.0052 2.93414L10.5355 2.40381L10.7123 2.22703L11.2426 1.6967L12.3033 2.75736L11.773 3.28769L11.5962 3.46447L11.0659 3.9948L10.0052 2.93414ZM2.22703 10.7123L1.6967 11.2426L2.75736 12.3033L3.28769 11.773L3.46447 11.5962L3.9948 11.0659L2.93414 10.0052L2.40381 10.5355L2.22703 10.7123ZM2.93414 3.9948L2.40381 3.46447L2.22703 3.28769L1.6967 2.75736L2.75736 1.6967L3.28769 2.22703L3.46447 2.40381L3.9948 2.93414L2.93414 3.9948ZM10.7123 11.773L11.2426 12.3033L12.3033 11.2426L11.773 10.7123L11.5962 10.5355L11.0659 10.0052L10.0052 11.0659L10.5355 11.5962L10.7123 11.773Z" fill="currentColor" transform="translate(1.25, 1.25)"></path></svg>
+							</span>
+						</label>
+						<label class="theme-option" data-theme="dark">
+							<input type="radio" name="mobile-theme" value="dark">
+							<span class="theme-icon">
+								<svg height="16" stroke-linejoin="round" viewBox="0 0 16 16" width="16"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.5 0.25V1V1.5H11L11.75 1.5V3H11H10.5V3.5V4.25H9V3.5V3H8.5H7.75V1.5H8.5H9V1V0.25H10.5ZM3.25514 2.75496C2.33413 3.53491 1.75 4.69972 1.75 6C1.75 8.34721 3.65279 10.25 6 10.25C7.30029 10.25 8.4651 9.66587 9.24505 8.74485C9.16377 8.74827 9.08207 8.74999 9 8.74999C5.82436 8.74999 3.25 6.17563 3.25 2.99999C3.25 2.91792 3.25172 2.83623 3.25514 2.75496ZM0.25 6C0.25 3.51072 1.83142 1.39271 4.042 0.592193L5.00256 1.55275C4.83933 2.00347 4.75 2.49047 4.75 2.99999C4.75 5.3472 6.65279 7.24999 9 7.24999C9.50953 7.24999 9.99653 7.16065 10.4473 6.99743L11.4078 7.95798C10.6073 10.1686 8.48929 11.75 6 11.75C2.82436 11.75 0.25 9.17564 0.25 6Z" fill="currentColor" transform="translate(2.25, 2.25)"></path></svg>
+							</span>
+						</label>
+					</div>
+				</div>
+			</nav>
+		</div>
+
+		{% if (toolbar_enabled && length(toolbar_items)): %}
+		<div id="floating-toolbar" class="floating-toolbar">
+    		<div class="toolbar-list" style="--fab-n:{{ length(toolbar_items) }}">
+        		{% for (let i = 0; i < length(toolbar_items); i++): %}
+            		{% let item = toolbar_items[i]; %}
+            		<a href="{{ item.url }}" class="toolbar-btn" data-tip="{{ entityencode(item.title, true) }}" data-tip-pos="left" aria-label="{{ entityencode(item.title, true) }}" style="--fab-i:{{ i }};--fab-icon:url('{{ entityencode(`${media}/images/${item.icon}?v=${icon_cache_version}`, true) }}')">
+                		<span class="icon" aria-hidden="true"></span>
+            		</a>
+        		{% endfor %}
+    		</div>
+
+			{#
+				The tooltip is a short state-dependent verb — "Hide" while the
+				shortcuts are shown, "Show" once collapsed. Both strings ship
+				in luci-base's po (the theme carries none of its own); the
+				verbose static label stays on aria-label only.
+			#}
+			<button class="toolbar-btn toggle" id="toolbar-toggle" aria-expanded="true" data-tip="{{ _('Hide') }}" data-tip-hide="{{ _('Hide') }}" data-tip-show="{{ _('Show') }}" data-tip-pos="left" aria-label="{{ _('Toggle floating buttons') }}">
+				<span class="icon" aria-hidden="true">
+					<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+						<path d="M6 18L18 6M6 6l12 12"/>
+					</svg>
+				</span>
+			</button>
+		</div>
+
+		<script>
+    		(function() {
+        		const toolbar = document.getElementById('floating-toolbar');
+        		if (toolbar && localStorage.getItem('aurora.toolbarCollapsed') === 'true') {
+            		toolbar.classList.add('collapsed');
+            		const toggle = document.getElementById('toolbar-toggle');
+            		if (toggle) {
+                		toggle.dataset.tip = toggle.dataset.tipShow;
+                		toggle.setAttribute('aria-expanded', 'false');
+            		}
+        		}
+    		})();
+		</script>
+		{% endif %}
+
+		<div id="maincontent" tabindex="-1">
+			{% if (getuid() == 0 && getspnam('root')?.pwdp === ''): %}
+				<div class="alert-message warning">
+					<h4>{{ _('No password set!') }}</h4>
+					<p>{{ _('There is no password set on this router. Please configure a root password to protect the web interface.') }}</p>
+					{% if (dispatcher.lookup("admin/system/admin")): %}
+					  <div class="right"><a class="btn" href="{{ dispatcher.build_url("admin/system/admin") }}">{{ _('Go to password configuration...') }}</a></div>
+					{% endif %}
+				</div>
+			{% endif %}
+
+			{% if (boardinfo.rootfs_type == "initramfs"): %}
+				<div class="alert-message warning">
+					<h4>{{ _('System running in recovery (initramfs) mode.') }}</h4>
+					<p>{{ _('No changes to settings will be stored and are lost after rebooting. This mode should only be used to install a firmware upgrade') }}</p>
+					{% if (dispatcher.lookup("admin/system/flash")): %}
+					  <div class="right"><a class="btn" href="{{ dispatcher.build_url("admin/system/flash") }}">{{ _('Go to firmware upgrade...') }}</a></div>
+					{% endif %}
+				</div>
+			{% endif %}
+
+			<noscript>
+				<div class="alert-message warning">
+					<h4>{{ _('JavaScript required!') }}</h4>
+					<p>{{ _('You must enable JavaScript in your browser or LuCI will not work properly.') }}</p>
+				</div>
+			</noscript>
+
+			<div id="tabmenu" style="display:none"></div>
+		{% endif %}

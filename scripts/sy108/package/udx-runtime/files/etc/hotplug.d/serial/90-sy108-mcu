@@ -1,0 +1,19 @@
+#!/bin/sh
+# Kernel owns MCU ACKs; use the existing boot policy and gadget services.
+case "$ACTION" in add|bind|change) ;; *) return 0;; esac
+case "$(readlink "/sys$DEVPATH/driver" 2>/dev/null)" in
+	*/sy108-mcu) ;; *) return 0;;
+esac
+kind=${MCU_EVENT:-}
+[ -n "$kind" ] || kind=$(sed -n 's/^seq=[0-9][0-9]* kind=//p' "/sys$DEVPATH/event" 2>/dev/null)
+case "$kind" in
+	poweroff)
+		# Runtime also reads pending power requests once at startup.
+		/usr/sbin/udx-runtime --mcu-poweroff >/dev/null ||
+			logger -t sy108-mcu 'Poweroff policy is not ready; pending MCU request remains visible'
+		;;
+	usb-reset)
+		/usr/sbin/udx-usbctl reset >/dev/null ||
+			logger -t sy108-mcu 'USB reset request could not be queued'
+		;;
+esac

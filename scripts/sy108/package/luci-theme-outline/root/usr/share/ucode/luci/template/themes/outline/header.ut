@@ -1,0 +1,365 @@
+{#
+ luci-theme-outline: header template
+ Copyright 2025 eamonxg <eamonxiong@gmail.com>
+ Licensed to the public under the Apache License 2.0.
+-#}
+
+{%
+	import { getuid, getspnam } from 'luci.core';
+	import { lsdir, readfile, writefile, access } from 'fs';
+	import { cursor } from 'uci';
+
+	const boardinfo = ubus.call('system', 'board') ?? {};
+	const rootsp = getspnam('root');
+	const root_pw_unset = (rootsp && rootsp.pwdp == '');
+
+	const page_segs = length(ctx?.request_path) ? ctx.request_path : (ctx?.path || []);
+	const page = join('-', page_segs);
+	// On-demand patches — see "On-demand patches" in CLAUDE.md.
+	let patch_files = [], patch_scripts = [], patch_all = [];
+	if (!blank_page) {
+		let seg_prefixes = {}, acc = null;
+		for (let seg in page_segs)
+			seg_prefixes[acc = (acc == null ? seg : `${acc}-${seg}`)] = true;
+		for (let f in lsdir(`/www${media}/patches`) ?? []) {
+			if (substr(f, -4) == '.css') {
+				push(patch_all, f);
+				if (exists(seg_prefixes, substr(f, 0, -4)))
+					push(patch_files, substr(f, 0, -4));
+			}
+			else if (substr(f, -3) == '.js') {
+				push(patch_all, f);
+				if (exists(seg_prefixes, substr(f, 0, -3)))
+					push(patch_scripts, substr(f, 0, -3));
+			}
+		}
+		sort(patch_files);
+		sort(patch_scripts);
+		sort(patch_all);
+	}
+
+	// Appearance settings (System › Outline Theme › Appearance). Absent config = stock look.
+	// The app derives the colours in the browser and stores the result as
+	// `list token 'name=#value'` per variant; this block only assembles the
+	// override sheet. It is a line-for-line copy of assemble() in
+	// outline/palette.js (.dev/src/resource) and must emit the same bytes, so the page's
+	// live preview and every rendered page agree. The element is always
+	// emitted: the Appearance page rewrites it in place while previewing.
+	// (No two closing braces in a row in this block: the template lexer
+	// reads them as the end of a {{ }} tag.)
+	const ocfg = cursor();
+	const appearance = ocfg.get_all('outline', 'appearance') ?? {};
+	const default_mode = { light: 'light', dark: 'dark' }[appearance.mode] ?? 'device';
+	const reduced_motion = { on: 'true', off: 'false' }[appearance.reduced_motion];
+	const nav_mode = appearance.navigation == 'sidebar' ? 'sidebar' : 'navbar';
+
+	const SEL = { light: ':root:not([data-darkmode="true"])', dark: ':root[data-darkmode="true"]' };
+	const FONT_RE = /^[A-Za-z0-9 ,"'_.\-]{1,200}$/;
+	const TOKEN_RE = /^([a-z0-9-]{1,40})=(#[0-9a-f]{6}([0-9a-f]{2})?)$/;
+	const SANS_TAIL = '"Geist Variable", -apple-system, ui-sans-serif, system-ui, "Segoe UI", Helvetica, Arial, sans-serif';
+	const MONO_TAIL = '"Geist Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+	const SYSTEM_SANS = 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+	const SYSTEM_MONO = 'ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
+	const int_in = (v, lo, hi, def) => { const n = +(v ?? ''); return (type(n) == 'int' && n >= lo && n <= hi) ? n : def; };
+	const num = (x) => replace(sprintf('%.4f', x), /\.?0+$/, '');
+	const size_vars = (px) => join(';', map([ [ 'xs', 12 ], [ 'sm', 14 ], [ 'base', 16 ], [ 'lg', 18 ], [ 'xl', 20 ], [ '2xl', 24 ] ],
+		(e) => `--text-${e[0]}:${num(e[1] * px / 14.0 / 16.0)}rem`));
+	const font_stack = (v, kind) => {
+		v = trim(v ?? '');
+		if (v == '' || !match(v, FONT_RE)) return null;
+		if (v == 'system') return kind == 'mono' ? SYSTEM_MONO : SYSTEM_SANS + ', "Geist Variable"';
+		return v + ', ' + (kind == 'mono' ? MONO_TAIL : SANS_TAIL);
+	};
+
+	let css_out = [];
+	const ui_px = int_in(appearance.ui_font_size, 11, 16, 14);
+	const content_px = int_in(appearance.content_font_size, 12, 24, 14);
+	const code_px = int_in(appearance.code_font_size, 8, 24, 13);
+	if (ui_px != 14) push(css_out, ':root{' + size_vars(ui_px) + '}');
+	if (ui_px != 14 || content_px != 14) push(css_out, '#maincontent{' + size_vars(content_px) + '}');
+	if (code_px != 13) push(css_out, `:root{--font-size-code:${code_px}px}`);
+
+	const theme_color = { light: '#f9f9f9', dark: '#000000' };
+	for (let v in [ 'light', 'dark' ]) {
+		const t = ocfg.get_all('outline', v) ?? {};
+		let decl = [];
+		for (let e in (type(t.token) == 'array' ? t.token : (t.token ? [ t.token ] : []))) {
+			const m = match(e, TOKEN_RE);
+			if (!m) continue;
+			push(decl, `--${m[1]}:${m[2]}`);
+			if (m[1] == 'shell') theme_color[v] = substr(m[2], 0, 7);
+		}
+		const sans = font_stack(t.font_ui, 'sans');
+		const mono = font_stack(t.font_code, 'mono');
+		if (sans) push(decl, `--font-sans:${sans}`);
+		if (mono) push(decl, `--font-mono:${mono}`);
+		if (length(decl)) push(css_out, SEL[v] + '{' + join(';', decl) + '}');
+
+		const weight = int_in(t.font_ui_weight, 100, 900, 400);
+		if (weight != 400) push(css_out, SEL[v] + ' body{font-weight:' + weight + '}');
+
+		const content_font = font_stack(t.font_content, 'sans');
+		if (content_font) push(css_out, `${SEL[v]} #maincontent{--font-sans:${content_font};font-family:var(--font-sans)}`);
+	}
+	const appearance_css = join('\n', css_out);
+	const theme_color_light = theme_color.light;
+	const theme_color_dark = theme_color.dark;
+
+	// Brand assets (System › Outline Theme › Branding): a slot names a file in
+	// /www/luci-static/outline-brand; an empty, malformed or missing one falls
+	// back to the theme's own image. `rev` busts caches when a slot changes.
+	const branding = ocfg.get_all('outline', 'branding') ?? {};
+	const brand_rev = match(branding.rev ?? '', /^[0-9]+$/) ? branding.rev : '0';
+	const brand_url = (slot, def) => {
+		const f = branding[slot];
+		return (f && match(f, /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/) && access(`/www/luci-static/outline-brand/${f}`))
+			? `/luci-static/outline-brand/${f}?v=${brand_rev}` : def;
+	};
+	// `openwrt` picks OpenWrt's logo from luci-theme-bootstrap, where installed.
+	const logo_url = (branding.logo == 'openwrt' && access('/www/luci-static/bootstrap/logo.svg'))
+		? '/luci-static/bootstrap/logo.svg' : brand_url('logo', `${media}/images/logo.png`);
+	const favicon_url = brand_url('favicon', `${media}/images/favicon.svg`);
+	const favicon_type = match(favicon_url, /\.svg(\?|$)/) ? 'image/svg+xml' : (match(favicon_url, /\.png(\?|$)/) ? 'image/png' : '');
+	const favicon_ico_url = brand_url('favicon_ico', `${media}/images/favicon.ico`);
+	const apple_touch_url = brand_url('apple_touch', `${media}/images/apple-touch-icon.png`);
+	// The installed web app's manifest follows the PWA slots and name. It is
+	// written here, on render, whenever the committed settings no longer
+	// match the file -- after Save & Apply the next page brings it up to date.
+	let manifest_url = `${media}/images/site.webmanifest`;
+	const pwa_icon = (slot, size) => {
+		const f = branding[slot];
+		return (f && match(f, /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.png$/) && access(`/www/luci-static/outline-brand/${f}`))
+			? { src: `${f}?v=${brand_rev}`, sizes: size, type: 'image/png', purpose: 'any maskable' } : null;
+	};
+	const app_name = match(branding.app_name ?? '', /^[^<>"&\\[:cntrl:]]{1,40}$/) ? branding.app_name : null;
+	let pwa_icons = filter([ pwa_icon('pwa_192', '192x192'), pwa_icon('pwa_512', '512x512') ], (i) => i != null);
+	if (length(pwa_icons) || app_name) {
+		if (!length(pwa_icons))
+			pwa_icons = [
+				{ src: `${media}/images/web-app-manifest-192x192.png`, sizes: '192x192', type: 'image/png', purpose: 'maskable' },
+				{ src: `${media}/images/web-app-manifest-512x512.png`, sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+			];
+		const manifest = sprintf('%J', {
+			name: app_name ?? 'Outline', short_name: app_name ?? 'Outline', start_url: '/cgi-bin/luci/', display: 'standalone',
+			theme_color: theme_color_light, background_color: theme_color_light, icons: pwa_icons
+		});
+		const mpath = '/www/luci-static/outline-brand/site.webmanifest';
+		if (readfile(mpath) != manifest && access('/www/luci-static/outline-brand'))
+			writefile(mpath, manifest);
+		if (access(mpath))
+			manifest_url = `/luci-static/outline-brand/site.webmanifest?v=${brand_rev}`;
+	}
+
+	http.prepare_content('text/html; charset=UTF-8');
+-%}
+
+<!DOCTYPE html>
+<html lang="{{ dispatcher.lang }}" data-outline-media="{{ media }}" data-default-theme="{{ default_mode }}" data-nav="{{ nav_mode }}"{% if (reduced_motion): %} data-reduced-motion="{{ reduced_motion }}"{% endif %}>
+	<head>
+		<meta charset="utf-8">
+		<meta name="theme-color" content="{{ theme_color_light }}" media="(prefers-color-scheme: light)">
+		<meta name="theme-color" content="{{ theme_color_dark }}" media="(prefers-color-scheme: dark)">
+		<title>{{ striptags(((boardinfo && boardinfo.hostname) ? boardinfo.hostname : '?') + ((dispatched && dispatched.title) ? (' | ' + _(dispatched.title)) : '')) }}</title>
+		<script>
+			(function () {
+				/* One-time carry-over of preferences stored under the theme's
+				   former name (shadcn.*), so the rename keeps them. */
+				try {
+					['theme', 'sidebar', 'palette.recents'].forEach(function (k) {
+						var v = localStorage.getItem('shadcn.' + k);
+						if (v !== null && localStorage.getItem('outline.' + k) === null)
+							localStorage.setItem('outline.' + k, v);
+						localStorage.removeItem('shadcn.' + k);
+					});
+				} catch (e) {}
+				var theme = localStorage.getItem('outline.theme') || document.documentElement.getAttribute('data-default-theme') || 'device';
+				var dark = theme === 'dark' || (theme === 'device' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+				document.documentElement.setAttribute('data-darkmode', dark ? 'true' : 'false');
+				/* A navbar has no collapsed state (Appearance › Navigation). */
+				var collapsed = localStorage.getItem('outline.sidebar') === 'true' && document.documentElement.getAttribute('data-nav') !== 'navbar';
+				document.documentElement.setAttribute('data-sidebar-collapsed', collapsed ? 'true' : 'false');
+			})();
+		</script>
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+		<meta name="color-scheme" content="light dark">
+		{% if (blank_page): %}
+		<link rel="stylesheet" href="{{ media }}/login.css">
+		<style id="outline-appearance" data-luci-shell>{{ appearance_css }}</style>
+		{% else %}
+		<link rel="stylesheet" href="{{ media }}/main.css" data-luci-shell>
+		<style id="outline-appearance" data-luci-shell>{{ appearance_css }}</style>
+		{% for (let patch in patch_files): %}
+		<link rel="stylesheet" href="{{ media }}/patches/{{ patch }}.css" data-luci-patch="{{ patch }}">
+		{% endfor %}
+		{% for (let patch in patch_scripts): %}
+		<script defer src="{{ media }}/patches/{{ patch }}.js" data-luci-patch="{{ patch }}"></script>
+		{% endfor %}
+		{% endif %}
+		<link rel="icon" href="{{ favicon_url }}"{% if (favicon_type): %} type="{{ favicon_type }}"{% endif %}>
+		<link rel="icon" href="{{ favicon_ico_url }}" sizes="any">
+		<link rel="apple-touch-icon" href="{{ apple_touch_url }}">
+		<link rel="manifest" href="{{ manifest_url }}">
+		{% if (dispatched && dispatched.css): %}
+		<link rel="stylesheet" href="{{ resource }}/{{ dispatched.css }}" data-luci-node-css="{{ entityencode(dispatched.css, true) }}">
+		{% endif %}
+		{% if (css): %}
+		<style data-luci-shell>{{ css }}</style>
+		{% endif %}
+		<script src="{{ dispatcher.build_url('admin/translations', dispatcher.lang) }}"></script>
+		<script src="{{ resource }}/cbi.js"></script>
+	</head>
+
+	<body class="lang_{{ dispatcher.lang }}" data-page="{{ entityencode(page, true) }}" data-asset-version="{# PKG_VERSION #}"{% if (length(patch_all)): %} data-patches="{{ entityencode(join(' ', patch_all), true) }}"{% endif %}>
+		{% if (!blank_page): %}
+
+		<div
+			id="sidebar"
+			data-media="{{ media }}"
+			data-logo="{{ logo_url }}"
+			data-hostname="{{ entityencode(striptags((boardinfo && boardinfo.hostname) ? boardinfo.hostname : 'Outline'), true) }}"
+		></div>
+		<script>
+			/* Pre-paint sidebar restore: menu-outline.js caches the rendered sidebar
+			   in sessionStorage; replay it synchronously here so the sidebar is in
+			   the first frame of every navigation instead of popping in after the
+			   menu XHR. menu-outline.js re-renders authoritatively once loaded. */
+			(function () {
+				/* Delegated (survives cache-restored links, which lose their JS
+				   handlers to innerHTML serialization): logging out must drop the
+				   cached menu so it isn't replayed into the next session. */
+				document.addEventListener('click', function (e) {
+					var t = e.target && e.target.closest ? e.target.closest('a.sidebar-logout') : null;
+					if (!t) return;
+					window.outlineSuppressSidebarCache = true;
+					try { sessionStorage.removeItem('outline.sidebar.cache'); } catch (err) {}
+				}, true);
+
+				try {
+					var raw = sessionStorage.getItem('outline.sidebar.cache');
+					if (!raw) return;
+					var cache = JSON.parse(raw);
+					var sb = document.getElementById('sidebar');
+					if (!sb || !cache || cache.v !== 6 || cache.lang !== document.documentElement.lang) return;
+
+					sb.innerHTML = cache.html;
+					/* The cached HTML holds the logo of the page that cached it. */
+					var logo = sb.querySelector('.sidebar-logo');
+					if (logo && sb.getAttribute('data-logo')) logo.setAttribute('src', sb.getAttribute('data-logo'));
+					sb.setAttribute('data-outline-built', '1');
+					sb.setAttribute('data-outline-restored', '1');
+
+					/* The cached HTML carries the previous page's active highlight —
+					   recompute it for the current URL (longest link-path prefix wins,
+					   mirroring menu-outline's dispatchpath matching). */
+					var stale = sb.querySelectorAll('.active, .is-shown');
+					for (var i = 0; i < stale.length; i++) stale[i].classList.remove('active', 'is-shown');
+
+					var links = sb.querySelectorAll('a.sidebar-sub-link, a.sidebar-nav-parent, a.sidebar-logout');
+					var path = location.pathname;
+					var best = null, bestLen = -1;
+					for (var j = 0; j < links.length; j++) {
+						var p = links[j].pathname;
+						if ((path === p || path.indexOf(p + '/') === 0) && p.length > bestLen) {
+							best = links[j];
+							bestLen = p.length;
+						}
+					}
+					if (best) {
+						var sub = best.closest('.sidebar-sub-item');
+						if (sub) {
+							sub.classList.add('active');
+							var acc = best.closest('.sidebar-accordion-item');
+							if (acc) acc.classList.add('active');
+						} else if (best.classList.contains('sidebar-logout')) {
+							best.classList.add('active');
+						} else {
+							var item = best.closest('.sidebar-nav-item');
+							if (item) item.classList.add('active');
+						}
+						/* The rail button of the section that holds the page. */
+						var owner = best.closest('[data-section]');
+						var railItem = owner && sb.querySelector('.sidebar-rail-item[data-section="' + owner.getAttribute('data-section') + '"]');
+						if (railItem) railItem.classList.add('active');
+						/* The panel shows that section only. */
+						var shown = owner ? sb.querySelectorAll('[data-section="' + owner.getAttribute('data-section') + '"]') : [];
+						for (var s2 = 0; s2 < shown.length; s2++) shown[s2].classList.add('is-shown');
+					}
+
+					var nav = sb.querySelector('.sidebar-nav');
+					if (nav) nav.scrollTop = cache.scroll || 0;
+				} catch (e) {
+					try { sessionStorage.removeItem('outline.sidebar.cache'); } catch (e2) {}
+				}
+			})();
+		</script>
+
+		{#- Dithered fills for LuCI's realtime graphs (dither-kit's "dotted"
+		    look, ChatGPT chart palette): a 4px checker of pixels per series
+		    colour, referenced from components/_charts.css as url(#dither-*). -#}
+		<svg id="chart-dither" aria-hidden="true" width="0" height="0" style="position:absolute"><defs><pattern id="dither-blue" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="1.5" height="1.5" style="fill:var(--chart-blue)"/><rect x="2" y="2" width="1.5" height="1.5" style="fill:var(--chart-blue)"/></pattern><pattern id="dither-green" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="1.5" height="1.5" style="fill:var(--chart-green)"/><rect x="2" y="2" width="1.5" height="1.5" style="fill:var(--chart-green)"/></pattern><pattern id="dither-red" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="1.5" height="1.5" style="fill:var(--chart-red)"/><rect x="2" y="2" width="1.5" height="1.5" style="fill:var(--chart-red)"/></pattern><pattern id="dither-orange" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="1.5" height="1.5" style="fill:var(--chart-orange)"/><rect x="2" y="2" width="1.5" height="1.5" style="fill:var(--chart-orange)"/></pattern><pattern id="dither-yellow" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="1.5" height="1.5" style="fill:var(--chart-yellow)"/><rect x="2" y="2" width="1.5" height="1.5" style="fill:var(--chart-yellow)"/></pattern></defs></svg>
+
+		<div id="sidebar-overlay"></div>
+
+		<div id="main-wrapper">
+			<div class="content-card">
+				<header class="card-header">
+					<div class="card-header-left">
+						<button
+							id="sidebar-hamburger"
+							class="topbar-hamburger"
+							type="button"
+							aria-label="{{ _('Navigation') }}"
+						>
+							<img src="{{ media }}/icons/menu.svg" width="18" height="18" alt="">
+						</button>
+						<nav class="topbar-breadcrumb" id="topbar-breadcrumb" aria-label="{{ _('Navigation') }}"></nav>
+					</div>
+					<div class="card-header-right">
+						{#- The command palette (⌘K) trigger lives in the sidebar under the
+						    title, ChatGPT-settings style — built by menu-outline.js. -#}
+						<div id="indicators" class="topbar-indicators"></div>
+						<button
+							id="theme-toggle-btn"
+							class="topbar-icon-btn"
+							type="button"
+							aria-label="{{ _('Design') }}"
+						>
+							{#- Both glyphs ship; CSS shows the one for html[data-darkmode],
+							    which the head script sets before paint — no sun→moon flip
+							    once sidebar-outline.js loads. -#}
+							<img class="theme-icon-light" src="{{ media }}/icons/sun.svg" width="16" height="16" alt="">
+							<img class="theme-icon-dark" src="{{ media }}/icons/moon.svg" width="16" height="16" alt="">
+						</button>
+					</div>
+				</header>
+
+				<div id="maincontent" tabindex="-1">
+				{% if (getuid() == 0 && root_pw_unset && ctx && ctx.authsession): %}
+					<div class="alert-message warning">
+						<h4>{{ _('No password set!') }}</h4>
+						<p>{{ _('There is no password set on this router. Please configure a root password to protect the web interface.') }}</p>
+						{% if (dispatcher.lookup("admin/system/admin")): %}
+						  <div class="right"><a class="btn" href="{{ dispatcher.build_url("admin/system/admin") }}">{{ _('Go to password configuration...') }}</a></div>
+						{% endif %}
+					</div>
+				{% endif %}
+
+				{% if (boardinfo && boardinfo.rootfs_type == "initramfs"): %}
+					<div class="alert-message warning">
+						<h4>{{ _('System running in recovery (initramfs) mode.') }}</h4>
+						<p>{{ _('No changes to settings will be stored and are lost after rebooting. This mode should only be used to install a firmware upgrade') }}</p>
+						{% if (dispatcher.lookup("admin/system/flash")): %}
+						  <div class="right"><a class="btn" href="{{ dispatcher.build_url("admin/system/flash") }}">{{ _('Go to firmware upgrade...') }}</a></div>
+						{% endif %}
+					</div>
+				{% endif %}
+
+				<noscript>
+					<div class="alert-message warning">
+						<h4>{{ _('JavaScript required!') }}</h4>
+						<p>{{ _('You must enable JavaScript in your browser or LuCI will not work properly.') }}</p>
+					</div>
+				</noscript>
+
+				<div id="tabmenu" style="display:none"></div>
+		{% endif %}

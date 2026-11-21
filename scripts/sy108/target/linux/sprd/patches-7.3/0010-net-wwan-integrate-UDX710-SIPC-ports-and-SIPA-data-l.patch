@@ -1,0 +1,5415 @@
+From 15824a21a9a1d0f77d2dc090c9503bfcf4f11b72 Mon Sep 17 00:00:00 2001
+From: jason-liu-4980 <38558962+jason-liu-4980@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 06:09:12 +0800
+Subject: [PATCH 10/11] net: wwan: integrate UDX710 SIPC ports and SIPA data
+ links
+
+Expose bounded SBUF AT streams and SIPA links through WWAN. Bind
+opened streams to their communication session and keep supplier
+dependencies explicit. Remove unused SIPX and delegator paths.
+---
+ drivers/net/wwan/wwan_core.c                  |    4 +-
+ drivers/soc/sprd/modem/sipc_v2/Kconfig        |    7 +
+ drivers/soc/sprd/modem/sipc_v2/Makefile       |    2 +-
+ drivers/soc/sprd/modem/sipc_v2/sbuf.c         |  330 ++-
+ drivers/soc/sprd/modem/sipc_v2/sbuf.h         |   23 +
+ drivers/soc/sprd/modem/sipc_v2/sipc_wwan.c    |  512 ++++
+ drivers/soc/sprd/modem/sipc_v2/sipx.c         | 2074 -----------------
+ drivers/soc/sprd/modem/sipc_v2/sipx.h         |  179 --
+ drivers/soc/sprd/modem/sipc_v2/spipe.c        |  329 +--
+ drivers/staging/sprd/sipa/Kconfig             |    1 +
+ .../staging/sprd/sipa/roc1-regs.h             |    4 +-
+ drivers/staging/sprd/sipa/sipa_api.c          |  102 +-
+ drivers/staging/sprd/sipa/sipa_debug.h        |    2 +-
+ drivers/staging/sprd/sipa/sipa_eth.c          |  229 +-
+ drivers/staging/sprd/sipa/sipa_eth.h          |    5 -
+ drivers/staging/sprd/sipa/sipa_hal_priv.h     |    1 -
+ .../sprd/sipa/sipa_phy_v0/sipa_sys_hal.c      |   32 -
+ drivers/staging/sprd/sipa/sipa_priv.h         |    7 +-
+ drivers/staging/sprd/sipa/sipa_rm.c           |   13 -
+ drivers/staging/sprd/sipa_delegate/Makefile   |    2 -
+ .../sipa_delegate/sipa_dele_ap_in_miniap.c    |  157 --
+ .../sipa_delegate/sipa_dele_miniap_in_ap.c    |  117 -
+ .../sprd/sipa_delegate/sipa_dele_priv.h       |    2 -
+ .../sprd/sipa_delegate/sipa_delegate.c        |   68 +-
+ drivers/usb/misc/sprd-pamu3.c                 |   34 +-
+ include/linux/sipa.h                          |    1 -
+ include/linux/sipc.h                          |  158 --
+ include/linux/usb/sprd-pamu3.h                |    1 -
+ 28 files changed, 1146 insertions(+), 3250 deletions(-)
+ create mode 100644 drivers/soc/sprd/modem/sipc_v2/sipc_wwan.c
+ delete mode 100644 drivers/soc/sprd/modem/sipc_v2/sipx.c
+ delete mode 100644 drivers/soc/sprd/modem/sipc_v2/sipx.h
+ rename include/dt-bindings/soc/sprd,roc1-regs.h => drivers/staging/sprd/sipa/roc1-regs.h (99%)
+ delete mode 100644 drivers/staging/sprd/sipa/sipa_phy_v0/sipa_sys_hal.c
+ delete mode 100644 drivers/staging/sprd/sipa_delegate/sipa_dele_ap_in_miniap.c
+ delete mode 100644 drivers/staging/sprd/sipa_delegate/sipa_dele_miniap_in_ap.c
+
+diff --git a/drivers/net/wwan/wwan_core.c b/drivers/net/wwan/wwan_core.c
+index ffbcf11e4..de335b24a 100644
+--- a/drivers/net/wwan/wwan_core.c
++++ b/drivers/net/wwan/wwan_core.c
+@@ -686,7 +686,9 @@ void wwan_remove_port(struct wwan_port *port)
+ 	mutex_lock(&port->ops_lock);
+ 	if (port->start_count) {
+ 		port->ops->stop(port);
+-		port->start_count = 0;
++		/* Open files retain the count: final close must still purge RX,
++		 * including a partial read requeued concurrently with removal.
++		 */
+ 	}
+ 	port->ops = NULL; /* Prevent any new port operations (e.g. from fops) */
+ 	mutex_unlock(&port->ops_lock);
+diff --git a/drivers/soc/sprd/modem/sipc_v2/Kconfig b/drivers/soc/sprd/modem/sipc_v2/Kconfig
+index 1f7ed3bb1..bf85c7c23 100644
+--- a/drivers/soc/sprd/modem/sipc_v2/Kconfig
++++ b/drivers/soc/sprd/modem/sipc_v2/Kconfig
+@@ -25,6 +25,13 @@ config SPRD_SIPC_MBOX_CLIENT
+ config SPRD_SIPC_SPIPE
+ 	bool "SIPC SBUF character devices"
+ 
++config SPRD_SIPC_WWAN
++	bool "UDX710 native SBUF WWAN AT ports"
++	depends on WWAN=y
++	help
++	  Expose the original channel 6 URC and command rings as two WWAN
++	  AT ports, grouped with SIPA under the modem platform device.
++
+ config SPRD_SIPC_SPOOL
+ 	bool "SIPC SBLOCK character devices"
+ 
+diff --git a/drivers/soc/sprd/modem/sipc_v2/Makefile b/drivers/soc/sprd/modem/sipc_v2/Makefile
+index e874486d1..34fca5437 100644
+--- a/drivers/soc/sprd/modem/sipc_v2/Makefile
++++ b/drivers/soc/sprd/modem/sipc_v2/Makefile
+@@ -3,10 +3,10 @@ obj-$(CONFIG_SPRD_SIPC_MBOX_CLIENT) += udx710_smsg_mbox.o
+ obj-$(CONFIG_SPRD_SIPC)     += sipc.o smsg.o smem.o sbuf.o sblock.o sipc_debugfs.o
+ 
+ obj-$(CONFIG_SPRD_SIPC_SPIPE)	+= spipe.o
++obj-$(CONFIG_SPRD_SIPC_WWAN)	+= sipc_wwan.o
+ 
+ obj-$(CONFIG_SPRD_SIPC_SPOOL)	+= spool.o
+ 
+-obj-$(CONFIG_SPRD_SIPC_ZERO_COPY_SIPX) += sipx.o
+ 
+ # Standalone object validation only; ignored for normal in-tree builds.
+ ifneq ($(KBUILD_EXTMOD),)
+diff --git a/drivers/soc/sprd/modem/sipc_v2/sbuf.c b/drivers/soc/sprd/modem/sipc_v2/sbuf.c
+index 8fb425427..36bfa7ce1 100644
+--- a/drivers/soc/sprd/modem/sipc_v2/sbuf.c
++++ b/drivers/soc/sprd/modem/sipc_v2/sbuf.c
+@@ -197,9 +197,7 @@ static int sbuf_uart_commit(struct sbuf_uart_notifier *uart, u32 generation,
+ 	unsigned long flags;
+ 	int ret;
+ 
+-	/* UART only: pair the final check and pointer publication with reset
+-	 * and cancel. Legacy callers retain their original commit sequence.
+-	 */
++	/* Pair the final check and pointer publication with UART reset/cancel. */
+ 	spin_lock_irqsave(&uart->sbuf->state_lock, flags);
+ 	ret = sbuf_uart_status_locked(uart, generation);
+ 	if (!ret) {
+@@ -342,6 +340,8 @@ static void sbuf_notify_work(struct work_struct *work)
+ 		}
+ 		spin_unlock_irqrestore(&sbuf->state_lock, flags);
+ 		if (ready) {
++			blocking_notifier_call_chain(&sbuf->events,
++						     SBUF_NOTIFY_READY, NULL);
+ 			for (i = 0; i < sbuf->ringnr; i++) {
+ 				struct sbuf_ring *ring = &sbuf->rings[i];
+ 
+@@ -414,6 +414,7 @@ static void sbuf_reset_session(struct sbuf_mgr *sbuf)
+ 		wake_up_interruptible_all(&sbuf->rings[i].txwait);
+ 		wake_up_interruptible_all(&sbuf->rings[i].rxwait);
+ 	}
++	blocking_notifier_call_chain(&sbuf->events, SBUF_NOTIFY_RESET, NULL);
+ 	cancel_delayed_work_sync(&sbuf->notify_work);
+ 	for (i = 0; i < sbuf->ringnr; i++) {
+ 		struct sbuf_ring *ring = &sbuf->rings[i];
+@@ -832,6 +833,8 @@ int sbuf_uart_backend_create(struct sbuf_uart_backend **out)
+ 	sbuf->channel = SMSG_CH_COMM;
+ 	sbuf->uart_backend = backend;
+ 	spin_lock_init(&sbuf->state_lock);
++	kref_init(&sbuf->ref);
++	BLOCKING_INIT_NOTIFIER_HEAD(&sbuf->events);
+ 	mutex_init(&sbuf->control_lock);
+ 	atomic_set(&sbuf->generation, 0);
+ 	init_completion(&backend->exited);
+@@ -1133,6 +1136,8 @@ static int sbuf_thread(void *data)
+ 		spin_lock_irqsave(&sbuf->state_lock, flags);
+ 		WRITE_ONCE(sbuf->state, SBUF_STATE_READY);
+ 		spin_unlock_irqrestore(&sbuf->state_lock, flags);
++		blocking_notifier_call_chain(&sbuf->events, SBUF_NOTIFY_READY,
++					     NULL);
+ 	}
+ 
+ 	/* sbuf init done, handle the ring rx events */
+@@ -1223,6 +1228,9 @@ static int sbuf_thread(void *data)
+ 				sbuf_uart_notify(
+ 					sbuf, ring, SBUF_NOTIFY_WRITE,
+ 					atomic_read(&sbuf->generation));
++				blocking_notifier_call_chain(&sbuf->events,
++							     SBUF_NOTIFY_WRITE,
++							     &mrecv.value);
+ 				if (ring->handler)
+ 					ring->handler(SBUF_NOTIFY_WRITE,
+ 						      ring->data);
+@@ -1237,6 +1245,9 @@ static int sbuf_thread(void *data)
+ 				sbuf_uart_notify(
+ 					sbuf, ring, SBUF_NOTIFY_READ,
+ 					atomic_read(&sbuf->generation));
++				blocking_notifier_call_chain(&sbuf->events,
++							     SBUF_NOTIFY_READ,
++							     &mrecv.value);
+ 				if (ring->handler)
+ 					ring->handler(SBUF_NOTIFY_READ,
+ 						      ring->data);
+@@ -1307,6 +1318,8 @@ static int sbuf_create_legacy(u8 dst, u8 channel, u32 bufnum, u32 txbufsize,
+ 	sbuf->state = SBUF_STATE_IDLE;
+ 	atomic_set(&sbuf->generation, 0);
+ 	spin_lock_init(&sbuf->state_lock);
++	kref_init(&sbuf->ref);
++	BLOCKING_INIT_NOTIFIER_HEAD(&sbuf->events);
+ 	mutex_init(&sbuf->control_lock);
+ 	INIT_DELAYED_WORK(&sbuf->notify_work, sbuf_notify_work);
+ 	sbuf->dst = dst;
+@@ -1382,6 +1395,85 @@ void sbuf_set_no_need_wake_lock(u8 dst, u8 channel, u32 bufnum)
+ }
+ EXPORT_SYMBOL_GPL(sbuf_set_no_need_wake_lock);
+ 
++static void sbuf_manager_release(struct kref *ref)
++{
++	struct sbuf_mgr *sbuf = container_of(ref, struct sbuf_mgr, ref);
++
++	kfree(sbuf->rings);
++	kfree(sbuf);
++}
++
++struct sbuf_mgr *sbuf_get_manager(u8 dst, u8 channel)
++{
++	struct sbuf_mgr *sbuf = sbufs[dst][sipc_channel2index(channel)];
++
++	kref_get(&sbuf->ref);
++	return sbuf;
++}
++
++void sbuf_put_manager(struct sbuf_mgr *sbuf)
++{
++	kref_put(&sbuf->ref, sbuf_manager_release);
++}
++
++static int sbuf_session_status(struct sbuf_mgr *sbuf, u32 generation,
++			       const bool *dead)
++{
++	if (READ_ONCE(sbuf->stopping))
++		return -ENODEV;
++	if ((dead && READ_ONCE(*dead)) ||
++	    READ_ONCE(sbuf->state) != SBUF_STATE_READY ||
++	    generation != atomic_read(&sbuf->generation))
++		return -EPIPE;
++	return 0;
++}
++
++int sbuf_session_state(struct sbuf_mgr *sbuf, u32 *generation)
++{
++	unsigned long flags;
++	int ret;
++
++	spin_lock_irqsave(&sbuf->state_lock, flags);
++	*generation = atomic_read(&sbuf->generation);
++	ret = sbuf_session_status(sbuf, *generation, NULL);
++	spin_unlock_irqrestore(&sbuf->state_lock, flags);
++	return ret;
++}
++
++/* Frontend registration rollback can revoke an opened cdev without changing
++ * the peer's communication session. Serialize revocation with ring commits.
++ */
++void sbuf_session_cancel(struct sbuf_mgr *sbuf, u32 id, bool *dead)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&sbuf->state_lock, flags);
++	WRITE_ONCE(*dead, true);
++	spin_unlock_irqrestore(&sbuf->state_lock, flags);
++	wake_up_interruptible_all(&sbuf->rings[id].txwait);
++	wake_up_interruptible_all(&sbuf->rings[id].rxwait);
++}
++
++static int sbuf_session_commit(struct sbuf_mgr *sbuf, u32 generation,
++			       const bool *dead, u32 *pointer, u32 count,
++			       bool tx)
++{
++	unsigned long flags;
++	int ret;
++
++	spin_lock_irqsave(&sbuf->state_lock, flags);
++	ret = sbuf_session_status(sbuf, generation, dead);
++	if (!ret) {
++		if (tx)
++			wmb();
++		else
++			mb();
++		WRITE_ONCE(*pointer, READ_ONCE(*pointer) + count);
++	}
++	spin_unlock_irqrestore(&sbuf->state_lock, flags);
++	return ret;
++}
++
+ void sbuf_destroy(u8 dst, u8 channel)
+ {
+ 	struct sbuf_mgr *sbuf;
+@@ -1430,7 +1522,6 @@ void sbuf_destroy(u8 dst, u8 channel)
+ 			wakeup_source_unregister(sbuf->rings[i].tx_wake_lock);
+ 			wakeup_source_unregister(sbuf->rings[i].rx_wake_lock);
+ 		}
+-		kfree(sbuf->rings);
+ 	}
+ 
+ 	if (sbuf->smem_virt)
+@@ -1442,7 +1533,7 @@ void sbuf_destroy(u8 dst, u8 channel)
+ 	else
+ 		smem_free(dst, sbuf->smem_addr, sbuf->smem_size);
+ 
+-	kfree(sbuf);
++	sbuf_put_manager(sbuf);
+ 
+ 	sbufs[dst][ch_index] = NULL;
+ 	smsg_uart_legacy_sbuf_release(dst, channel);
+@@ -1452,7 +1543,8 @@ EXPORT_SYMBOL_GPL(sbuf_destroy);
+ static int sbuf_write_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 			     int timeout, bool user_buffer,
+ 			     bool check_generation, u32 expected_generation,
+-			     struct sbuf_uart_notifier *uart)
++			     struct sbuf_uart_notifier *uart,
++			     struct sbuf_mgr *managed, const bool *dead)
+ {
+ 	struct sbuf_mgr *sbuf;
+ 	struct sbuf_ring *ring = NULL;
+@@ -1474,15 +1566,17 @@ static int sbuf_write_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 		return -EINVAL;
+ 	}
+ 
+-	sbuf = uart ? uart->sbuf :
+-		      (dst < SIPC_ID_NR ? sbufs[dst][ch_index] : NULL);
++	sbuf = managed ? managed :
++	       uart    ? uart->sbuf :
++			 (dst < SIPC_ID_NR ? sbufs[dst][ch_index] : NULL);
+ 	if (!sbuf)
+ 		return -ENODEV;
+ 	/* Exclusive UART ownership also rejects mixed legacy data calls. */
+ 	if (!uart && READ_ONCE(sbuf->uart_owner))
+ 		return -EBUSY;
+-	generation = uart ? atomic_read(&sbuf->generation) : 0;
+-	if (uart && check_generation && generation != expected_generation)
++	generation = atomic_read(&sbuf->generation);
++	if ((dead && READ_ONCE(*dead)) ||
++	    (check_generation && generation != expected_generation))
+ 		return -EPIPE;
+ 	if (bufid >= sbuf->ringnr || !sbuf->rings)
+ 		return -EINVAL;
+@@ -1490,15 +1584,15 @@ static int sbuf_write_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 	hd_op = &ring->header_op;
+ 	if (!hd_op->tx_size)
+ 		return -EOPNOTSUPP;
++	if (READ_ONCE(sbuf->stopping))
++		return -ENODEV;
+ 	if (sbuf->state != SBUF_STATE_READY) {
+ 		pr_info("sbuf-%d-%d not ready to write!\n", dst, channel);
+-		return -ENODEV;
++		return check_generation ? -EPIPE : -ENODEV;
+ 	}
+ 
+ 	pr_debug("%s: dst=%d, channel=%d, bufid=%d, len=%d, timeout=%d\n",
+ 		 __func__, dst, channel, bufid, len, timeout);
+-	pr_debug("%s: channel=%d, wrptr=%d, rdptr=%d\n", __func__, channel,
+-		 READ_ONCE(*hd_op->tx_wt_p), READ_ONCE(*hd_op->tx_rd_p));
+ 
+ 	rval = 0;
+ 	left = len;
+@@ -1515,6 +1609,13 @@ static int sbuf_write_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 		}
+ 	}
+ 
++	/* reset marks the session dead before joining these locks. */
++	rval = sbuf_session_status(sbuf, generation, dead);
++	if (rval) {
++		mutex_unlock(&ring->txlock);
++		return rval;
++	}
++
+ #if defined(SIPC_DEBUG_SBUF_RDWT_OWNER)
+ 	/* Legacy recorder allocates GFP_KERNEL; UART try calls never use it. */
+ 	if (!uart)
+@@ -1535,15 +1636,16 @@ static int sbuf_write_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 			ring->txwait,
+ 			(int)(READ_ONCE(*hd_op->tx_wt_p) -
+ 			      READ_ONCE(*hd_op->tx_rd_p)) < hd_op->tx_size ||
+-				(READ_ONCE(sbuf->state) == SBUF_STATE_IDLE ||
+-				 (uart &&
+-				  generation !=
+-					  atomic_read(&sbuf->generation))));
++				((dead && READ_ONCE(*dead)) ||
++				 READ_ONCE(sbuf->state) == SBUF_STATE_IDLE ||
++				 (generation !=
++				  atomic_read(&sbuf->generation))));
+ 		if (rval < 0)
+ 			pr_debug("%s: wait interrupted!\n", __func__);
+ 
+-		if ((READ_ONCE(sbuf->state) == SBUF_STATE_IDLE ||
+-		     (uart && generation != atomic_read(&sbuf->generation)))) {
++		if (((dead && READ_ONCE(*dead)) ||
++		     READ_ONCE(sbuf->state) == SBUF_STATE_IDLE ||
++		     (generation != atomic_read(&sbuf->generation)))) {
+ 			pr_err("%s: sbuf state is idle!\n", __func__);
+ 			rval = -EPIPE;
+ 		}
+@@ -1553,9 +1655,9 @@ static int sbuf_write_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 			ring->txwait,
+ 			(int)(READ_ONCE(*hd_op->tx_wt_p) -
+ 			      READ_ONCE(*hd_op->tx_rd_p)) < hd_op->tx_size ||
+-				(READ_ONCE(sbuf->state) == SBUF_STATE_IDLE ||
+-				 (uart &&
+-				  generation != atomic_read(&sbuf->generation))),
++				((dead && READ_ONCE(*dead)) ||
++				 READ_ONCE(sbuf->state) == SBUF_STATE_IDLE ||
++				 (generation != atomic_read(&sbuf->generation))),
+ 			timeout);
+ 		if (rval < 0) {
+ 			pr_debug("%s: wait interrupted!\n", __func__);
+@@ -1564,8 +1666,9 @@ static int sbuf_write_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 			rval = -ETIME;
+ 		}
+ 
+-		if ((READ_ONCE(sbuf->state) == SBUF_STATE_IDLE ||
+-		     (uart && generation != atomic_read(&sbuf->generation)))) {
++		if (((dead && READ_ONCE(*dead)) ||
++		     READ_ONCE(sbuf->state) == SBUF_STATE_IDLE ||
++		     (generation != atomic_read(&sbuf->generation)))) {
+ 			pr_err("%s: sbuf state is idle!\n", __func__);
+ 			rval = -EPIPE;
+ 		}
+@@ -1574,8 +1677,9 @@ static int sbuf_write_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 	while (rval >= 0 && left &&
+ 	       (int)(READ_ONCE(*hd_op->tx_wt_p) - READ_ONCE(*hd_op->tx_rd_p)) <
+ 		       hd_op->tx_size &&
+-	       (READ_ONCE(sbuf->state) == SBUF_STATE_READY &&
+-		(!uart || generation == atomic_read(&sbuf->generation)))) {
++	       ((!dead || !READ_ONCE(*dead)) &&
++		READ_ONCE(sbuf->state) == SBUF_STATE_READY &&
++		(generation == atomic_read(&sbuf->generation)))) {
+ 		if ((u32)(READ_ONCE(*hd_op->tx_wt_p) -
+ 			  READ_ONCE(*hd_op->tx_rd_p)) > hd_op->tx_size) {
+ 			rval = -EIO;
+@@ -1625,22 +1729,12 @@ static int sbuf_write_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 		pr_debug("%s: channel=%d, txpos=%p, txsize=%d\n", __func__,
+ 			 channel, txpos, txsize);
+ 
+-		if (uart) {
+-			rval = sbuf_uart_commit(uart, generation,
+-						hd_op->tx_wt_p, txsize, true);
+-			if (rval)
+-				break;
+-		} else {
+-			if (READ_ONCE(sbuf->state) != SBUF_STATE_READY) {
+-				rval = -EPIPE;
+-				break;
+-			}
+-			/* Publish payload before handing bytes to the CP. */
+-			wmb();
+-			/* update tx wrptr */
+-			WRITE_ONCE(*hd_op->tx_wt_p,
+-				   READ_ONCE(*hd_op->tx_wt_p) + txsize);
+-		}
++		rval = uart ? sbuf_uart_commit(uart, generation, hd_op->tx_wt_p,
++					       txsize, true) :
++			      sbuf_session_commit(sbuf, generation, dead,
++						  hd_op->tx_wt_p, txsize, true);
++		if (rval)
++			break;
+ 		/* tx ringbuf is empty, so need to notify peer side */
+ 		if (READ_ONCE(*hd_op->tx_wt_p) - READ_ONCE(*hd_op->tx_rd_p) ==
+ 		    txsize)
+@@ -1670,9 +1764,9 @@ static int sbuf_write_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 			__pm_relax(ring->tx_wake_lock);
+ 		}
+ 	}
+-	if (len == left &&
+-	    ((uart && generation != atomic_read(&sbuf->generation)) ||
+-	     READ_ONCE(sbuf->state) != SBUF_STATE_READY))
++	if (len == left && ((dead && READ_ONCE(*dead)) ||
++			    generation != atomic_read(&sbuf->generation) ||
++			    READ_ONCE(sbuf->state) != SBUF_STATE_READY))
+ 		rval = -EPIPE;
+ 	mutex_unlock(&ring->txlock);
+ 
+@@ -1688,7 +1782,7 @@ static int sbuf_write_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ int sbuf_write(u8 dst, u8 channel, u32 bufid, void *buf, u32 len, int timeout)
+ {
+ 	return sbuf_write_common(dst, channel, bufid, buf, len, timeout, false,
+-				 false, 0, NULL);
++				 false, 0, NULL, NULL, NULL);
+ }
+ EXPORT_SYMBOL_GPL(sbuf_write);
+ 
+@@ -1696,14 +1790,15 @@ int sbuf_write_user(u8 dst, u8 channel, u32 bufid, const void __user *buf,
+ 		    u32 len, int timeout)
+ {
+ 	return sbuf_write_common(dst, channel, bufid, (void __force *)buf, len,
+-				 timeout, true, false, 0, NULL);
++				 timeout, true, false, 0, NULL, NULL, NULL);
+ }
+ EXPORT_SYMBOL_GPL(sbuf_write_user);
+ 
+ static int sbuf_read_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 			    int timeout, bool user_buffer,
+ 			    bool check_generation, u32 expected_generation,
+-			    struct sbuf_uart_notifier *uart)
++			    struct sbuf_uart_notifier *uart,
++			    struct sbuf_mgr *managed, const bool *dead)
+ {
+ 	struct sbuf_mgr *sbuf;
+ 	struct sbuf_ring *ring = NULL;
+@@ -1724,15 +1819,17 @@ static int sbuf_read_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 		pr_err("%s:channel %d invalid!\n", __func__, channel);
+ 		return -EINVAL;
+ 	}
+-	sbuf = uart ? uart->sbuf :
+-		      (dst < SIPC_ID_NR ? sbufs[dst][ch_index] : NULL);
++	sbuf = managed ? managed :
++	       uart    ? uart->sbuf :
++			 (dst < SIPC_ID_NR ? sbufs[dst][ch_index] : NULL);
+ 	if (!sbuf)
+ 		return -ENODEV;
+ 	/* Exclusive UART ownership also rejects mixed legacy data calls. */
+ 	if (!uart && READ_ONCE(sbuf->uart_owner))
+ 		return -EBUSY;
+-	generation = uart ? atomic_read(&sbuf->generation) : 0;
+-	if (uart && check_generation && generation != expected_generation)
++	generation = atomic_read(&sbuf->generation);
++	if ((dead && READ_ONCE(*dead)) ||
++	    (check_generation && generation != expected_generation))
+ 		return -EPIPE;
+ 	if (bufid >= sbuf->ringnr || !sbuf->rings)
+ 		return -EINVAL;
+@@ -1741,15 +1838,15 @@ static int sbuf_read_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 	if (!hd_op->rx_size)
+ 		return -EOPNOTSUPP;
+ 
++	if (READ_ONCE(sbuf->stopping))
++		return -ENODEV;
+ 	if (sbuf->state != SBUF_STATE_READY) {
+ 		pr_debug("sbuf-%d-%d not ready to read!\n", dst, channel);
+-		return -ENODEV;
++		return check_generation ? -EPIPE : -ENODEV;
+ 	}
+ 
+ 	pr_debug("%s:dst=%d, channel=%d, bufid=%d, len=%d, timeout=%d\n",
+ 		 __func__, dst, channel, bufid, len, timeout);
+-	pr_debug("%s: channel=%d, wrptr=%d, rdptr=%d\n", __func__, channel,
+-		 READ_ONCE(*hd_op->rx_wt_p), READ_ONCE(*hd_op->rx_rd_p));
+ 
+ 	rval = 0;
+ 	left = len;
+@@ -1765,6 +1862,13 @@ static int sbuf_read_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 		}
+ 	}
+ 
++	/* reset marks the session dead before joining these locks. */
++	rval = sbuf_session_status(sbuf, generation, dead);
++	if (rval) {
++		mutex_unlock(&ring->rxlock);
++		return rval;
++	}
++
+ #if defined(SIPC_DEBUG_SBUF_RDWT_OWNER)
+ 	/* Legacy recorder allocates GFP_KERNEL; UART try calls never use it. */
+ 	if (!uart)
+@@ -1783,18 +1887,17 @@ static int sbuf_read_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 				ring->rxwait,
+ 				READ_ONCE(*hd_op->rx_wt_p) !=
+ 						READ_ONCE(*hd_op->rx_rd_p) ||
+-					(READ_ONCE(sbuf->state) ==
++					((dead && READ_ONCE(*dead)) ||
++					 READ_ONCE(sbuf->state) ==
+ 						 SBUF_STATE_IDLE ||
+-					 (uart &&
+-					  generation !=
+-						  atomic_read(
+-							  &sbuf->generation))));
++					 (generation !=
++					  atomic_read(&sbuf->generation))));
+ 			if (rval < 0)
+ 				pr_debug("%s: wait interrupted!\n", __func__);
+ 
+-			if ((READ_ONCE(sbuf->state) == SBUF_STATE_IDLE ||
+-			     (uart &&
+-			      generation != atomic_read(&sbuf->generation)))) {
++			if (((dead && READ_ONCE(*dead)) ||
++			     READ_ONCE(sbuf->state) == SBUF_STATE_IDLE ||
++			     (generation != atomic_read(&sbuf->generation)))) {
+ 				pr_err("%s: sbuf state is idle!\n", __func__);
+ 				rval = -EPIPE;
+ 			}
+@@ -1804,12 +1907,11 @@ static int sbuf_read_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 				ring->rxwait,
+ 				READ_ONCE(*hd_op->rx_wt_p) !=
+ 						READ_ONCE(*hd_op->rx_rd_p) ||
+-					(READ_ONCE(sbuf->state) ==
++					((dead && READ_ONCE(*dead)) ||
++					 READ_ONCE(sbuf->state) ==
+ 						 SBUF_STATE_IDLE ||
+-					 (uart &&
+-					  generation !=
+-						  atomic_read(
+-							  &sbuf->generation))),
++					 (generation !=
++					  atomic_read(&sbuf->generation))),
+ 				timeout);
+ 			if (rval < 0) {
+ 				pr_debug("%s: wait interrupted!\n", __func__);
+@@ -1818,9 +1920,9 @@ static int sbuf_read_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 				rval = -ETIME;
+ 			}
+ 
+-			if ((READ_ONCE(sbuf->state) == SBUF_STATE_IDLE ||
+-			     (uart &&
+-			      generation != atomic_read(&sbuf->generation)))) {
++			if (((dead && READ_ONCE(*dead)) ||
++			     READ_ONCE(sbuf->state) == SBUF_STATE_IDLE ||
++			     (generation != atomic_read(&sbuf->generation)))) {
+ 				pr_err("%s: state is idle!\n", __func__);
+ 				rval = -EPIPE;
+ 			}
+@@ -1829,8 +1931,9 @@ static int sbuf_read_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 
+ 	while (rval >= 0 && left &&
+ 	       (READ_ONCE(*hd_op->rx_wt_p) != READ_ONCE(*hd_op->rx_rd_p)) &&
+-	       (READ_ONCE(sbuf->state) == SBUF_STATE_READY &&
+-		(!uart || generation == atomic_read(&sbuf->generation)))) {
++	       ((!dead || !READ_ONCE(*dead)) &&
++		READ_ONCE(sbuf->state) == SBUF_STATE_READY &&
++		(generation == atomic_read(&sbuf->generation)))) {
+ 		/* Observe the CP producer pointer before reading its payload. */
+ 		rmb();
+ 		/* calc rxpos & rxsize */
+@@ -1890,22 +1993,13 @@ static int sbuf_read_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 			}
+ 		}
+ 
+-		if (uart) {
+-			rval = sbuf_uart_commit(uart, generation,
+-						hd_op->rx_rd_p, rxsize, false);
+-			if (rval)
+-				break;
+-		} else {
+-			if (READ_ONCE(sbuf->state) != SBUF_STATE_READY) {
+-				rval = -EPIPE;
+-				break;
+-			}
+-			/* Complete payload accesses before releasing the CP ring space. */
+-			mb();
+-			/* update rx rdptr */
+-			WRITE_ONCE(*hd_op->rx_rd_p,
+-				   READ_ONCE(*hd_op->rx_rd_p) + rxsize);
+-		}
++		rval = uart ? sbuf_uart_commit(uart, generation, hd_op->rx_rd_p,
++					       rxsize, false) :
++			      sbuf_session_commit(sbuf, generation, dead,
++						  hd_op->rx_rd_p, rxsize,
++						  false);
++		if (rval)
++			break;
+ 		/* rx ringbuf is full ,so need to notify peer side */
+ 		if (READ_ONCE(*hd_op->rx_wt_p) - READ_ONCE(*hd_op->rx_rd_p) ==
+ 		    hd_op->rx_size - rxsize) {
+@@ -1937,9 +2031,9 @@ static int sbuf_read_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ 		}
+ 	}
+ 
+-	if (len == left &&
+-	    ((uart && generation != atomic_read(&sbuf->generation)) ||
+-	     READ_ONCE(sbuf->state) != SBUF_STATE_READY))
++	if (len == left && ((dead && READ_ONCE(*dead)) ||
++			    generation != atomic_read(&sbuf->generation) ||
++			    READ_ONCE(sbuf->state) != SBUF_STATE_READY))
+ 		rval = -EPIPE;
+ 	mutex_unlock(&ring->rxlock);
+ 
+@@ -1954,7 +2048,7 @@ static int sbuf_read_common(u8 dst, u8 channel, u32 bufid, void *buf, u32 len,
+ int sbuf_read(u8 dst, u8 channel, u32 bufid, void *buf, u32 len, int timeout)
+ {
+ 	return sbuf_read_common(dst, channel, bufid, buf, len, timeout, false,
+-				false, 0, NULL);
++				false, 0, NULL, NULL, NULL);
+ }
+ EXPORT_SYMBOL_GPL(sbuf_read);
+ 
+@@ -1962,10 +2056,52 @@ int sbuf_read_user(u8 dst, u8 channel, u32 bufid, void __user *buf, u32 len,
+ 		   int timeout)
+ {
+ 	return sbuf_read_common(dst, channel, bufid, (void __force *)buf, len,
+-				timeout, true, false, 0, NULL);
++				timeout, true, false, 0, NULL, NULL, NULL);
+ }
+ EXPORT_SYMBOL_GPL(sbuf_read_user);
+ 
++int sbuf_session_read(struct sbuf_mgr *sbuf, u32 generation, const bool *dead,
++		      u32 ring, void *buf, u32 len, int timeout, bool user)
++{
++	return sbuf_read_common(sbuf->dst, sbuf->channel, ring, buf, len,
++				timeout, user, true, generation, NULL, sbuf,
++				dead);
++}
++
++int sbuf_session_write(struct sbuf_mgr *sbuf, u32 generation, const bool *dead,
++		       u32 ring, const void *buf, u32 len, int timeout,
++		       bool user)
++{
++	return sbuf_write_common(sbuf->dst, sbuf->channel, ring, (void *)buf,
++				 len, timeout, user, true, generation, NULL,
++				 sbuf, dead);
++}
++
++__poll_t sbuf_session_poll(struct sbuf_mgr *sbuf, u32 generation,
++			   const bool *dead, u32 id, struct file *file,
++			   poll_table *wait)
++{
++	struct sbuf_ring *ring = &sbuf->rings[id];
++	struct sbuf_ring_header_op *hd = &ring->header_op;
++	unsigned long flags;
++	__poll_t mask = 0;
++
++	poll_wait(file, &ring->rxwait, wait);
++	poll_wait(file, &ring->txwait, wait);
++	spin_lock_irqsave(&sbuf->state_lock, flags);
++	if (sbuf_session_status(sbuf, generation, dead)) {
++		mask = EPOLLERR | EPOLLHUP;
++	} else {
++		if (READ_ONCE(*hd->rx_wt_p) != READ_ONCE(*hd->rx_rd_p))
++			mask |= EPOLLIN | EPOLLRDNORM;
++		if (READ_ONCE(*hd->tx_wt_p) - READ_ONCE(*hd->tx_rd_p) <
++		    hd->tx_size)
++			mask |= EPOLLOUT | EPOLLWRNORM;
++	}
++	spin_unlock_irqrestore(&sbuf->state_lock, flags);
++	return mask;
++}
++
+ int sbuf_get_session(u8 dst, u8 channel, u32 *generation, u32 *state)
+ {
+ 	struct sbuf_mgr *sbuf;
+@@ -2367,7 +2503,8 @@ int sbuf_uart_try_read(struct sbuf_uart_notifier *uart, u32 generation,
+ 	if (ret)
+ 		return ret;
+ 	ret = sbuf_read_common(uart->sbuf->dst, uart->sbuf->channel, 0, buf,
+-			       len, 0, false, true, generation, uart);
++			       len, 0, false, true, generation, uart, NULL,
++			       NULL);
+ 	sbuf_uart_io_put(uart);
+ 	return ret;
+ }
+@@ -2385,7 +2522,8 @@ int sbuf_uart_try_ack(struct sbuf_uart_notifier *uart, u32 generation)
+ 	if (ret)
+ 		return ret;
+ 	ret = sbuf_write_common(uart->sbuf->dst, uart->sbuf->channel, 0, &ack,
+-				1, 0, false, true, generation, uart);
++				1, 0, false, true, generation, uart, NULL,
++				NULL);
+ 	sbuf_uart_io_put(uart);
+ 	return ret; /* 1 committed, <0 not committed; never automatically retry. */
+ }
+diff --git a/drivers/soc/sprd/modem/sipc_v2/sbuf.h b/drivers/soc/sprd/modem/sipc_v2/sbuf.h
+index 2f7ae0913..e44c4daa0 100644
+--- a/drivers/soc/sprd/modem/sipc_v2/sbuf.h
++++ b/drivers/soc/sprd/modem/sipc_v2/sbuf.h
+@@ -16,6 +16,9 @@
+ #define __SBUF_H
+ 
+ #include <linux/workqueue.h>
++#include <linux/kref.h>
++#include <linux/notifier.h>
++#include <linux/poll.h>
+ 
+ /* flag for CMD/DONE msg type */
+ #define SMSG_CMD_SBUF_INIT 0x0001
+@@ -112,7 +115,12 @@ struct sbuf_ring {
+ struct sbuf_uart_notifier;
+ struct sbuf_uart_backend;
+ 
++/* Notifier callbacks only enqueue work; they must not wait for ring I/O. */
++#define SBUF_NOTIFY_RESET 0x100
++
+ struct sbuf_mgr {
++	struct kref ref;
++	struct blocking_notifier_head events;
+ 	u8 dst;
+ 	u8 channel;
+ 	u32 state;
+@@ -139,4 +147,19 @@ struct sbuf_mgr {
+ 	struct sbuf_ring *rings;
+ 	struct task_struct *thread;
+ };
++/* The successful channel creator owns lookup and serializes it with destroy.
++ * Endpoints retain this manager, never look up a possibly newer tuple on I/O.
++ */
++struct sbuf_mgr *sbuf_get_manager(u8 dst, u8 channel);
++void sbuf_put_manager(struct sbuf_mgr *sbuf);
++int sbuf_session_state(struct sbuf_mgr *sbuf, u32 *generation);
++void sbuf_session_cancel(struct sbuf_mgr *sbuf, u32 ring, bool *dead);
++int sbuf_session_read(struct sbuf_mgr *sbuf, u32 generation, const bool *dead,
++		      u32 ring, void *buf, u32 len, int timeout, bool user);
++int sbuf_session_write(struct sbuf_mgr *sbuf, u32 generation, const bool *dead,
++		       u32 ring, const void *buf, u32 len, int timeout,
++		       bool user);
++__poll_t sbuf_session_poll(struct sbuf_mgr *sbuf, u32 generation,
++			   const bool *dead, u32 ring, struct file *file,
++			   poll_table *wait);
+ #endif
+diff --git a/drivers/soc/sprd/modem/sipc_v2/sipc_wwan.c b/drivers/soc/sprd/modem/sipc_v2/sipc_wwan.c
+new file mode 100644
+index 000000000..75ae597f9
+--- /dev/null
++++ b/drivers/soc/sprd/modem/sipc_v2/sipc_wwan.c
+@@ -0,0 +1,512 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* UDX710 native SBUF AT streams: ring 0 URC, ring 1 commands. */
++#include <linux/device.h>
++#include <linux/kref.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/property.h>
++#include <linux/sipc.h>
++#include <linux/skbuff.h>
++#include <linux/wwan.h>
++
++#include "sbuf.h"
++
++#define SIPC_AT_DST 5
++#define SIPC_AT_CHANNEL 6
++#define SIPC_AT_RINGS 32
++#define SIPC_AT_MTU 2048
++#define SIPC_AT_RX_SLOTS 4
++
++struct sipc_at_session;
++
++struct sipc_at_port {
++	struct sipc_at_session *session;
++	struct wwan_port *port;
++	struct work_struct io;
++	spinlock_t lock;
++	u32 ring;
++	unsigned int rx_budget;
++	bool started;
++	struct sk_buff *tx;
++	unsigned int tx_offset;
++};
++
++struct sipc_at_session {
++	struct kref ref;
++	struct sbuf_mgr *sbuf;
++	struct device *parent;
++	struct workqueue_struct *control_wq;
++	struct work_struct fault_work;
++	u32 generation;
++	bool dead;
++	int fault;
++	struct sipc_at_port ports[2];
++};
++
++struct sipc_at {
++	struct device *dev;
++	struct device *parent;
++	struct sbuf_mgr *sbuf;
++	struct notifier_block notifier;
++	struct workqueue_struct *control_wq;
++	struct work_struct work;
++	struct sipc_at_session *session;
++	u32 generation;
++	bool attempted;
++	bool removing;
++};
++
++static void sipc_at_session_release(struct kref *ref)
++{
++	struct sipc_at_session *s =
++		container_of(ref, struct sipc_at_session, ref);
++
++	put_device(s->parent);
++	sbuf_put_manager(s->sbuf);
++	kfree(s);
++}
++
++static void sipc_at_dead(struct sipc_at_session *s)
++{
++	/* One flag revokes both ports at the same ring-commit boundary. */
++	sbuf_session_cancel(s->sbuf, 0, &s->dead);
++	sbuf_session_cancel(s->sbuf, 1, &s->dead);
++}
++
++static void sipc_at_fault(struct sipc_at_session *s, int error)
++{
++	if (cmpxchg(&s->fault, 0, error))
++		return;
++	sipc_at_dead(s);
++	queue_work(s->control_wq, &s->fault_work);
++}
++
++static void sipc_at_rx_release(struct sk_buff *skb)
++{
++	struct sipc_at_port *p = skb_shinfo(skb)->destructor_arg;
++	struct sipc_at_session *s = p->session;
++
++	spin_lock_bh(&p->lock);
++	p->rx_budget++;
++	if (p->started && !READ_ONCE(s->dead))
++		schedule_work(&p->io);
++	spin_unlock_bh(&p->lock);
++	/* The last reference can free the lock itself. */
++	kref_put(&s->ref, sipc_at_session_release);
++}
++
++static bool sipc_at_rx_reserve(struct sipc_at_port *p)
++{
++	bool reserved = false;
++
++	spin_lock_bh(&p->lock);
++	if (p->started && !READ_ONCE(p->session->dead) && p->rx_budget) {
++		p->rx_budget--;
++		reserved = true;
++	}
++	spin_unlock_bh(&p->lock);
++	return reserved;
++}
++
++static void sipc_at_rx_unused(struct sipc_at_port *p)
++{
++	/* No bytes were consumed. Do not reschedule an empty ring by freeing the
++	 * speculative buffer: its next trigger is WRPTR, not a polling loop.
++	 */
++	spin_lock_bh(&p->lock);
++	p->rx_budget++;
++	spin_unlock_bh(&p->lock);
++}
++
++static void sipc_at_receive(struct sipc_at_port *p)
++{
++	struct sipc_at_session *s = p->session;
++	struct sk_buff *skb;
++	int ret;
++
++	while (sipc_at_rx_reserve(p)) {
++		skb = alloc_skb(SIPC_AT_MTU, GFP_KERNEL);
++		if (!skb) {
++			sipc_at_rx_unused(p);
++			sipc_at_fault(s, -ENOMEM);
++			return;
++		}
++		ret = sbuf_session_read(s->sbuf, s->generation, &s->dead,
++					p->ring, skb->data, SIPC_AT_MTU, 0,
++					false);
++		if (ret <= 0) {
++			kfree_skb(skb);
++			sipc_at_rx_unused(p);
++			if (ret != -ENODATA && ret != -EBUSY && ret != -EAGAIN)
++				sipc_at_fault(s, ret ? ret : -EIO);
++			return;
++		}
++		skb_put(skb, ret);
++		kref_get(&s->ref);
++		skb->destructor = sipc_at_rx_release;
++		skb_shinfo(skb)->destructor_arg = p;
++		wwan_port_rx(READ_ONCE(p->port), skb);
++	}
++}
++
++static void sipc_at_transmit(struct sipc_at_port *p)
++{
++	struct sipc_at_session *s = p->session;
++	struct sk_buff *skb;
++	unsigned int offset;
++	int ret;
++
++	for (;;) {
++		spin_lock_bh(&p->lock);
++		skb = p->started && !READ_ONCE(s->dead) ? p->tx : NULL;
++		offset = p->tx_offset;
++		spin_unlock_bh(&p->lock);
++		if (!skb)
++			return;
++		/* stop joins this worker before freeing the sole pending SKB. */
++		ret = sbuf_session_write(s->sbuf, s->generation, &s->dead,
++					 p->ring, skb->data + offset,
++					 skb->len - offset, 0, false);
++		if (ret <= 0) {
++			if (ret != -EBUSY && ret != -EAGAIN)
++				sipc_at_fault(s, ret ? ret : -EIO);
++			return;
++		}
++		spin_lock_bh(&p->lock);
++		p->tx_offset += ret;
++		if (p->tx_offset == skb->len) {
++			p->tx = NULL;
++			p->tx_offset = 0;
++			if (p->started && !READ_ONCE(s->dead))
++				wwan_port_txon(p->port);
++			spin_unlock_bh(&p->lock);
++			consume_skb(skb);
++			return;
++		}
++		spin_unlock_bh(&p->lock);
++	}
++}
++
++static void sipc_at_io(struct work_struct *work)
++{
++	struct sipc_at_port *p = container_of(work, struct sipc_at_port, io);
++
++	sipc_at_transmit(p);
++	sipc_at_receive(p);
++}
++
++static int sipc_at_start(struct wwan_port *port)
++{
++	struct sipc_at_port *p = wwan_port_get_drvdata(port);
++	struct sipc_at_session *s = p->session;
++	u32 generation;
++	int ret;
++
++	ret = sbuf_session_state(s->sbuf, &generation);
++	if (ret)
++		return ret;
++	if (generation != s->generation)
++		return -EPIPE;
++	spin_lock_bh(&p->lock);
++	if (READ_ONCE(s->dead)) {
++		spin_unlock_bh(&p->lock);
++		return -EPIPE;
++	}
++	/* device_add can make open possible before wwan_create_port returns. */
++	WRITE_ONCE(p->port, port);
++	p->started = true;
++	wwan_port_txon(port);
++	schedule_work(&p->io);
++	spin_unlock_bh(&p->lock);
++	return 0;
++}
++
++static void sipc_at_quiesce(struct sipc_at_port *p)
++{
++	struct sk_buff *skb;
++
++	spin_lock_bh(&p->lock);
++	p->started = false;
++	if (p->port)
++		wwan_port_txoff(p->port);
++	spin_unlock_bh(&p->lock);
++	cancel_work_sync(&p->io);
++	spin_lock_bh(&p->lock);
++	skb = p->tx;
++	p->tx = NULL;
++	p->tx_offset = 0;
++	spin_unlock_bh(&p->lock);
++	kfree_skb(skb);
++}
++
++static void sipc_at_stop(struct wwan_port *port)
++{
++	struct sipc_at_port *p = wwan_port_get_drvdata(port);
++
++	/* Local close drops an unpublished tail, not the CP communication session.
++	 * RX budget is restored only by SKB destruction, never reset here/start.
++	 */
++	sipc_at_quiesce(p);
++}
++
++static int sipc_at_tx(struct wwan_port *port, struct sk_buff *skb)
++{
++	struct sipc_at_port *p = wwan_port_get_drvdata(port);
++	struct sipc_at_session *s = p->session;
++	u32 generation;
++	int ret;
++
++	if (skb->len > SIPC_AT_MTU)
++		return -EMSGSIZE;
++	if (!skb->len) {
++		consume_skb(skb);
++		return 0;
++	}
++	ret = sbuf_session_state(s->sbuf, &generation);
++	if (ret)
++		return ret;
++	if (generation != s->generation)
++		return -EPIPE;
++	spin_lock_bh(&p->lock);
++	if (!p->started || READ_ONCE(s->dead))
++		ret = -EPIPE;
++	else if (p->tx)
++		ret = -EAGAIN;
++	else {
++		p->tx = skb;
++		p->tx_offset = 0;
++		wwan_port_txoff(port);
++		schedule_work(&p->io);
++		ret = 0;
++	}
++	spin_unlock_bh(&p->lock);
++	return ret;
++}
++
++static const struct wwan_port_ops sipc_at_ops = {
++	.start = sipc_at_start,
++	.stop = sipc_at_stop,
++	.tx = sipc_at_tx,
++};
++
++static void sipc_at_remove_ports(struct sipc_at_session *s)
++{
++	unsigned int i;
++
++	sipc_at_dead(s);
++	for (i = 0; i < ARRAY_SIZE(s->ports); i++) {
++		struct sipc_at_port *p = &s->ports[i];
++
++		if (p->port) {
++			wwan_remove_port(p->port);
++			WRITE_ONCE(p->port, NULL);
++		}
++	}
++}
++
++static void sipc_at_fault_work(struct work_struct *work)
++{
++	struct sipc_at_session *s =
++		container_of(work, struct sipc_at_session, fault_work);
++
++	dev_err(s->parent, "AT frontend stopped: %d\n", s->fault);
++	sipc_at_remove_ports(s);
++}
++
++/* Called on the ordered control queue, never from fault_work itself. */
++static void sipc_at_drop_session(struct sipc_at_session *s)
++{
++	unsigned int i;
++
++	sipc_at_dead(s);
++	for (i = 0; i < ARRAY_SIZE(s->ports); i++)
++		sipc_at_quiesce(&s->ports[i]);
++	/* No I/O worker can enqueue another fault after the joins above. Control
++	 * and fault work share an ordered queue, so fault_work cannot run here.
++	 */
++	cancel_work_sync(&s->fault_work);
++	sipc_at_remove_ports(s);
++	kref_put(&s->ref, sipc_at_session_release);
++}
++
++static struct sipc_at_session *sipc_at_create_session(struct sipc_at *at,
++						      u32 generation)
++{
++	struct sipc_at_session *s;
++	unsigned int i;
++	int ret;
++
++	s = kzalloc(sizeof(*s), GFP_KERNEL);
++	if (!s)
++		return ERR_PTR(-ENOMEM);
++	kref_init(&s->ref);
++	s->sbuf = at->sbuf;
++	kref_get(&s->sbuf->ref);
++	s->parent = get_device(at->parent);
++	s->control_wq = at->control_wq;
++	s->generation = generation;
++	INIT_WORK(&s->fault_work, sipc_at_fault_work);
++	for (i = 0; i < ARRAY_SIZE(s->ports); i++) {
++		struct sipc_at_port *p = &s->ports[i];
++
++		p->session = s;
++		p->ring = i;
++		p->rx_budget = SIPC_AT_RX_SLOTS;
++		spin_lock_init(&p->lock);
++		INIT_WORK(&p->io, sipc_at_io);
++	}
++	/* This board has one AT provider. Register URC then command so the core
++	 * assigns at0/at1 within their shared modem WWAN device, including reuse.
++	 */
++	for (i = 0; i < ARRAY_SIZE(s->ports); i++) {
++		struct sipc_at_port *p = &s->ports[i];
++		struct wwan_port *port;
++
++		port = wwan_create_port(at->parent, WWAN_PORT_AT, &sipc_at_ops,
++					NULL, p);
++		if (IS_ERR(port)) {
++			ret = PTR_ERR(port);
++			sipc_at_drop_session(s);
++			return ERR_PTR(ret);
++		}
++		WRITE_ONCE(p->port, port);
++	}
++	return s;
++}
++
++static void sipc_at_work(struct work_struct *work)
++{
++	struct sipc_at *at = container_of(work, struct sipc_at, work);
++	u32 generation;
++	unsigned int i;
++	int ret;
++
++	ret = sbuf_session_state(at->sbuf, &generation);
++	if (at->session &&
++	    (ret || generation != at->generation || at->removing)) {
++		sipc_at_drop_session(at->session);
++		at->session = NULL;
++	}
++	if (ret || at->removing) {
++		at->attempted = false;
++		return;
++	}
++	if (!at->session) {
++		if (at->attempted && generation == at->generation)
++			return;
++		at->generation = generation;
++		at->attempted = true;
++		at->session = sipc_at_create_session(at, generation);
++		if (IS_ERR(at->session)) {
++			dev_err(at->dev, "AT port registration: %ld\n",
++				PTR_ERR(at->session));
++			at->session = NULL;
++			return;
++		}
++	}
++	for (i = 0; i < ARRAY_SIZE(at->session->ports); i++) {
++		struct sipc_at_port *p = &at->session->ports[i];
++
++		spin_lock_bh(&p->lock);
++		if (p->started && !READ_ONCE(at->session->dead))
++			schedule_work(&p->io);
++		spin_unlock_bh(&p->lock);
++	}
++}
++
++static int sipc_at_event(struct notifier_block *nb, unsigned long event,
++			 void *data)
++{
++	struct sipc_at *at = container_of(nb, struct sipc_at, notifier);
++
++	/* The work reads actual state/rings. Coalesced RESET/READY is caught by
++	 * generation; a kick racing a running work schedules another execution.
++	 */
++	queue_work(at->control_wq, &at->work);
++	return NOTIFY_OK;
++}
++
++static void sipc_at_put_device(void *data)
++{
++	put_device(data);
++}
++
++static int sipc_at_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct fwnode_handle *node;
++	struct sipc_at *at;
++	int ret;
++
++	at = devm_kzalloc(dev, sizeof(*at), GFP_KERNEL);
++	if (!at)
++		return -ENOMEM;
++	at->dev = dev;
++	node = fwnode_find_reference(dev_fwnode(dev), "sprd,modem", 0);
++	if (IS_ERR(node))
++		return PTR_ERR(node);
++	at->parent = bus_find_device_by_fwnode(&platform_bus_type, node);
++	fwnode_handle_put(node);
++	if (!at->parent)
++		return -EPROBE_DEFER;
++	ret = devm_add_action_or_reset(dev, sipc_at_put_device, at->parent);
++	if (ret)
++		return ret;
++	if (!device_link_add(dev, at->parent, DL_FLAG_AUTOREMOVE_CONSUMER))
++		return -EINVAL;
++	at->control_wq = alloc_ordered_workqueue("sipc-at", 0);
++	if (!at->control_wq)
++		return -ENOMEM;
++	INIT_WORK(&at->work, sipc_at_work);
++	at->notifier.notifier_call = sipc_at_event;
++	ret = sbuf_create(SIPC_AT_DST, SIPC_AT_CHANNEL, SIPC_AT_RINGS,
++			  SIPC_AT_MTU, SIPC_AT_MTU);
++	if (ret)
++		goto destroy_queue;
++	at->sbuf = sbuf_get_manager(SIPC_AT_DST, SIPC_AT_CHANNEL);
++	ret = blocking_notifier_chain_register(&at->sbuf->events,
++					       &at->notifier);
++	if (ret)
++		goto destroy_sbuf;
++	platform_set_drvdata(pdev, at);
++	queue_work(at->control_wq, &at->work);
++	return 0;
++destroy_sbuf:
++	sbuf_destroy(SIPC_AT_DST, SIPC_AT_CHANNEL);
++	sbuf_put_manager(at->sbuf);
++destroy_queue:
++	destroy_workqueue(at->control_wq);
++	return ret;
++}
++
++static void sipc_at_remove(struct platform_device *pdev)
++{
++	struct sipc_at *at = platform_get_drvdata(pdev);
++
++	blocking_notifier_chain_unregister(&at->sbuf->events, &at->notifier);
++	WRITE_ONCE(at->removing, true);
++	queue_work(at->control_wq, &at->work);
++	flush_workqueue(at->control_wq);
++	destroy_workqueue(at->control_wq);
++	sbuf_destroy(SIPC_AT_DST, SIPC_AT_CHANNEL);
++	sbuf_put_manager(at->sbuf);
++}
++
++static const struct of_device_id sipc_at_of_match[] = {
++	{ .compatible = "sprd,udx710-wwan-at" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, sipc_at_of_match);
++
++static struct platform_driver sipc_at_driver = {
++	.probe = sipc_at_probe,
++	.remove = sipc_at_remove,
++	.driver = {
++		.name = "sipc-wwan-at",
++		.of_match_table = sipc_at_of_match,
++		.suppress_bind_attrs = true,
++	},
++};
++module_platform_driver(sipc_at_driver);
++MODULE_DESCRIPTION("UDX710 native SBUF WWAN AT ports");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/soc/sprd/modem/sipc_v2/sipx.c b/drivers/soc/sprd/modem/sipc_v2/sipx.c
+deleted file mode 100644
+index 4ea4aef85..000000000
+--- a/drivers/soc/sprd/modem/sipc_v2/sipx.c
++++ /dev/null
+@@ -1,2074 +0,0 @@
+-// SPDX-License-Identifier: GPL-2.0-only
+-/*
+- * Copyright (C) 2019 Spreadtrum Communications Inc.
+- *
+- * This software is licensed under the terms of the GNU General Public
+- * License version 2, as published by the Free Software Foundation, and
+- * may be copied, distributed, and modified under those terms.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- */
+-
+-/*
+- * TODO:
+- * because in orca, we use the IPA module repalce sipx,
+- * so we don't support client mode in sipx. if we don't use IPA module,
+- * we need add client mode codes in sipx for orca
+- */
+-
+-#include <linux/kernel.h>
+-#include <linux/module.h>
+-#include <linux/wait.h>
+-#include <linux/interrupt.h>
+-#include <linux/sched.h>
+-#include <linux/kthread.h>
+-#include <linux/delay.h>
+-#include <linux/slab.h>
+-#include <linux/io.h>
+-#include <linux/list.h>
+-#include <linux/spinlock.h>
+-#include <linux/uaccess.h>
+-#include <linux/debugfs.h>
+-#include <linux/seq_file.h>
+-#include <linux/log2.h>
+-#include <linux/platform_device.h>
+-#include <linux/if_ether.h>
+-#include <linux/sipc.h>
+-#include <linux/of_device.h>
+-#include <linux/of.h>
+-
+-/* debug{ */
+-#include <linux/delay.h>
+-/* }debug */
+-
+-#include <uapi/linux/sched/types.h>
+-
+-#include "sipx.h"
+-#include "sipc_priv.h"
+-#include "sipc_debugfs.h"
+-
+-#define SIPX_BLOCK_PENDING (32)
+-
+-#define SIPX_UL_OFFSET (16)
+-
+-#define NORMAL_BLOCK_SIZE (ETH_HLEN + ETH_DATA_LEN + NET_IP_ALIGN)
+-#define ACK_BLOCK_SIZE (96)
+-
+-#define TIME_TRIGGER_CP_NS (500 * 1000)
+-
+-#define IS_DL_BLK_ACK(sipx, blk) ((blk)->addr >= (sipx)->dl_ack_start)
+-
+-#define IS_UL_BLK_ACK(sipx, blk) ((blk)->addr >= (sipx)->ul_ack_start)
+-
+-/* debugging macros */
+-#define SIPX_INFO(x...) pr_info("SIPX: " x)
+-#define SIPX_DEBUG(x...) pr_debug("SIPX: " x)
+-#define SIPX_ERR(x...) pr_err("SIPX: [E] " x)
+-
+-/* #define UL_TEST */
+-
+-#ifdef UL_TEST
+-int g_flow_on = 1;
+-#endif
+-
+-
+-static struct sipx_mgr *sipxs[SIPC_ID_NR];
+-
+-inline u16 SIPX_GEN_DESC(u32 length, u16 offset)
+-{
+-	return ((length & 0x7ff) | ((offset & 0x1F) << 11));
+-}
+-
+-static inline void SIPX_PARSE_DESC(u16 desc, u32 *length, u16 *offset)
+-{
+-	*length = (desc & 0x7ff);
+-	*offset = (desc >> 11) & 0x1F;
+-}
+-
+-static int sipx_get_item_from_pool(struct sipx_pool *pool, struct sblock *blk)
+-{
+-	unsigned long flags;
+-	int pos;
+-	int ret = 0;
+-
+-	/* multi-gotter may cause got failure */
+-	spin_lock_irqsave(&pool->lock, flags);
+-	if (READ_ONCE(pool->fifo_info->fifo_rdptr) !=
+-	    READ_ONCE(pool->fifo_info->fifo_wrptr)) {
+-		pos = sblock_get_ringpos(READ_ONCE(pool->fifo_info->fifo_rdptr),
+-					 pool->fifo_size);
+-		blk->index = pool->fifo_buf[pos].index;
+-		blk->addr = pool->blks_buf + blk->index * pool->blk_size;
+-		blk->length = pool->blk_size;
+-		WRITE_ONCE(pool->fifo_info->fifo_rdptr,
+-			   READ_ONCE(pool->fifo_info->fifo_rdptr) + 1);
+-	} else {
+-		ret = -EAGAIN;
+-	}
+-
+-	spin_unlock_irqrestore(&pool->lock, flags);
+-
+-	return ret;
+-}
+-
+-static int sipx_put_item_back_to_pool(struct sipx_pool *pool,
+-				      struct sblock *blk)
+-{
+-	unsigned long flags;
+-	int pos;
+-	int ret = 0;
+-	u32 last_rdptr;
+-
+-	spin_lock_irqsave(&pool->lock, flags);
+-	if ((READ_ONCE(pool->fifo_info->fifo_wrptr) -
+-	     READ_ONCE(pool->fifo_info->fifo_rdptr)) < pool->fifo_size) {
+-		last_rdptr = READ_ONCE(pool->fifo_info->fifo_rdptr) - 1;
+-		pos = sblock_get_ringpos(last_rdptr, pool->fifo_size);
+-		pool->fifo_buf[pos].index = blk->index;
+-		WRITE_ONCE(pool->fifo_info->fifo_rdptr, last_rdptr);
+-	} else {
+-		ret = -1;
+-	}
+-
+-	spin_unlock_irqrestore(&pool->lock, flags);
+-
+-	return ret;
+-}
+-
+-static int sipx_put_item_into_pool(struct sipx_pool *pool, struct sblock *blk)
+-{
+-	unsigned long flags;
+-	int pos;
+-	int ret = 0;
+-	u32 wr, rd;
+-	u32 item;
+-
+-	spin_lock_irqsave(&pool->lock, flags);
+-
+-	wr = READ_ONCE(pool->fifo_info->fifo_wrptr);
+-	rd = READ_ONCE(pool->fifo_info->fifo_rdptr);
+-	if ((wr - rd) < pool->fifo_size) {
+-		pos = sblock_get_ringpos(wr, pool->fifo_size);
+-		item = blk->index;
+-		/* smp_wmb();
+-		 * pool->fifo_buf[pos].index = blk->index;
+-		 * (*(u32*)(&pool->fifo_buf[pos])) = *((u32*)&item);
+-		 */
+-		(*(u32 *)(&pool->fifo_buf[pos])) = item;
+-		WRITE_ONCE(pool->fifo_info->fifo_wrptr, wr + 1);
+-	} else {
+-		SIPX_ERR("%s fail: wr:0x%x, rd:0x%x, size:%d\n", __func__, wr,
+-			 rd, pool->fifo_size);
+-		ret = -1;
+-	}
+-	spin_unlock_irqrestore(&pool->lock, flags);
+-
+-	return ret;
+-}
+-
+-static int sipx_get_pool_free_count(struct sipx_pool *pool)
+-{
+-	unsigned long flags;
+-	int ret = 0;
+-
+-	spin_lock_irqsave(&pool->lock, flags);
+-	ret = READ_ONCE(pool->fifo_info->fifo_wrptr) -
+-	      READ_ONCE(pool->fifo_info->fifo_rdptr);
+-	spin_unlock_irqrestore(&pool->lock, flags);
+-
+-	return ret;
+-}
+-
+-static int sipx_put_item_to_ring(struct sipx_ring *ring, struct sblock *blk,
+-				 int *yell, int *full)
+-{
+-	unsigned long flags;
+-	int pos;
+-	int cnt;
+-	struct sipx_blk_item item;
+-#ifdef CONFIG_SPRD_SIPC_MEM_CACHE_EN
+-	SKB_DATA_TO_SIPC_CACHE_FLUSH(blk->addr, blk->addr + blk->length);
+-#endif
+-	/* multi-gotter may cause got failure */
+-	spin_lock_irqsave(&ring->lock, flags);
+-	pos = sblock_get_ringpos(READ_ONCE(ring->fifo_info->fifo_wrptr),
+-				 ring->fifo_size);
+-	item.index = blk->index;
+-	item.desc = SIPX_GEN_DESC(blk->length, blk->offset);
+-	/* force compiler do one 4-bytes operation */
+-	/* ring->fifo_buf[pos] = item; */
+-	(*(u32 *)(&ring->fifo_buf[pos])) = (*(u32 *)&item);
+-	WRITE_ONCE(ring->fifo_info->fifo_wrptr,
+-		   READ_ONCE(ring->fifo_info->fifo_wrptr) + 1);
+-
+-	cnt = (int)(READ_ONCE(ring->fifo_info->fifo_wrptr) -
+-		    READ_ONCE(ring->fifo_info->fifo_rdptr));
+-	if (cnt == 1)
+-		*yell = 1;
+-	else if (cnt >= READ_ONCE(ring->fifo_info->fifo_size))
+-		*full = 1;
+-
+-	spin_unlock_irqrestore(&ring->lock, flags);
+-
+-	return 0;
+-}
+-
+-static int sipx_get_item_from_ring(struct sipx_ring *ring, struct sblock *blk)
+-{
+-	unsigned long flags;
+-	int pos;
+-	int ret = 0;
+-	u32 wr, rd;
+-	struct sipx_blk_item item;
+-
+-	spin_lock_irqsave(&ring->lock, flags);
+-
+-	wr = READ_ONCE(ring->fifo_info->fifo_wrptr);
+-	rd = READ_ONCE(ring->fifo_info->fifo_rdptr);
+-
+-	if (wr == rd) {
+-		ret = -ENODATA;
+-	} else {
+-		pos = sblock_get_ringpos(rd, ring->fifo_size);
+-		item = ring->fifo_buf[pos];
+-		/* force compiler do one 4-bytes operation */
+-		/* item = ring->fifo_buf[pos]; */
+-		(*(u32 *)&item) = (*(u32 *)(&ring->fifo_buf[pos]));
+-
+-		SIPX_PARSE_DESC(item.desc, &blk->length, &blk->offset);
+-		blk->index = item.index;
+-		blk->addr = ring->blks_buf + (blk->index * ring->blk_size) +
+-			    blk->offset;
+-
+-		WRITE_ONCE(ring->fifo_info->fifo_rdptr, rd + 1);
+-#ifdef CONFIG_SPRD_SIPC_MEM_CACHE_EN
+-		SIPC_DATA_TO_SKB_CACHE_INV(blk->addr, blk->addr + blk->length);
+-#endif
+-	}
+-
+-	spin_unlock_irqrestore(&ring->lock, flags);
+-
+-	return ret;
+-}
+-
+-static int sipx_get_ring_item_cnt(struct sipx_ring *ring)
+-{
+-	unsigned long flags;
+-	int ret = 0;
+-
+-	spin_lock_irqsave(&ring->lock, flags);
+-	ret = READ_ONCE(ring->fifo_info->fifo_wrptr) -
+-	      READ_ONCE(ring->fifo_info->fifo_rdptr);
+-	spin_unlock_irqrestore(&ring->lock, flags);
+-
+-	return ret;
+-}
+-
+-static int sipx_recover_channel(struct sipx_mgr *sipx,
+-				struct sipx_channel *sipx_chan)
+-{
+-	struct sipx_fifo_info *fifo_info;
+-	unsigned long flags;
+-	int pos;
+-	struct sblock blk;
+-
+-	sipx_chan->state = SBLOCK_STATE_IDLE;
+-
+-	/* clean dl record blk */
+-	if (sipx_chan->dl_record_flag) {
+-		SIPX_INFO("%s dl_record_flag = 1\n", __func__);
+-
+-		blk = sipx_chan->dl_record_blk;
+-		if (IS_DL_BLK_ACK(sipx, &blk))
+-			sipx_put_item_into_pool(sipx->dl_pool, &blk);
+-		else
+-			sipx_put_item_into_pool(sipx->dl_ack_pool, &blk);
+-
+-		sipx_chan->dl_record_flag = 0;
+-	}
+-
+-	/* clean dl ring blks */
+-	fifo_info = sipx_chan->dl_ring->fifo_info;
+-
+-	spin_lock_irqsave(&sipx_chan->dl_ring->lock, flags);
+-
+-	while (READ_ONCE(fifo_info->fifo_wrptr) !=
+-	       READ_ONCE(fifo_info->fifo_rdptr)) {
+-		SIPX_INFO("%s %s 0x%p, wrptr: 0x%x, rdptr:0x%x\n", __func__,
+-			  "dl_ring fifo_info:", (void *)fifo_info,
+-			  (unsigned int)READ_ONCE(fifo_info->fifo_wrptr),
+-			  (unsigned int)READ_ONCE(fifo_info->fifo_rdptr));
+-
+-		pos = sblock_get_ringpos(READ_ONCE(fifo_info->fifo_rdptr),
+-					 sipx_chan->dl_ring->fifo_size);
+-		blk.index = sipx_chan->dl_ring->fifo_buf[pos].index;
+-
+-		WRITE_ONCE(fifo_info->fifo_rdptr,
+-			   READ_ONCE(fifo_info->fifo_rdptr) + 1);
+-
+-		sipx_put_item_into_pool(sipx->dl_pool, &blk);
+-	}
+-	spin_unlock_irqrestore(&sipx_chan->dl_ring->lock, flags);
+-
+-	/* clean dl ack ring blks */
+-	fifo_info = sipx_chan->dl_ack_ring->fifo_info;
+-
+-	spin_lock_irqsave(&sipx_chan->dl_ack_ring->lock, flags);
+-
+-	while (READ_ONCE(fifo_info->fifo_wrptr) !=
+-	       READ_ONCE(fifo_info->fifo_rdptr)) {
+-		SIPX_INFO("%s %s0x%p, wrptr:0x%x, rdptr:0x%x\n", __func__,
+-			  "dl_ack_ring fifo_info:", (void *)fifo_info,
+-			  (unsigned int)READ_ONCE(fifo_info->fifo_wrptr),
+-			  (unsigned int)READ_ONCE(fifo_info->fifo_rdptr));
+-
+-		pos = sblock_get_ringpos(READ_ONCE(fifo_info->fifo_rdptr),
+-					 sipx_chan->dl_ack_ring->fifo_size);
+-		blk.index = sipx_chan->dl_ack_ring->fifo_buf[pos].index;
+-
+-		WRITE_ONCE(fifo_info->fifo_rdptr,
+-			   READ_ONCE(fifo_info->fifo_rdptr) + 1);
+-
+-		sipx_put_item_into_pool(sipx->dl_ack_pool, &blk);
+-	}
+-	spin_unlock_irqrestore(&sipx_chan->dl_ack_ring->lock, flags);
+-
+-	/* clean ul ring blks */
+-	fifo_info = sipx_chan->ul_ring->fifo_info;
+-
+-	spin_lock_irqsave(&sipx_chan->ul_ring->lock, flags);
+-	while (READ_ONCE(fifo_info->fifo_wrptr) !=
+-	       READ_ONCE(fifo_info->fifo_rdptr)) {
+-		SIPX_INFO("%s %s0x%p, wrptr:0x%x, rdptr:0x%x\n", __func__,
+-			  "ul_ring fifo_info:", (void *)fifo_info,
+-			  (unsigned int)READ_ONCE(fifo_info->fifo_wrptr),
+-			  (unsigned int)READ_ONCE(fifo_info->fifo_rdptr));
+-
+-		pos = sblock_get_ringpos(READ_ONCE(fifo_info->fifo_rdptr),
+-					 sipx_chan->ul_ring->fifo_size);
+-		blk.index = sipx_chan->ul_ring->fifo_buf[pos].index;
+-
+-		WRITE_ONCE(fifo_info->fifo_rdptr,
+-			   READ_ONCE(fifo_info->fifo_rdptr) + 1);
+-
+-		sipx_put_item_into_pool(sipx->ul_pool, &blk);
+-	}
+-	spin_unlock_irqrestore(&sipx_chan->ul_ring->lock, flags);
+-
+-	/* clean ul ack ring blks */
+-	fifo_info = sipx_chan->ul_ack_ring->fifo_info;
+-
+-	spin_lock_irqsave(&sipx_chan->ul_ack_ring->lock, flags);
+-	while (READ_ONCE(fifo_info->fifo_wrptr) !=
+-	       READ_ONCE(fifo_info->fifo_rdptr)) {
+-		SIPX_INFO("%s %s0x%p, wrptr:0x%x, rdptr:0x%x\n", __func__,
+-			  "ul_ack_ring fifo_info:", (void *)fifo_info,
+-			  (unsigned int)READ_ONCE(fifo_info->fifo_wrptr),
+-			  (unsigned int)READ_ONCE(fifo_info->fifo_rdptr));
+-
+-		pos = sblock_get_ringpos(READ_ONCE(fifo_info->fifo_rdptr),
+-					 sipx_chan->ul_ack_ring->fifo_size);
+-		blk.index = sipx_chan->ul_ack_ring->fifo_buf[pos].index;
+-
+-		WRITE_ONCE(fifo_info->fifo_rdptr,
+-			   READ_ONCE(fifo_info->fifo_rdptr) + 1);
+-
+-		sipx_put_item_into_pool(sipx->ul_ack_pool, &blk);
+-	}
+-	spin_unlock_irqrestore(&sipx_chan->ul_ack_ring->lock, flags);
+-
+-	/* clean ul record blk */
+-	if (sipx_chan->ul_record_flag) {
+-		SIPX_INFO("%s ul_record_flag = 1\n", __func__);
+-
+-		blk = sipx_chan->ul_record_blk;
+-		if (IS_UL_BLK_ACK(sipx, &blk))
+-			sipx_put_item_into_pool(sipx->ul_ack_pool, &blk);
+-		else
+-			sipx_put_item_into_pool(sipx->ul_pool, &blk);
+-
+-		sipx_chan->ul_record_flag = 0;
+-	}
+-
+-	return 0;
+-}
+-
+-/* recover all channels here */
+-static int sipx_recover(u8 dst)
+-{
+-	struct sipx_mgr *sipx = (struct sipx_mgr *)sipxs[dst];
+-	struct sipx_channel *sipx_chan;
+-	int i;
+-
+-	if (!sipx)
+-		return -ENODEV;
+-
+-	for (i = 0; i < SMSG_VALID_CH_NR; i++) {
+-		sipx_chan = sipx->channels[i];
+-		if (sipx_chan && (sipx_chan->state == SBLOCK_STATE_READY))
+-			sipx_recover_channel(sipx, sipx_chan);
+-	}
+-
+-	return 0;
+-}
+-
+-static int sipx_thread(void *data)
+-{
+-	struct sipx_channel *sipx_chan = data;
+-	struct smsg mcmd, mrecv;
+-	int rval;
+-
+-	/* since the channel open may hang, we call it in the seblock thread */
+-	rval = smsg_ch_open(sipx_chan->dst, sipx_chan->channel, -1);
+-	if (rval != 0) {
+-		SIPX_ERR("Failed to open channel %d\n", sipx_chan->channel);
+-		/* assign NULL to thread poniter as failed to open channel */
+-		sipx_chan->thread = NULL;
+-		return rval;
+-	}
+-	/* msleep(30 * 1000); */
+-	/* handle the seblock events */
+-	while (!kthread_should_stop()) {
+-		/* monitor seblock recv smsg */
+-		smsg_set(&mrecv, sipx_chan->channel, 0, 0, 0);
+-		rval = smsg_recv(sipx_chan->dst, &mrecv, -1);
+-		if (rval == -EIO || rval == -ENODEV) {
+-			/* channel state is FREE */
+-			usleep_range(5000, 10000);
+-			continue;
+-		}
+-
+-		SIPX_DEBUG(
+-			"sipx thread recv msg: dst=%d, channel=%d, type=%d, flag=0x%04x, value=0x%08x\n",
+-			sipx_chan->dst, sipx_chan->channel, mrecv.type,
+-			mrecv.flag, mrecv.value);
+-
+-		switch (mrecv.type) {
+-		case SMSG_TYPE_OPEN:
+-			/* just ack open */
+-			smsg_open_ack(sipx_chan->dst, sipx_chan->channel);
+-			break;
+-		case SMSG_TYPE_CLOSE:
+-			/* handle channel close */
+-			smsg_close_ack(sipx_chan->dst, sipx_chan->channel);
+-			if (sipx_chan->handler)
+-				sipx_chan->handler(SBLOCK_NOTIFY_CLOSE,
+-						   sipx_chan->data);
+-
+-			sipx_chan->state = SBLOCK_STATE_IDLE;
+-			break;
+-		case SMSG_TYPE_CMD:
+-			/* respond cmd done for seblock init */
+-			WARN_ON(mrecv.flag != SMSG_CMD_SBLOCK_INIT);
+-
+-			/* handle channel recovery */
+-			if (sipx_chan->sipx->recovery && (mrecv.value == 0)) {
+-				SIPX_INFO(
+-					"sipx_chan start recover! recv msg:dst=%d, channel=%d, type=%d flag=0x%04x, value=0x%08x\n",
+-					sipx_chan->dst, sipx_chan->channel,
+-					mrecv.type, mrecv.flag, mrecv.value);
+-				if (sipx_chan->handler)
+-					sipx_chan->handler(SBLOCK_NOTIFY_CLOSE,
+-							   sipx_chan->data);
+-
+-				/*no channel of CP is opened yet*/
+-				sipx_recover(sipx_chan->dst);
+-			}
+-
+-			/* give smem address to cp side */
+-			smsg_set(&mcmd, sipx_chan->channel, SMSG_TYPE_DONE,
+-				 SMSG_DONE_SBLOCK_INIT,
+-				 sipx_chan->sipx->dst_smem_addr);
+-			smsg_send(sipx_chan->dst, &mcmd, -1);
+-			sipx_chan->state = SBLOCK_STATE_READY;
+-			sipx_chan->sipx->recovery = 1;
+-			if (sipx_chan->handler)
+-				sipx_chan->handler(SBLOCK_NOTIFY_OPEN,
+-						   sipx_chan->data);
+-			break;
+-		case SMSG_TYPE_EVENT:
+-			/* handle seblock send/release events */
+-			switch (mrecv.flag) {
+-			case SMSG_EVENT_SBLOCK_SEND:
+-				if (sipx_chan->handler)
+-					sipx_chan->handler(SBLOCK_NOTIFY_RECV,
+-							   sipx_chan->data);
+-
+-				break;
+-			case SMSG_EVENT_SBLOCK_RELEASE:
+-#ifdef UL_TEST
+-				if (sipx_chan->channel == 7) {
+-					g_flow_on = 1;
+-					SIPX_INFO(
+-						"channel 7 leave flow ctrl\n");
+-				}
+-#endif
+-				if (sipx_chan->handler)
+-					sipx_chan->handler(SBLOCK_NOTIFY_GET,
+-							   sipx_chan->data);
+-
+-				break;
+-			default:
+-				rval = 1;
+-				break;
+-			}
+-			break;
+-		default:
+-			rval = 1;
+-			break;
+-		};
+-
+-		if (rval) {
+-			SIPX_INFO("%s: %d-%d, %d, %d, %d\n",
+-				  "non-handled sipx_chan msg", sipx_chan->dst,
+-				  sipx_chan->channel, mrecv.type, mrecv.flag,
+-				  mrecv.value);
+-			rval = 0;
+-		}
+-	}
+-
+-	SIPX_ERR("sipx_chan %d-%d thread stop", sipx_chan->dst,
+-		 sipx_chan->channel);
+-
+-	return rval;
+-}
+-
+-static int create_sipx_pool_ctrl(struct sipx_pool **out,
+-				 struct sipx_fifo_info *fifo_info,
+-				 void *fifo_virt, void *blk_virt,
+-				 struct sipx_mgr *sipx)
+-{
+-	struct sipx_pool *pool = NULL;
+-	int i;
+-
+-	pool = kzalloc_obj(*pool, GFP_KERNEL);
+-	if (!pool) {
+-		SIPX_ERR("Failed to allocate seblock_fifo for seblock\n");
+-		return -ENOMEM;
+-	}
+-
+-	pool->fifo_info = fifo_info;
+-	pool->fifo_buf = fifo_virt;
+-	pool->fifo_size = READ_ONCE(fifo_info->fifo_size);
+-	pool->blks_buf = blk_virt;
+-	pool->blk_size = READ_ONCE(fifo_info->blk_size);
+-	pool->sipx = sipx;
+-
+-	if (blk_virt) {
+-		for (i = 0; i < pool->fifo_size; i++) {
+-			pool->fifo_buf[i].index = i;
+-			pool->fifo_buf[i].desc = 0;
+-			WRITE_ONCE(pool->fifo_info->fifo_wrptr,
+-				   READ_ONCE(pool->fifo_info->fifo_wrptr) + 1);
+-		}
+-	}
+-	spin_lock_init(&pool->lock);
+-
+-	*out = pool;
+-	return 0;
+-}
+-
+-static int destroy_spix_mgr(struct sipx_mgr *sipx)
+-{
+-	kfree(sipx->dl_pool);
+-	kfree(sipx->dl_ack_pool);
+-	kfree(sipx->ul_pool);
+-	kfree(sipx->ul_ack_pool);
+-
+-	if (sipx->smem_virt)
+-		shmem_ram_unmap(sipx->dst, sipx->smem_virt);
+-
+-#ifdef CONFIG_SPRD_SIPC_MEM_CACHE_EN
+-	if (sipx->smem_cached_virt)
+-		shmem_ram_unmap(sipx->dst, sipx->smem_cached_virt);
+-#endif
+-	if (sipx->smem_addr)
+-		smem_free(sipx->dst, sipx->smem_addr, sipx->smem_size);
+-
+-	kfree(sipx);
+-
+-	return 0;
+-}
+-
+-static int create_sipx_mgr(struct sipx_mgr **out, struct sipx_init_data *pdata)
+-{
+-	struct sipx_mgr *sipx = NULL;
+-	struct smsg_ipc *sipc;
+-	struct sipx_fifo_info *fifo_info;
+-	u32 *chan_cnt;
+-	u32 offset_chan_cnt;
+-	u32 offset_dl_blk;
+-	u32 offset_dl_fifo;
+-	u32 offset_dl_ack_blk;
+-	u32 offset_dl_ack_fifo;
+-	u32 offset_ul_blk;
+-	u32 offset_ul_fifo;
+-	u32 offset_ul_ack_blk;
+-	u32 offset_ul_ack_fifo;
+-	u32 total_size = 0;
+-	void *p = NULL;
+-	int ret = 0;
+-	phys_addr_t offset = 0;
+-
+-	sipc = smsg_ipcs[pdata->dst];
+-	if (!sipc) {
+-		pr_err("%s: sipc is null, dst = %d\n", __func__, pdata->dst);
+-		return -ENODEV;
+-	}
+-	sipx = kzalloc_obj(*sipx, GFP_KERNEL);
+-	if (!sipx) {
+-		SIPX_ERR("Failed to kzalloc for sipx\n");
+-		return -ENOMEM;
+-	}
+-
+-	memset(sipx, 0, sizeof(struct sipx_mgr));
+-	sipx->pdata = pdata;
+-	sipx->dst = pdata->dst;
+-	sipx->dl_pool_size = pdata->dl_pool_size;
+-	sipx->dl_ack_pool_size = pdata->dl_ack_pool_size;
+-	sipx->ul_pool_size = pdata->ul_pool_size;
+-	sipx->ul_ack_pool_size = pdata->ul_ack_pool_size;
+-	sipx->blk_size =
+-		ALIGN(NORMAL_BLOCK_SIZE + SIPX_BLOCK_PENDING, SMP_CACHE_BYTES);
+-	sipx->ack_blk_size =
+-		ALIGN(ACK_BLOCK_SIZE + SIPX_BLOCK_PENDING, SMP_CACHE_BYTES);
+-
+-	/* allocated smem based on seblock_main_mgr structure , dl & ul mixed */
+-
+-	/* dl pool info */
+-	total_size = sizeof(struct sipx_fifo_info);
+-	/* dl ack pool info */
+-	total_size += sizeof(struct sipx_fifo_info);
+-	/* ul pool info */
+-	total_size += sizeof(struct sipx_fifo_info);
+-	/* ul ack pool info */
+-	total_size += sizeof(struct sipx_fifo_info);
+-	offset_chan_cnt = total_size;
+-
+-	/* channels smem ptr */
+-	total_size += sizeof(u32) * (SMSG_CH_NR + 1);
+-	offset_dl_blk = total_size;
+-
+-	/* dl blk mem */
+-	total_size += sipx->dl_pool_size * sipx->blk_size;
+-	offset_dl_ack_blk = total_size;
+-
+-	/* dl ack blk mem */
+-	total_size += sipx->dl_ack_pool_size * sipx->ack_blk_size;
+-	offset_ul_blk = total_size;
+-
+-	/* ul blk mem */
+-	total_size += sipx->ul_pool_size * sipx->blk_size;
+-	offset_ul_ack_blk = total_size;
+-
+-	/* ul ack blk mem */
+-	total_size += sipx->ul_ack_pool_size * sipx->ack_blk_size;
+-	offset_dl_fifo = total_size;
+-
+-	/* dl pool fifo mem */
+-	total_size += sizeof(struct sipx_blk_item) * sipx->dl_pool_size;
+-	offset_dl_ack_fifo = total_size;
+-
+-	/* dl ack pool fifo mem */
+-	total_size += sizeof(struct sipx_blk_item) * sipx->dl_ack_pool_size;
+-	offset_ul_fifo = total_size;
+-
+-	/* ul pool fifo mem */
+-	total_size += sizeof(struct sipx_blk_item) * sipx->ul_pool_size;
+-	offset_ul_ack_fifo = total_size;
+-
+-	/* ul ack pool fifo mem */
+-	total_size += sizeof(struct sipx_blk_item) * sipx->ul_ack_pool_size;
+-
+-	sipx->smem_size = ALIGN(total_size, SBLOCK_ALIGN_BYTES);
+-	sipx->smem_addr = smem_alloc(sipx->dst, sipx->smem_size);
+-
+-	if (!sipx->smem_addr) {
+-		SIPX_ERR("Failed to allocate smem for sipx\n");
+-		ret = -ENOMEM;
+-		goto fail;
+-	}
+-	sipx->dst_smem_addr =
+-		sipx->smem_addr - sipc->smem_base + sipc->dst_smem_base;
+-#ifdef CONFIG_PHYS_ADDR_T_64BIT
+-	offset = sipc->high_offset;
+-	offset = offset << 32;
+-#endif
+-	pr_info("%s:offset = 0x%llx!\n", __func__, offset);
+-	sipx->smem_virt = shmem_ram_vmap_nocache(sipx->dst, sipx->smem_addr,
+-						 sipx->smem_size);
+-	if (!sipx->smem_virt) {
+-		SIPX_ERR("Failed to map smem for sipx\n");
+-		ret = -EFAULT;
+-		goto fail;
+-	}
+-
+-#ifdef CONFIG_SPRD_SIPC_MEM_CACHE_EN
+-	sipx->smem_cached_virt = shmem_ram_vmap_cache(
+-		sipx->dst, sipx->smem_addr, sipx->smem_size);
+-
+-	if (!sipx->smem_cached_virt) {
+-		SIPX_ERR("Failed to map cached smem for sipx\n");
+-		ret = -EFAULT;
+-		goto fail;
+-	}
+-#endif
+-
+-	/* memset(sipx->smem_virt, 0, sipx->smem_size); */
+-	for (p = sipx->smem_virt; p < sipx->smem_virt + sipx->smem_size;) {
+-#ifdef CONFIG_64BIT
+-		*(uint64_t *)p = 0x0;
+-		p += sizeof(uint64_t);
+-#else
+-		*(u32 *)p = 0x0;
+-		p += sizeof(u32);
+-#endif
+-	}
+-
+-	/* dl pool */
+-	fifo_info = (struct sipx_fifo_info *)(sipx->smem_virt);
+-	/* offset of smem_addr */
+-	WRITE_ONCE(fifo_info->blks_addr, sipx->dst_smem_addr + offset_dl_blk);
+-	WRITE_ONCE(fifo_info->fifo_size, sipx->dl_pool_size);
+-	WRITE_ONCE(fifo_info->blk_size, sipx->blk_size);
+-	WRITE_ONCE(fifo_info->fifo_rdptr, 0);
+-	WRITE_ONCE(fifo_info->fifo_wrptr, 0);
+-	/* offset of smem_addr */
+-	WRITE_ONCE(fifo_info->fifo_addr, sipx->dst_smem_addr + offset_dl_fifo);
+-#ifdef CONFIG_SPRD_SIPC_MEM_CACHE_EN
+-	ret = create_sipx_pool_ctrl(&sipx->dl_pool, fifo_info,
+-				    sipx->smem_virt + offset_dl_fifo,
+-				    sipx->smem_cached_virt + offset_dl_blk,
+-				    sipx);
+-#else
+-	ret = create_sipx_pool_ctrl(&sipx->dl_pool, fifo_info,
+-				    sipx->smem_virt + offset_dl_fifo,
+-				    sipx->smem_virt + offset_dl_blk, sipx);
+-#endif
+-
+-	if (ret)
+-		goto fail;
+-
+-	/* dl ack pool */
+-	fifo_info = (struct sipx_fifo_info *)((sipx->smem_virt) +
+-					      sizeof(struct sipx_fifo_info));
+-	WRITE_ONCE(fifo_info->blks_addr,
+-		   sipx->dst_smem_addr + offset_dl_ack_blk);
+-	WRITE_ONCE(fifo_info->fifo_size, sipx->dl_ack_pool_size);
+-	WRITE_ONCE(fifo_info->blk_size, sipx->ack_blk_size);
+-	WRITE_ONCE(fifo_info->fifo_rdptr, 0);
+-	WRITE_ONCE(fifo_info->fifo_wrptr, 0);
+-	WRITE_ONCE(fifo_info->fifo_addr,
+-		   sipx->dst_smem_addr + offset_dl_ack_fifo);
+-#ifdef CONFIG_SPRD_SIPC_MEM_CACHE_EN
+-	ret = create_sipx_pool_ctrl(&sipx->dl_ack_pool, fifo_info,
+-				    sipx->smem_virt + offset_dl_ack_fifo,
+-				    sipx->smem_cached_virt + offset_dl_ack_blk,
+-				    sipx);
+-#else
+-	ret = create_sipx_pool_ctrl(&sipx->dl_ack_pool, fifo_info,
+-				    sipx->smem_virt + offset_dl_ack_fifo,
+-				    sipx->smem_virt + offset_dl_ack_blk, sipx);
+-#endif
+-
+-	if (ret)
+-		goto fail;
+-
+-	/* ul pool */
+-	fifo_info =
+-		(struct sipx_fifo_info *)((sipx->smem_virt) +
+-					  sizeof(struct sipx_fifo_info) * 2);
+-	/* offset of smem_addr */
+-	WRITE_ONCE(fifo_info->blks_addr, sipx->dst_smem_addr + offset_ul_blk);
+-	WRITE_ONCE(fifo_info->fifo_size, sipx->ul_pool_size);
+-	WRITE_ONCE(fifo_info->blk_size, sipx->blk_size);
+-	WRITE_ONCE(fifo_info->fifo_rdptr, 0);
+-	WRITE_ONCE(fifo_info->fifo_wrptr, 0);
+-
+-	/* offset of smem_addr */
+-	WRITE_ONCE(fifo_info->fifo_addr, sipx->dst_smem_addr + offset_ul_fifo);
+-#ifdef CONFIG_SPRD_SIPC_MEM_CACHE_EN
+-	ret = create_sipx_pool_ctrl(&sipx->ul_pool, fifo_info,
+-				    sipx->smem_virt + offset_ul_fifo,
+-				    sipx->smem_cached_virt + offset_ul_blk,
+-				    sipx);
+-#else
+-	ret = create_sipx_pool_ctrl(&sipx->ul_pool, fifo_info,
+-				    sipx->smem_virt + offset_ul_fifo,
+-				    sipx->smem_virt + offset_ul_blk, sipx);
+-#endif
+-	if (ret)
+-		goto fail;
+-
+-	/* ul ack pool */
+-	fifo_info =
+-		(struct sipx_fifo_info *)((sipx->smem_virt) +
+-					  sizeof(struct sipx_fifo_info) * 3);
+-	WRITE_ONCE(fifo_info->blks_addr,
+-		   sipx->dst_smem_addr + offset_ul_ack_blk);
+-	WRITE_ONCE(fifo_info->fifo_size, sipx->ul_ack_pool_size);
+-	WRITE_ONCE(fifo_info->blk_size, sipx->ack_blk_size);
+-	WRITE_ONCE(fifo_info->fifo_rdptr, 0);
+-	WRITE_ONCE(fifo_info->fifo_wrptr, 0);
+-	WRITE_ONCE(fifo_info->fifo_addr,
+-		   sipx->dst_smem_addr + offset_ul_ack_fifo);
+-
+-#ifdef CONFIG_SPRD_SIPC_MEM_CACHE_EN
+-	ret = create_sipx_pool_ctrl(&sipx->ul_ack_pool, fifo_info,
+-				    sipx->smem_virt + offset_ul_ack_fifo,
+-				    sipx->smem_cached_virt + offset_ul_ack_blk,
+-				    sipx);
+-#else
+-	ret = create_sipx_pool_ctrl(&sipx->ul_ack_pool, fifo_info,
+-				    sipx->smem_virt + offset_ul_ack_fifo,
+-				    sipx->smem_virt + offset_ul_ack_blk, sipx);
+-#endif
+-	if (ret)
+-		goto fail;
+-
+-	/* channel count */
+-	chan_cnt = (u32 *)((sipx->smem_virt) + offset_chan_cnt);
+-	WRITE_ONCE(*chan_cnt, SMSG_CH_NR);
+-#ifdef CONFIG_SPRD_SIPC_MEM_CACHE_EN
+-	/* save pool start pos */
+-	sipx->dl_ack_start = sipx->smem_cached_virt + offset_dl_ack_blk;
+-	sipx->ul_ack_start = sipx->smem_cached_virt + offset_ul_ack_blk;
+-#else
+-	/* save pool start pos */
+-	sipx->dl_ack_start = sipx->smem_virt + offset_dl_ack_blk;
+-	sipx->ul_ack_start = sipx->smem_virt + offset_ul_ack_blk;
+-#endif
+-
+-	sipx->state = SIPX_STATE_READY;
+-	*out = sipx;
+-
+-	return ret;
+-fail:
+-	if (sipx)
+-		destroy_spix_mgr(sipx);
+-
+-	return ret;
+-}
+-
+-static int sipx_parse_dt(struct sipx_init_data **init, struct device *dev)
+-{
+-	struct sipx_init_data *pdata = NULL;
+-	struct device_node *np = dev->of_node;
+-	int ret;
+-	u32 data;
+-
+-	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
+-	if (!pdata)
+-		return -ENOMEM;
+-
+-	ret = of_property_read_string(np, "sprd,name",
+-				      (const char **)&pdata->name);
+-	if (ret)
+-		goto error;
+-
+-	ret = of_property_read_u32(np, "sprd,dst", (u32 *)&data);
+-	if (ret)
+-		goto error;
+-
+-	pdata->dst = (u8)data;
+-
+-	ret = of_property_read_u32(np, "sprd,dl-pool",
+-				   (u32 *)&pdata->dl_pool_size);
+-	if (ret)
+-		goto error;
+-
+-	ret = of_property_read_u32(np, "sprd,dl-ack-pool",
+-				   (u32 *)&pdata->dl_ack_pool_size);
+-	if (ret)
+-		goto error;
+-
+-	ret = of_property_read_u32(np, "sprd,ul-pool",
+-				   (u32 *)&pdata->ul_pool_size);
+-	if (ret)
+-		goto error;
+-
+-	ret = of_property_read_u32(np, "sprd,ul-ack-pool",
+-				   (u32 *)&pdata->ul_ack_pool_size);
+-	if (ret)
+-		goto error;
+-
+-	*init = pdata;
+-	return 0;
+-error:
+-	devm_kfree(dev, pdata);
+-	*init = NULL;
+-	return ret;
+-}
+-
+-static inline void sipx_destroy_pdata(struct sipx_init_data **init,
+-				      struct device *dev)
+-{
+-	struct sipx_init_data *pdata = *init;
+-
+-	devm_kfree(dev, pdata);
+-	*init = NULL;
+-}
+-
+-u32 sipx_get_ack_blk_len(u8 dst)
+-{
+-	struct sipx_mgr *sipx = (struct sipx_mgr *)sipxs[dst];
+-
+-	return (sipx->ack_blk_size - SIPX_BLOCK_PENDING);
+-}
+-EXPORT_SYMBOL_GPL(sipx_get_ack_blk_len);
+-
+-int sipx_get(u8 dst, u8 channel, struct sblock *blk, int is_ack)
+-{
+-	struct sipx_mgr *sipx = (struct sipx_mgr *)sipxs[dst];
+-	struct sipx_channel *sipx_chan;
+-	int ret = 0;
+-	u8 ch_index;
+-
+-	ch_index = sipc_channel2index(channel);
+-	if (ch_index == INVALID_CHANEL_INDEX) {
+-		SIPX_ERR("%s:channel %d invalid!\n", __func__, channel);
+-		return -EINVAL;
+-	}
+-
+-	if (!sipx) {
+-		SIPX_ERR("sipx-%d-%d %s sipx not exist!\n", dst, channel,
+-			 __func__);
+-		return -ENODEV;
+-	}
+-
+-	sipx_chan = sipx->channels[ch_index];
+-
+-	if (!sipx_chan) {
+-		SIPX_ERR("sipx-%d-%d %s not exist\n", dst, channel, __func__);
+-		return -ENODEV;
+-	}
+-
+-	if (sipx_chan->state != SBLOCK_STATE_READY) {
+-		SIPX_ERR("sipx-%d-%d %s not ready!\n", dst, channel, __func__);
+-		return -EIO;
+-	}
+-
+-	/* ack packet, get from ack pool first */
+-	if (is_ack) {
+-		ret = sipx_get_item_from_pool(sipx->ul_ack_pool, blk);
+-		if (ret) {
+-			SIPX_INFO("%s %d-%d ack pool is empty!\n", __func__,
+-				  dst, channel);
+-			/* ack packet, when  ack pool is empty,
+-			 * try normal pool
+-			 */
+-			ret = sipx_get_item_from_pool(sipx->ul_pool, blk);
+-		}
+-	} else {
+-		/* normal packet just normal pool */
+-		ret = sipx_get_item_from_pool(sipx->ul_pool, blk);
+-	}
+-
+-	if (ret) {
+-		SIPX_INFO("%s %d-%d ack:%d is empty!\n", __func__, dst, channel,
+-			  is_ack);
+-		return -EAGAIN;
+-	}
+-
+-	/* save to records */
+-	sipx_chan->ul_record_flag = 1;
+-	sipx_chan->ul_record_blk = *blk;
+-
+-	/* do offset */
+-	blk->offset = SIPX_UL_OFFSET;
+-	blk->addr += SIPX_UL_OFFSET;
+-	blk->length -= SIPX_UL_OFFSET;
+-
+-	return 0;
+-}
+-EXPORT_SYMBOL_GPL(sipx_get);
+-
+-/* put back */
+-int sipx_put(u8 dst, u8 channel, struct sblock *blk)
+-{
+-	struct sipx_mgr *sipx = (struct sipx_mgr *)sipxs[dst];
+-	struct sipx_channel *sipx_chan;
+-	u8 ch_index;
+-
+-	ch_index = sipc_channel2index(channel);
+-	if (ch_index == INVALID_CHANEL_INDEX) {
+-		SIPX_ERR("%s:channel %d invalid!\n", __func__, channel);
+-		return -EINVAL;
+-	}
+-
+-	if (!sipx) {
+-		SIPX_ERR("sipx-%d-%d %s sipx not exist!\n", dst, channel,
+-			 __func__);
+-		return -ENODEV;
+-	}
+-
+-	sipx_chan = sipx->channels[ch_index];
+-
+-	if (!sipx_chan) {
+-		SIPX_ERR("sipx-%d-%d %s not exist\n", dst, channel, __func__);
+-		return -ENODEV;
+-	}
+-
+-	if (sipx_chan->state != SBLOCK_STATE_READY) {
+-		SIPX_ERR("sipx-%d-%d %s not ready!\n", dst, channel, __func__);
+-		return -EIO;
+-	}
+-
+-	if (IS_UL_BLK_ACK(sipx, blk))
+-		sipx_put_item_back_to_pool(sipx->ul_ack_pool, blk);
+-	else
+-		sipx_put_item_back_to_pool(sipx->ul_pool, blk);
+-
+-	/* pop from records */
+-	sipx_chan->ul_record_flag = 0;
+-
+-	return 0;
+-}
+-EXPORT_SYMBOL_GPL(sipx_put);
+-
+-static enum hrtimer_restart sipx_ul_trigger_timer_handler(struct hrtimer *timer)
+-{
+-	struct sipx_channel *sipx_chan =
+-		container_of(timer, struct sipx_channel, ul_timer);
+-	struct smsg mevt;
+-	unsigned long flags;
+-
+-	spin_lock_irqsave(&sipx_chan->lock, flags);
+-
+-	sipx_chan->ul_timer_active = 0;
+-	smsg_set(&mevt, sipx_chan->channel, SMSG_TYPE_EVENT,
+-		 SMSG_EVENT_SBLOCK_SEND, 0);
+-	smsg_send(sipx_chan->dst, &mevt, 0);
+-
+-	spin_unlock_irqrestore(&sipx_chan->lock, flags);
+-
+-	SIPX_DEBUG("sipx trigger cp in timer func\n");
+-
+-	return HRTIMER_NORESTART;
+-}
+-
+-static void sipx_force_ul_trigger(struct sipx_channel *sipx_chan)
+-{
+-	struct smsg mevt;
+-	unsigned long flags;
+-
+-	spin_lock_irqsave(&sipx_chan->lock, flags);
+-
+-	if (sipx_chan->ul_timer_active) {
+-		hrtimer_try_to_cancel(&sipx_chan->ul_timer);
+-		sipx_chan->ul_timer_active = 0;
+-	}
+-	smsg_set(&mevt, sipx_chan->channel, SMSG_TYPE_EVENT,
+-		 SMSG_EVENT_SBLOCK_SEND, 0);
+-	smsg_send(sipx_chan->dst, &mevt, 0);
+-
+-	spin_unlock_irqrestore(&sipx_chan->lock, flags);
+-
+-	SIPX_DEBUG("sipx trigger cp force\n");
+-}
+-
+-static void sipx_start_trigger_timer(struct sipx_channel *sipx_chan)
+-{
+-	sipx_chan->ul_timer_active = 1;
+-	hrtimer_start(&sipx_chan->ul_timer, sipx_chan->ul_timer_val,
+-		      HRTIMER_MODE_REL);
+-}
+-
+-static void sipx_try_trigger_cp(struct sipx_channel *sipx_chan)
+-{
+-	unsigned long flags;
+-
+-	spin_lock_irqsave(&sipx_chan->lock, flags);
+-	if (!sipx_chan->ul_timer_active)
+-		sipx_start_trigger_timer(sipx_chan);
+-
+-	spin_unlock_irqrestore(&sipx_chan->lock, flags);
+-}
+-
+-int sipx_flush(u8 dst, u8 channel)
+-{
+-	struct sipx_mgr *sipx = (struct sipx_mgr *)sipxs[dst];
+-	struct sipx_channel *sipx_chan;
+-	int rval = 0;
+-	u8 ch_index;
+-
+-	ch_index = sipc_channel2index(channel);
+-	if (ch_index == INVALID_CHANEL_INDEX) {
+-		SIPX_ERR("%s:channel %d invalid!\n", __func__, channel);
+-		return -EINVAL;
+-	}
+-
+-	if (!sipx) {
+-		SIPX_ERR("sipx-%d-%d %s sipx not exist!\n", dst, channel,
+-			 __func__);
+-		return -ENODEV;
+-	}
+-
+-	sipx_chan = sipx->channels[ch_index];
+-
+-	if (!sipx_chan) {
+-		SIPX_ERR("sipx-%d-%d %s not exist\n", dst, channel, __func__);
+-		return -ENODEV;
+-	}
+-
+-	if (sipx_chan->state != SBLOCK_STATE_READY) {
+-		SIPX_ERR("sipx-%d-%d %s not ready!\n", dst, channel, __func__);
+-		return -EIO;
+-	}
+-
+-	/* sipx_try_trigger_cp(sipx_chan); */
+-
+-	return rval;
+-}
+-EXPORT_SYMBOL_GPL(sipx_flush);
+-
+-int sipx_send(u8 dst, u8 channel, struct sblock *blk)
+-{
+-	struct sipx_mgr *sipx = (struct sipx_mgr *)sipxs[dst];
+-	struct sipx_channel *sipx_chan;
+-	int full = 0;
+-	int yell = 0;
+-	u8 ch_index;
+-
+-	ch_index = sipc_channel2index(channel);
+-	if (ch_index == INVALID_CHANEL_INDEX) {
+-		SIPX_ERR("%s:channel %d invalid!\n", __func__, channel);
+-		return -EINVAL;
+-	}
+-
+-	if (!sipx) {
+-		SIPX_ERR("sipx-%d-%d %s sipx not exist!\n", dst, channel,
+-			 __func__);
+-		return -ENODEV;
+-	}
+-
+-	sipx_chan = sipx->channels[ch_index];
+-
+-	if (!sipx_chan) {
+-		SIPX_ERR("sipx-%d-%d %s not exist\n", dst, channel, __func__);
+-		return -ENODEV;
+-	}
+-
+-	if (sipx_chan->state != SBLOCK_STATE_READY) {
+-		SIPX_ERR("sipx-%d-%d %s not ready!\n", dst, channel, __func__);
+-		return -EIO;
+-	}
+-
+-	SIPX_DEBUG("dst=%d, channel=%d, addr=%p, len=%d\n", dst, channel,
+-		   blk->addr, blk->length);
+-
+-	if (IS_UL_BLK_ACK(sipx, blk)) {
+-		sipx_put_item_to_ring(sipx_chan->ul_ack_ring, blk, &yell,
+-				      &full);
+-	} else {
+-		sipx_put_item_to_ring(sipx_chan->ul_ring, blk, &yell, &full);
+-	}
+-
+-	/* pop from records */
+-	sipx_chan->ul_record_flag = 0;
+-
+-	/* check should flush */
+-	if (full)
+-		sipx_force_ul_trigger(sipx_chan);
+-	else if (yell)
+-		sipx_try_trigger_cp(sipx_chan);
+-
+-	return 0;
+-}
+-EXPORT_SYMBOL_GPL(sipx_send);
+-
+-int sipx_receive(u8 dst, u8 channel, struct sblock *blk)
+-{
+-	struct sipx_mgr *sipx = (struct sipx_mgr *)sipxs[dst];
+-	struct sipx_channel *sipx_chan;
+-	int ret;
+-	u8 ch_index;
+-
+-	ch_index = sipc_channel2index(channel);
+-	if (ch_index == INVALID_CHANEL_INDEX) {
+-		SIPX_ERR("%s:channel %d invalid!\n", __func__, channel);
+-		return -EINVAL;
+-	}
+-
+-	if (!sipx) {
+-		SIPX_ERR("sipx-%d-%d %s sipx not exist!\n", dst, channel,
+-			 __func__);
+-		return -ENODEV;
+-	}
+-
+-	sipx_chan = sipx->channels[ch_index];
+-
+-	if (!sipx_chan) {
+-		SIPX_ERR("sipx-%d-%d %s not exist\n", dst, channel, __func__);
+-		return -ENODEV;
+-	}
+-
+-	if (sipx_chan->state != SBLOCK_STATE_READY) {
+-		SIPX_ERR("sipx-%d-%d %s not ready!\n", dst, channel, __func__);
+-		return -EIO;
+-	}
+-
+-	/* check ack ring first */
+-	ret = sipx_get_item_from_ring(sipx_chan->dl_ack_ring, blk);
+-	if (ret)
+-		/* then normal ring */
+-		ret = sipx_get_item_from_ring(sipx_chan->dl_ring, blk);
+-
+-	/* all ring empty */
+-	if (ret)
+-		return ret;
+-
+-	/* save record */
+-	sipx_chan->dl_record_flag = 1;
+-	sipx_chan->dl_record_blk = *blk;
+-
+-	return 0;
+-}
+-EXPORT_SYMBOL_GPL(sipx_receive);
+-
+-int sipx_release(u8 dst, u8 channel, struct sblock *blk)
+-{
+-	struct sipx_mgr *sipx = (struct sipx_mgr *)sipxs[dst];
+-	struct sipx_channel *sipx_chan;
+-	u8 ch_index;
+-
+-	ch_index = sipc_channel2index(channel);
+-	if (ch_index == INVALID_CHANEL_INDEX) {
+-		SIPX_ERR("%s:channel %d invalid!\n", __func__, channel);
+-		return -EINVAL;
+-	}
+-
+-	if (!sipx) {
+-		SIPX_ERR("sipx-%d-%d %s sipx not exist!\n", dst, channel,
+-			 __func__);
+-		return -ENODEV;
+-	}
+-
+-	sipx_chan = sipx->channels[ch_index];
+-
+-	if (!sipx_chan) {
+-		SIPX_ERR("sipx-%d-%d %s not exist\n", dst, channel, __func__);
+-		return -ENODEV;
+-	}
+-
+-	if (sipx_chan->state != SBLOCK_STATE_READY) {
+-		SIPX_ERR("sipx-%d-%d %s not ready!\n", dst, channel, __func__);
+-		return -EIO;
+-	}
+-
+-	SIPX_DEBUG("%s: dst=%d, channel=%d, addr=%p, len=%d, offset=%d\n",
+-		   __func__, dst, channel, blk->addr, blk->length, blk->offset);
+-
+-	if (IS_DL_BLK_ACK(sipx, blk))
+-		sipx_put_item_into_pool(sipx->dl_ack_pool, blk);
+-	else
+-		sipx_put_item_into_pool(sipx->dl_pool, blk);
+-
+-	/* pop record */
+-	sipx_chan->dl_record_flag = 0;
+-	return 0;
+-}
+-EXPORT_SYMBOL_GPL(sipx_release);
+-
+-int sipx_get_arrived_count(u8 dst, u8 channel)
+-{
+-	struct sipx_mgr *sipx = (struct sipx_mgr *)sipxs[dst];
+-	struct sipx_channel *sipx_chan;
+-	int blk_count = 0;
+-	u8 ch_index;
+-
+-	ch_index = sipc_channel2index(channel);
+-	if (ch_index == INVALID_CHANEL_INDEX) {
+-		SIPX_ERR("%s:channel %d invalid!\n", __func__, channel);
+-		return -EINVAL;
+-	}
+-
+-	if (!sipx) {
+-		SIPX_ERR("sipx-%d-%d %s sipx not exist!\n", dst, channel,
+-			 __func__);
+-		return -ENODEV;
+-	}
+-
+-	sipx_chan = sipx->channels[ch_index];
+-
+-	if (!sipx_chan) {
+-		SIPX_ERR("sipx-%d-%d %s not exist\n", dst, channel, __func__);
+-		return -ENODEV;
+-	}
+-
+-	if (sipx_chan->state != SBLOCK_STATE_READY) {
+-		SIPX_ERR("sipx-%d-%d %s not ready!\n", dst, channel, __func__);
+-		return -EIO;
+-	}
+-
+-	blk_count = sipx_get_ring_item_cnt(sipx_chan->dl_ring);
+-	blk_count += sipx_get_ring_item_cnt(sipx_chan->dl_ack_ring);
+-
+-	return blk_count;
+-}
+-EXPORT_SYMBOL_GPL(sipx_get_arrived_count);
+-
+-int sipx_get_free_count(u8 dst, u8 channel)
+-{
+-	struct sipx_mgr *sipx = (struct sipx_mgr *)sipxs[dst];
+-	struct sipx_channel *sipx_chan;
+-	int blk_count = 0;
+-	u8 ch_index;
+-
+-	ch_index = sipc_channel2index(channel);
+-	if (ch_index == INVALID_CHANEL_INDEX) {
+-		SIPX_ERR("%s:channel %d invalid!\n", __func__, channel);
+-		return -EINVAL;
+-	}
+-
+-	if (!sipx) {
+-		SIPX_ERR("sipx-%d-%d %s sipx not exist!\n", dst, channel,
+-			 __func__);
+-		return -ENODEV;
+-	}
+-
+-	sipx_chan = sipx->channels[ch_index];
+-
+-	if (!sipx_chan) {
+-		SIPX_ERR("sipx-%d-%d %s sipx_get not exist\n", dst, channel,
+-			 __func__);
+-		return -ENODEV;
+-	}
+-
+-	if (sipx_chan->state != SBLOCK_STATE_READY) {
+-		SIPX_ERR("sipx-%d-%d %s not ready!\n", dst, channel, __func__);
+-		return -EIO;
+-	}
+-
+-	blk_count = sipx_get_pool_free_count(sipx->ul_pool);
+-
+-	return blk_count;
+-}
+-EXPORT_SYMBOL_GPL(sipx_get_free_count);
+-
+-static int create_sipx_ring_ctrl(struct sipx_ring **out,
+-				 struct sipx_fifo_info *fifo_info,
+-				 void *fifo_virt, void *blk_virt,
+-				 struct sipx_mgr *sipx)
+-{
+-	struct sipx_ring *ring = NULL;
+-
+-	ring = kzalloc_obj(*ring, GFP_KERNEL);
+-	if (!ring) {
+-		SIPX_ERR("Failed to allocate seblock_ring for seblock\n");
+-		return -ENOMEM;
+-	}
+-
+-	ring->fifo_info = fifo_info;
+-	ring->fifo_buf = fifo_virt;
+-	ring->fifo_size = READ_ONCE(fifo_info->fifo_size);
+-	ring->blks_buf = blk_virt;
+-	ring->blk_size = READ_ONCE(fifo_info->blk_size);
+-	ring->sipx = sipx;
+-
+-	spin_lock_init(&ring->lock);
+-
+-	*out = ring;
+-
+-	return 0;
+-}
+-
+-static int init_sipx_channel_fifos(struct sipx_mgr *sipx,
+-				   struct sipx_channel *sipx_chan)
+-{
+-	struct sipx_fifo_info *fifo_info;
+-	u32 offset;
+-	int ret = 0;
+-
+-	/* dl ring fifo info */
+-	fifo_info = (struct sipx_fifo_info *)sipx_chan->smem_virt;
+-	WRITE_ONCE(fifo_info->blks_addr, 0);
+-	WRITE_ONCE(fifo_info->blk_size, sipx->blk_size);
+-	WRITE_ONCE(fifo_info->fifo_size, sipx->dl_pool_size);
+-	WRITE_ONCE(fifo_info->fifo_rdptr, 0);
+-	WRITE_ONCE(fifo_info->fifo_wrptr, 0);
+-	/* all ring fifo info */
+-	offset = sizeof(struct sipx_fifo_info) * 4;
+-	WRITE_ONCE(fifo_info->fifo_addr, sipx_chan->dst_smem_addr + offset);
+-	ret = create_sipx_ring_ctrl(&sipx_chan->dl_ring, fifo_info,
+-				    sipx_chan->smem_virt + offset,
+-				    sipx->dl_pool->blks_buf, sipx);
+-	if (ret)
+-		return ret;
+-
+-	/* dl ack ring fifo info */
+-	fifo_info = (struct sipx_fifo_info *)(sipx_chan->smem_virt +
+-					      /* dl ring info */
+-					      sizeof(struct sipx_fifo_info));
+-	WRITE_ONCE(fifo_info->blks_addr, 0);
+-	WRITE_ONCE(fifo_info->blk_size, sipx->ack_blk_size);
+-	WRITE_ONCE(fifo_info->fifo_size, sipx->dl_ack_pool_size);
+-	WRITE_ONCE(fifo_info->fifo_rdptr, 0);
+-	WRITE_ONCE(fifo_info->fifo_wrptr, 0);
+-	offset =
+-		/* dl ul ring pool info */
+-		(sizeof(struct sipx_fifo_info) * 4) +
+-		/* dl ring fifo mem */
+-		(sizeof(struct sipx_blk_item) * sipx->dl_pool_size);
+-	WRITE_ONCE(fifo_info->fifo_addr, sipx_chan->dst_smem_addr + offset);
+-	ret = create_sipx_ring_ctrl(&sipx_chan->dl_ack_ring, fifo_info,
+-				    sipx_chan->smem_virt + offset,
+-				    sipx->dl_ack_pool->blks_buf, sipx);
+-	if (ret)
+-		return ret;
+-
+-	/* ul ring fifo info */
+-	fifo_info = (struct sipx_fifo_info *)(sipx_chan->smem_virt +
+-					      /* dl ring info */
+-					      sizeof(struct sipx_fifo_info) +
+-					      /* ul ring info */
+-					      sizeof(struct sipx_fifo_info));
+-	WRITE_ONCE(fifo_info->blks_addr, 0);
+-	WRITE_ONCE(fifo_info->blk_size, sipx->blk_size);
+-	WRITE_ONCE(fifo_info->fifo_size, sipx->ul_pool_size);
+-	WRITE_ONCE(fifo_info->fifo_rdptr, 0);
+-	WRITE_ONCE(fifo_info->fifo_wrptr, 0);
+-	offset =
+-		/* dl ul ring pool info */
+-		(sizeof(struct sipx_fifo_info) * 4) +
+-		/* dl ring fifo mem */
+-		(sizeof(struct sipx_blk_item) * sipx->dl_pool_size) +
+-		/* ul ring fifo mem */
+-		(sizeof(struct sipx_blk_item) * sipx->dl_ack_pool_size);
+-	WRITE_ONCE(fifo_info->fifo_addr, sipx_chan->dst_smem_addr + offset);
+-	ret = create_sipx_ring_ctrl(&sipx_chan->ul_ring, fifo_info,
+-				    sipx_chan->smem_virt + offset,
+-				    sipx->ul_pool->blks_buf, sipx);
+-	if (ret)
+-		return ret;
+-
+-	/* ul ack ring fifo info */
+-	fifo_info = (struct sipx_fifo_info *)(sipx_chan->smem_virt +
+-					      /* dl ring info */
+-					      sizeof(struct sipx_fifo_info) +
+-					      /* dl ack ring info */
+-					      sizeof(struct sipx_fifo_info) +
+-					      /* ul ring info */
+-					      sizeof(struct sipx_fifo_info));
+-	WRITE_ONCE(fifo_info->blks_addr, 0);
+-	WRITE_ONCE(fifo_info->blk_size, sipx->ack_blk_size);
+-	WRITE_ONCE(fifo_info->fifo_size, sipx->ul_ack_pool_size);
+-	WRITE_ONCE(fifo_info->fifo_rdptr, 0);
+-	WRITE_ONCE(fifo_info->fifo_wrptr, 0);
+-	offset =
+-		/* dl ul ring pool info */
+-		(sizeof(struct sipx_fifo_info) * 4) +
+-		/* dl ring fifo mem */
+-		(sizeof(struct sipx_blk_item) * sipx->dl_pool_size) +
+-		/* ul ring fifo mem */
+-		(sizeof(struct sipx_blk_item) * sipx->dl_ack_pool_size) +
+-		/* dl pool fifo mem */
+-		(sizeof(struct sipx_blk_item) * sipx->ul_pool_size);
+-
+-	WRITE_ONCE(fifo_info->fifo_addr, sipx_chan->dst_smem_addr + offset);
+-	ret = create_sipx_ring_ctrl(&sipx_chan->ul_ack_ring, fifo_info,
+-				    sipx_chan->smem_virt + offset,
+-				    sipx->ul_ack_pool->blks_buf, sipx);
+-
+-	return ret;
+-}
+-
+-static int destroy_sipx_channel_ctrl(struct sipx_channel *sipx_chan)
+-{
+-	kfree(sipx_chan->dl_ring);
+-
+-	kfree(sipx_chan->dl_ack_ring);
+-
+-	kfree(sipx_chan->ul_ring);
+-
+-	kfree(sipx_chan->ul_ack_ring);
+-
+-	if (sipx_chan->smem_virt)
+-		shmem_ram_unmap(sipx_chan->dst, sipx_chan->smem_virt);
+-
+-	if (sipx_chan->smem_addr)
+-		smem_free(sipx_chan->dst, sipx_chan->smem_addr,
+-			  sipx_chan->smem_size);
+-
+-	kfree(sipx_chan);
+-
+-	return 0;
+-}
+-
+-static int update_sipx_channel_ptr(struct sipx_mgr *sipx,
+-				   struct sipx_channel *sipx_chan)
+-{
+-	u32 offset;
+-	u32 *chan_ptr_mem_ptr;
+-
+-	/* all pool info */
+-	offset = sizeof(struct sipx_fifo_info) * 4;
+-	offset += sizeof(u32);
+-	offset += sizeof(u32) * sipx_chan->channel;
+-
+-	chan_ptr_mem_ptr = (u32 *)(sipx->smem_virt + offset);
+-	WRITE_ONCE(*chan_ptr_mem_ptr, sipx_chan->dst_smem_addr);
+-
+-	return 0;
+-}
+-
+-static int create_sipx_channel_ctrl(struct sipx_mgr *sipx, u8 channel,
+-				    struct sipx_channel **out)
+-{
+-	struct sipx_channel *sipx_chan;
+-	struct smsg_ipc *sipc;
+-	int ret;
+-	u8 ch_index;
+-	phys_addr_t offset = 0;
+-
+-	sipc = smsg_ipcs[sipx->dst];
+-	if (!sipc) {
+-		pr_err("%s: sipc is null, dst = %d\n", __func__, sipx->dst);
+-		return -ENODEV;
+-	}
+-
+-	ch_index = sipc_channel2index(channel);
+-	if (ch_index == INVALID_CHANEL_INDEX) {
+-		SIPX_ERR("%s:channel %d invalid!\n", __func__, channel);
+-		return -EINVAL;
+-	}
+-
+-	/* create channel ctrl */
+-	sipx_chan = kzalloc_obj(*sipx_chan, GFP_KERNEL);
+-	if (!sipx_chan)
+-		return -ENOMEM;
+-
+-	memset(sipx_chan, 0, sizeof(struct sipx_channel));
+-
+-	sipx_chan->state = SBLOCK_STATE_IDLE;
+-	sipx_chan->dst = sipx->dst;
+-	sipx_chan->channel = channel;
+-	sipx_chan->sipx = sipx;
+-
+-	/* dl ul ring pool info */
+-	sipx_chan->smem_size = sizeof(struct sipx_fifo_info) * 4;
+-
+-	/* dl ring fifo mem */
+-	sipx_chan->smem_size +=
+-		sizeof(struct sipx_blk_item) * sipx->dl_pool_size;
+-
+-	/* dl ack ring fifo mem */
+-	sipx_chan->smem_size +=
+-		sizeof(struct sipx_blk_item) * sipx->dl_ack_pool_size;
+-	/* ul ring fifo mem */
+-
+-	sipx_chan->smem_size +=
+-		sizeof(struct sipx_blk_item) * sipx->ul_pool_size;
+-
+-	/* ul ack ring fifo mem */
+-	sipx_chan->smem_size +=
+-		sizeof(struct sipx_blk_item) * sipx->ul_ack_pool_size;
+-
+-	SIPX_DEBUG("sipx_chan->smem_size = %d\n", sipx_chan->smem_size);
+-
+-	/*single channel in smem*/
+-	sipx_chan->smem_addr = smem_alloc(sipx->dst, sipx_chan->smem_size);
+-	if (!sipx_chan->smem_addr) {
+-		SIPX_ERR("Failed to allocate smem for sipx_chan\n");
+-		kfree(sipx_chan);
+-		return -ENOMEM;
+-	}
+-
+-	sipx_chan->dst_smem_addr =
+-		sipx_chan->smem_addr - sipc->smem_base + sipc->dst_smem_base;
+-#ifdef CONFIG_PHYS_ADDR_T_64BIT
+-	offset = sipc->high_offset;
+-	offset = offset << 32;
+-#endif
+-	pr_info("%s:offset = 0x%llx!\n", __func__, offset);
+-	sipx_chan->smem_virt = shmem_ram_vmap_nocache(
+-		sipx->dst, sipx_chan->smem_addr + offset, sipx_chan->smem_size);
+-
+-	if (!sipx_chan->smem_virt) {
+-		SIPX_ERR("Failed to map smem for sipx_chan\n");
+-		kfree(sipx_chan);
+-		return -EFAULT;
+-	}
+-	/* init ring/pool fifos in channel ctrl */
+-	ret = init_sipx_channel_fifos(sipx, sipx_chan);
+-	if (ret) {
+-		SIPX_ERR("Failed init_sipx_channel_fifos!\n");
+-		kfree(sipx_chan);
+-		return ret;
+-	}
+-
+-	/* trigger cp interrupt timer init */
+-	hrtimer_setup(&sipx_chan->ul_timer, sipx_ul_trigger_timer_handler,
+-		      CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+-	spin_lock_init(&sipx_chan->lock);
+-	sipx_chan->ul_timer_active = 0;
+-	sipx_chan->ul_timer_val = ns_to_ktime(TIME_TRIGGER_CP_NS);
+-
+-	/* update channel ptr in main share mem */
+-	update_sipx_channel_ptr(sipx, sipx_chan);
+-	sipx->channels[ch_index] = sipx_chan;
+-
+-	*out = sipx_chan;
+-
+-	return 0;
+-}
+-
+-int sipx_chan_destroy(u8 dst, u8 channel)
+-{
+-	struct sipx_mgr *sipx = (struct sipx_mgr *)sipxs[dst];
+-	struct sipx_channel *sipx_chan;
+-	u8 ch_index;
+-
+-	ch_index = sipc_channel2index(channel);
+-	if (ch_index == INVALID_CHANEL_INDEX) {
+-		SIPX_ERR("%s:channel %d invalid!\n", __func__, channel);
+-		return -EINVAL;
+-	}
+-
+-	if (!sipx)
+-		return -ENODEV;
+-
+-	sipx_chan = sipx->channels[ch_index];
+-
+-	if (!sipx_chan)
+-		return -ENODEV;
+-
+-	hrtimer_cancel(&sipx_chan->ul_timer);
+-
+-	sipx_recover_channel(sipx, sipx_chan);
+-	smsg_ch_close(dst, channel, -1);
+-
+-	/* stop seblock thread if it's created successfully and still alive */
+-	if (!IS_ERR_OR_NULL(sipx_chan->thread))
+-		kthread_stop(sipx_chan->thread);
+-
+-	destroy_sipx_channel_ctrl(sipx_chan);
+-
+-	sipxs[dst] = NULL;
+-
+-	return 0;
+-}
+-EXPORT_SYMBOL_GPL(sipx_chan_destroy);
+-
+-int sipx_chan_register_notifier(u8 dst, u8 channel,
+-				void (*handler)(int event, void *data),
+-				void *data)
+-{
+-	struct sipx_mgr *sipx = (struct sipx_mgr *)sipxs[dst];
+-	struct sipx_channel *sipx_chan;
+-	u8 ch_index;
+-
+-	ch_index = sipc_channel2index(channel);
+-	if (ch_index == INVALID_CHANEL_INDEX) {
+-		SIPX_ERR("%s:channel %d invalid!\n", __func__, channel);
+-		return -EINVAL;
+-	}
+-
+-	if (!sipx) {
+-		SIPX_ERR("sipx-%d-%d %s sipx is not exist!\n", dst, channel,
+-			 __func__);
+-		return -ENODEV;
+-	}
+-
+-	sipx_chan = sipx->channels[ch_index];
+-
+-	if (!sipx_chan) {
+-		SIPX_ERR("sipx-%d-%d %s se_chanl is not exist!\n", dst, channel,
+-			 __func__);
+-		return -ENODEV;
+-	}
+-
+-	sipx_chan->handler = handler;
+-	sipx_chan->data = data;
+-
+-	return 0;
+-}
+-EXPORT_SYMBOL_GPL(sipx_chan_register_notifier);
+-
+-#ifdef UL_TEST
+-struct task_struct *s_test_thrd_hdl;
+-
+-static int send_test_pkt(int i)
+-{
+-	int ret;
+-	struct sblock blk;
+-	int is_ack = (i & 1);
+-
+-	ret = sipx_get(5, 7, &blk, is_ack);
+-	if (ret) {
+-		g_flow_on = 0;
+-		SIPX_INFO("channel 7 enter flow ctrl\n");
+-		return -1;
+-	}
+-	blk.length = is_ack ? 40 : 1400;
+-	sipx_send(5, 7, &blk);
+-	return 0;
+-}
+-
+-static int sipx_ul_test_thread(void *data)
+-{
+-	msleep(30000);
+-	/* handle the sblock events */
+-	while (!kthread_should_stop()) {
+-		int i, j;
+-
+-		if (g_flow_on) {
+-			for (j = 0; j < 40; j++) {
+-				for (i = 0; i < 5; i++) {
+-					if (g_flow_on)
+-						send_test_pkt(i);
+-				}
+-				sipx_flush(5, 7);
+-			}
+-
+-			SIPX_ERR("%s sent %d pkts\n", __func__, 40 * 5);
+-			usleep_range(1000, 1500);
+-			SIPX_ERR("%s sent start\n", __func__);
+-		} else {
+-			msleep(100);
+-		}
+-	}
+-	return 0;
+-}
+-#endif
+-
+-int sipx_chan_create(u8 dst, u8 channel)
+-{
+-	struct sipx_mgr *sipx = NULL;
+-	struct sipx_channel *sipx_chan = NULL;
+-	int ret = 0;
+-	struct sched_param param = { .sched_priority = 11 };
+-
+-	if (dst >= SIPC_ID_NR) {
+-		SIPX_ERR("Input Param Error: dst = %d\n", dst);
+-		return -EINVAL;
+-	}
+-	/* check and create main ctrl */
+-	sipx = sipxs[dst];
+-
+-	if (!sipx) {
+-		SIPX_ERR("sipx == NULL: sipx-%d-%d\n", dst, channel);
+-		return -EPROBE_DEFER;
+-	}
+-
+-	ret = create_sipx_channel_ctrl(sipx, channel, &sipx_chan);
+-
+-	if (ret) {
+-		SIPX_ERR("Failed to create channel, ret = %d", ret);
+-		goto fail;
+-	}
+-
+-	/* create channel thread for this seblock channel */
+-	sipx_chan->thread = kthread_create(sipx_thread, sipx_chan, "sipx-%d-%d",
+-					   dst, channel);
+-	if (IS_ERR(sipx_chan->thread)) {
+-		SIPX_ERR("Failed to create kthread: sipx-%d-%d\n", dst,
+-			 channel);
+-		ret = PTR_ERR(sipx_chan->thread);
+-		goto fail;
+-	}
+-
+-	/*set the thread as a real time thread, and its priority is 90*/
+-	sched_setscheduler(current, SCHED_RR, &param);
+-	wake_up_process(sipx_chan->thread);
+-#ifdef UL_TEST
+-	if (5 == dst && 7 == channel) {
+-		s_test_thrd_hdl =
+-			kthread_create(sipx_ul_test_thread, sipx, "sipx-test");
+-		wake_up_process(s_test_thrd_hdl);
+-	}
+-#endif
+-	return 0;
+-fail:
+-	if (sipx_chan)
+-		destroy_sipx_channel_ctrl(sipx_chan);
+-
+-	return ret;
+-}
+-EXPORT_SYMBOL_GPL(sipx_chan_create);
+-
+-static int sipx_probe(struct platform_device *pdev)
+-{
+-	struct sipx_init_data *pdata = pdev->dev.platform_data;
+-	struct sipx_mgr *sipx = NULL;
+-	int ret;
+-
+-	if (pdev->dev.of_node && !pdata) {
+-		ret = sipx_parse_dt(&pdata, &pdev->dev);
+-		if (ret) {
+-			SIPX_ERR("failed to parse seth device tree, ret=%d\n",
+-				 ret);
+-			return ret;
+-		}
+-	}
+-
+-	SIPX_INFO("parse dt, name=%s, dst=%u, pool size=%d, %d, %d, %d\n",
+-		  pdata->name, pdata->dst, pdata->dl_pool_size,
+-		  pdata->dl_ack_pool_size, pdata->ul_pool_size,
+-		  pdata->ul_ack_pool_size);
+-
+-	sipx = sipxs[pdata->dst];
+-
+-	if (!sipx) {
+-		ret = create_sipx_mgr(&sipx, pdata);
+-		if (ret) {
+-			SIPX_ERR("failed to create_sipx_mgr, ret=%d\n", ret);
+-			sipx_destroy_pdata(&pdata, &pdev->dev);
+-			return ret;
+-		}
+-
+-		sipxs[pdata->dst] = sipx;
+-	}
+-
+-	platform_set_drvdata(pdev, sipx);
+-
+-	return 0;
+-}
+-
+-/*
+- * Cleanup sipx device driver.
+- */
+-static void sipx_remove(struct platform_device *pdev)
+-{
+-	struct sipx_mgr *sipx = platform_get_drvdata(pdev);
+-	struct sipx_init_data *pdata;
+-
+-	if (sipx) {
+-		pdata = sipx->pdata;
+-
+-		destroy_spix_mgr(sipx);
+-		sipx_destroy_pdata(&pdata, &pdev->dev);
+-		platform_set_drvdata(pdev, NULL);
+-	}
+-
+-}
+-
+-static const struct of_device_id sipx_match_table[] = {
+-	{
+-		.compatible = "sprd,sipx",
+-	},
+-	{},
+-};
+-
+-static struct platform_driver sipx_driver = { .probe = sipx_probe,
+-					      .remove = sipx_remove,
+-					      .driver = {
+-						      .owner = THIS_MODULE,
+-						      .name = "sipx",
+-						      .of_match_table =
+-							      sipx_match_table,
+-					      } };
+-
+-static int __init sipx_init(void)
+-{
+-	return platform_driver_register(&sipx_driver);
+-}
+-
+-static void __exit sipx_exit(void)
+-{
+-	platform_driver_unregister(&sipx_driver);
+-}
+-
+-module_init(sipx_init);
+-module_exit(sipx_exit);
+-
+-#if defined(CONFIG_DEBUG_FS)
+-static int sipx_debug_show(struct seq_file *m, void *private)
+-{
+-	struct sipx_mgr *sipx = NULL;
+-	struct sipx_channel *sipx_chan = NULL;
+-	struct sipx_fifo_info *fifo_info = NULL;
+-	int i, j;
+-
+-	for (i = 0; i < SIPC_ID_NR; i++) {
+-		sipx = sipxs[i];
+-		if (!sipx)
+-			continue;
+-
+-		/*sipx*/
+-		sipc_debug_putline(m, '*', 180);
+-#ifdef CONFIG_SPRD_SIPC_MEM_CACHE_EN
+-		seq_printf(m, "sipx dst 0x%0x, state: 0x%0x, recovery: %d, ",
+-			   sipx->dst, sipx->state, sipx->recovery);
+-		seq_printf(m, "smem_virt: 0x%p, smem_cached_virt: 0x%p, ",
+-			   sipx->smem_virt, sipx->smem_cached_virt);
+-		seq_printf(m,
+-			   "smem_addr: 0x%0x, dst_smem_addr:", sipx->smem_addr);
+-		seq_printf(m, "0x%0x\n, smem_size: 0x%0x", sipx->dst_smem_addr,
+-			   sipx->smem_size);
+-
+-		seq_printf(m, "smem_cached_virt: 0x%p, dst_smem_addr: 0x%0x\n",
+-			   sipx->smem_cached_virt, sipx->dst_smem_addr);
+-#else
+-		seq_printf(m, "sipx dst %d, state: 0x%0x, recovery: %d, ",
+-			   sipx->dst, sipx->state, sipx->recovery);
+-		seq_printf(
+-			m,
+-			"smem_virt: 0x%p, smem_addr: 0x%0x, smem_size: 0x%0x\n",
+-			sipx->smem_virt, sipx->smem_addr, sipx->smem_size);
+-#endif
+-		seq_printf(m, "dl_pool_size: %d, dl_ack_pool_size: %d,",
+-			   sipx->dl_pool_size, sipx->dl_ack_pool_size);
+-		seq_printf(m, "ul_pool_size: %d, ul_ack_pool_size: %d,",
+-			   sipx->ul_pool_size, sipx->ul_ack_pool_size);
+-		seq_printf(m, "blk_size: %d, ack_blk_size: %d\n",
+-			   sipx->blk_size, sipx->ack_blk_size);
+-
+-		fifo_info = sipx->dl_pool->fifo_info;
+-		seq_printf(m, "dl_pool: blks_addr :0x%0x, blk_size :%d,",
+-			   (u32)READ_ONCE(fifo_info->blks_addr),
+-			   (u32)READ_ONCE(fifo_info->blk_size));
+-		seq_printf(m, "fifo_addr :0x%0x, fifo_size :%d, fifo_rdptr",
+-			   (u32)READ_ONCE(fifo_info->fifo_addr),
+-			   (u32)READ_ONCE(fifo_info->fifo_size));
+-		seq_printf(m, " :0x%0x, fifo_wrptr: 0x%0x\n",
+-			   (u32)READ_ONCE(fifo_info->fifo_rdptr),
+-			   (u32)READ_ONCE(fifo_info->fifo_wrptr));
+-
+-		fifo_info = sipx->dl_ack_pool->fifo_info;
+-		seq_printf(m, "dl_ack_pool: blks_addr :0x%0x, blk_size :%d,",
+-			   (u32)READ_ONCE(fifo_info->blks_addr),
+-			   (u32)READ_ONCE(fifo_info->blk_size));
+-		seq_printf(m, "fifo_addr :0x%0x, fifo_size :%d,",
+-			   (u32)READ_ONCE(fifo_info->fifo_addr),
+-			   (u32)READ_ONCE(fifo_info->fifo_size));
+-		seq_printf(m, " fifo_rdptr :0x%0x, fifo_wrptr: 0x%0x\n",
+-			   (u32)READ_ONCE(fifo_info->fifo_rdptr),
+-			   (u32)READ_ONCE(fifo_info->fifo_wrptr));
+-
+-		fifo_info = sipx->ul_pool->fifo_info;
+-		seq_printf(m, "ul_pool: blks_addr :0x%0x, blk_size :%d,",
+-			   (u32)READ_ONCE(fifo_info->blks_addr),
+-			   (u32)READ_ONCE(fifo_info->blk_size));
+-		seq_printf(m, " fifo_addr :0x%0x, fifo_size :%d,",
+-			   (u32)READ_ONCE(fifo_info->fifo_addr),
+-			   (u32)READ_ONCE(fifo_info->fifo_size));
+-		seq_printf(m, "fifo_rdptr :0x%0x, fifo_wrptr: 0x%0x\n",
+-			   (u32)READ_ONCE(fifo_info->fifo_rdptr),
+-			   (u32)READ_ONCE(fifo_info->fifo_wrptr));
+-
+-		fifo_info = sipx->ul_ack_pool->fifo_info;
+-		seq_printf(m, "ul_ack_pool: blks_addr :0x%0x, blk_size :%d,",
+-			   (u32)READ_ONCE(fifo_info->blks_addr),
+-			   (u32)READ_ONCE(fifo_info->blk_size));
+-		seq_printf(m, " fifo_addr :0x%0x, fifo_size :%d,",
+-			   (u32)READ_ONCE(fifo_info->fifo_addr),
+-			   (u32)READ_ONCE(fifo_info->fifo_size));
+-		seq_printf(m, "fifo_rdptr :0x%0x, fifo_wrptr: 0x%0x\n",
+-			   (u32)READ_ONCE(fifo_info->fifo_rdptr),
+-			   (u32)READ_ONCE(fifo_info->fifo_wrptr));
+-
+-		sipc_debug_putline(m, '*', 180);
+-
+-		for (j = 0; j < SMSG_VALID_CH_NR; j++) {
+-			sipx_chan = sipx->channels[j];
+-			if (!sipx_chan)
+-				continue;
+-
+-			/* sipx channel */
+-			seq_printf(
+-				m,
+-				"sipx_chan dst %d, channel: %3d, state: %d, ",
+-				sipx_chan->dst, sipx_chan->channel,
+-				sipx_chan->state);
+-			seq_printf(m, "smem_virt: 0x%p, smem_addr: 0x%0x, ",
+-				   sipx_chan->smem_virt, sipx_chan->smem_addr);
+-			seq_printf(m,
+-				   "dst_smem_addr: 0x%0x, smem_size: 0x%0x, ",
+-				   sipx_chan->dst_smem_addr,
+-				   sipx_chan->smem_size);
+-			seq_printf(m, "dl_record: 0x%0x,ul_record: 0x%0x\n",
+-				   sipx_chan->dl_record_flag,
+-				   sipx_chan->ul_record_flag);
+-
+-			fifo_info = sipx_chan->dl_ring->fifo_info;
+-			seq_printf(m,
+-				   "dl_ring: blks_addr :0x%0x, blk_size :%d,",
+-				   (u32)READ_ONCE(fifo_info->blks_addr),
+-				   (u32)READ_ONCE(fifo_info->blk_size));
+-			seq_printf(
+-				m,
+-				"fifo_addr :0x%0x, fifo_size :%d, fifo_rdptr :0x%0x,:",
+-				(u32)READ_ONCE(fifo_info->fifo_addr),
+-				(u32)READ_ONCE(fifo_info->fifo_size),
+-				(u32)READ_ONCE(fifo_info->fifo_rdptr));
+-			seq_printf(m, "fifo_wrptr: 0x%0x\n",
+-				   (u32)READ_ONCE(fifo_info->fifo_wrptr));
+-
+-			fifo_info = sipx_chan->dl_ack_ring->fifo_info;
+-			seq_printf(
+-				m,
+-				"dl_ack_ring: blks_addr :0x%0x, blk_size :%d,",
+-				(u32)READ_ONCE(fifo_info->blks_addr),
+-				(u32)READ_ONCE(fifo_info->blk_size));
+-			seq_printf(m, "fifo_addr :0x%0x, fifo_size :%d, ",
+-				   (u32)READ_ONCE(fifo_info->fifo_addr),
+-				   (u32)READ_ONCE(fifo_info->fifo_size));
+-			seq_printf(m, "fifo_rdptr :0x%0x, fifo_wrptr: 0x%0x\n",
+-				   (u32)READ_ONCE(fifo_info->fifo_rdptr),
+-				   (u32)READ_ONCE(fifo_info->fifo_wrptr));
+-
+-			fifo_info = sipx_chan->ul_ring->fifo_info;
+-			seq_printf(m,
+-				   "ul_ring: blks_addr :0x%0x, blk_size :%d, ",
+-				   (u32)READ_ONCE(fifo_info->blks_addr),
+-				   (u32)READ_ONCE(fifo_info->blk_size));
+-			seq_printf(m, "fifo_addr :0x%0x, fifo_size :%d, ",
+-				   (u32)READ_ONCE(fifo_info->fifo_addr),
+-				   (u32)READ_ONCE(fifo_info->fifo_size));
+-			seq_printf(m, "fifo_rdptr :0x%0x, fifo_wrptr: 0x%0x\n",
+-				   (u32)READ_ONCE(fifo_info->fifo_rdptr),
+-				   (u32)READ_ONCE(fifo_info->fifo_wrptr));
+-
+-			fifo_info = sipx_chan->ul_ack_ring->fifo_info;
+-			seq_printf(
+-				m,
+-				"ul_ack_ring: blks_addr :0x%0x, blk_size :%d,",
+-				(u32)READ_ONCE(fifo_info->blks_addr),
+-				(u32)READ_ONCE(fifo_info->blk_size));
+-			seq_printf(
+-				m,
+-				" fifo_addr :0x%0x, fifo_size :%d, fifo_rdptr :0x%0x,",
+-				(u32)READ_ONCE(fifo_info->fifo_addr),
+-				(u32)READ_ONCE(fifo_info->fifo_size),
+-				(u32)READ_ONCE(fifo_info->fifo_rdptr));
+-			seq_printf(m, " fifo_wrptr: 0x%0x\n",
+-				   (u32)READ_ONCE(fifo_info->fifo_wrptr));
+-
+-			sipc_debug_putline(m, '*', 180);
+-		}
+-	}
+-
+-	return 0;
+-}
+-
+-static int sipx_debug_open(struct inode *inode, struct file *file)
+-{
+-	return single_open(file, sipx_debug_show, inode->i_private);
+-}
+-
+-static const struct file_operations sipx_debug_fops = {
+-	.open = sipx_debug_open,
+-	.read = seq_read,
+-	.llseek = seq_lseek,
+-	.release = single_release,
+-};
+-
+-int sipx_init_debugfs(void *root)
+-{
+-	if (!root)
+-		return -ENXIO;
+-
+-	debugfs_create_file("sipx", 0444, (struct dentry *)root, NULL,
+-			    &sipx_debug_fops);
+-	return 0;
+-}
+-
+-#endif /* CONFIG_DEBUG_FS */
+-
+-MODULE_AUTHOR("Wu Zhiwei");
+-MODULE_DESCRIPTION("SIPC/SIPX driver");
+-MODULE_LICENSE("GPL");
+diff --git a/drivers/soc/sprd/modem/sipc_v2/sipx.h b/drivers/soc/sprd/modem/sipc_v2/sipx.h
+deleted file mode 100644
+index d5b20ec1f..000000000
+--- a/drivers/soc/sprd/modem/sipc_v2/sipx.h
++++ /dev/null
+@@ -1,179 +0,0 @@
+-/* SPDX-License-Identifier: GPL-2.0-only */
+-/*
+- * Copyright (C) 2019 Spreadtrum Communications Inc.
+- *
+- * This software is licensed under the terms of the GNU General Public
+- * License version 2, as published by the Free Software Foundation, and
+- * may be copied, distributed, and modified under those terms.
+- *
+- * This program is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+- * GNU General Public License for more details.
+- */
+-
+-#ifndef __SIPX_H
+-#define __SIPX_H
+-
+-#include "sblock.h"
+-#include <linux/hrtimer.h>
+-#include <asm/cacheflush.h>
+-
+-#ifdef CONFIG_SPRD_SIPC_MEM_CACHE_EN
+-
+-/* Temporary workaround  */
+-#ifdef ioremap_cached
+-#define ioremap_cache ioremap_cached
+-#endif
+-
+-#ifdef CONFIG_64BIT
+-
+-#ifdef CONFIG_ARM64
+-
+-#define SIPC_DATA_TO_SKB_CACHE_INV(start, end) \
+-	__inval_dcache_area(start, (end - start))
+-#define SKB_DATA_TO_SIPC_CACHE_FLUSH(start, end) \
+-	__dma_flush_area(start, (end - start))
+-
+-#else /* x86 */
+-
+-#define SIPC_DATA_TO_SKB_CACHE_INV(start, end) \
+-	clflush_cache_range(start, (end - start))
+-#define SKB_DATA_TO_SIPC_CACHE_FLUSH(start, end) \
+-	clflush_cache_range(start, (end - start))
+-
+-#endif /* CONFIG_ARM64 */
+-
+-#else /* CONFIG_64BIT */
+-#define SIPC_DATA_TO_SKB_CACHE_INV(start, end) \
+-	v7_dma_unmap_area(start, (end - start), DMA_FROM_DEVICE)
+-
+-#define SKB_DATA_TO_SIPC_CACHE_FLUSH(start, end) v7_dma_flush_range(start, end)
+-
+-#endif /* CONFIG_64BIT */
+-
+-#endif /* CONFIG_SPRD_SIPC_MEM_CACHE_EN */
+-
+-#define SIPX_STATE_IDLE 0
+-#define SIPX_STATE_READY 0x7c7d7e7f
+-
+-struct sipx_mgr;
+-
+-struct sipx_init_data {
+-	char *name;
+-	u8 dst;
+-	u32 dl_pool_size;
+-	u32 dl_ack_pool_size;
+-	u32 ul_pool_size;
+-	u32 ul_ack_pool_size;
+-};
+-
+-struct sipx_blk {
+-	u32 addr; /*phy address*/
+-	u32 length;
+-	u16 index;
+-	u16 offset;
+-};
+-
+-struct sipx_blk_item {
+-	u16 index; /* index in pools */
+-
+-	/* bit0-bit10: valid length, bit11-bit15 valid offset */
+-	u16 desc;
+-} __packed;
+-
+-struct sipx_fifo_info {
+-	u32 blks_addr;
+-	u32 blk_size;
+-	u32 fifo_size;
+-	u32 fifo_rdptr;
+-	u32 fifo_wrptr;
+-	u32 fifo_addr;
+-};
+-
+-struct sipx_pool {
+-	struct sipx_fifo_info *fifo_info;
+-	struct sipx_blk_item *fifo_buf; /* virt of info->fifo_addr */
+-	u32 fifo_size;
+-	void *blks_buf; /* virt of info->blks_addr */
+-	u32 blk_size;
+-
+-	/* lock for sipx-pool */
+-	spinlock_t lock;
+-
+-	struct sipx_mgr *sipx;
+-};
+-
+-struct sipx_ring {
+-	struct sipx_fifo_info *fifo_info;
+-	/* virt of info->fifo_addr */
+-	struct sipx_blk_item *fifo_buf;
+-	/* virt of info->blks_addr */
+-	void *blks_buf;
+-	u32 fifo_size;
+-	u32 blk_size;
+-
+-	/* lock for sipx-ring */
+-	spinlock_t lock;
+-	struct sipx_mgr *sipx;
+-};
+-
+-struct sipx_channel {
+-	u32 dst;
+-	u32 channel;
+-	u32 state;
+-
+-	void *smem_virt;
+-	u32 smem_addr;
+-	u32 dst_smem_addr;
+-	u32 smem_size;
+-
+-	struct sipx_ring *dl_ring;
+-	struct sipx_ring *dl_ack_ring;
+-	struct sipx_ring *ul_ring;
+-	struct sipx_ring *ul_ack_ring;
+-
+-	u32 dl_record_flag;
+-	struct sblock dl_record_blk;
+-	u32 ul_record_flag;
+-	struct sblock ul_record_blk;
+-
+-	/* lock for sipx-channel */
+-	spinlock_t lock;
+-	struct hrtimer ul_timer;
+-	int ul_timer_active;
+-	ktime_t ul_timer_val;
+-
+-	struct task_struct *thread;
+-	void (*handler)(int event, void *data);
+-	void *data;
+-	struct sipx_mgr *sipx;
+-};
+-
+-struct sipx_mgr {
+-	u32 dst;
+-	u32 state;
+-	int recovery;
+-	void *smem_virt;
+-	void *smem_cached_virt;
+-	u32 smem_addr;
+-	u32 dst_smem_addr;
+-	u32 smem_size;
+-	void *dl_ack_start;
+-	void *ul_ack_start;
+-
+-	u32 dl_pool_size;
+-	u32 dl_ack_pool_size;
+-	u32 ul_pool_size;
+-	u32 ul_ack_pool_size;
+-	u32 blk_size;
+-	u32 ack_blk_size;
+-
+-	struct sipx_init_data *pdata;
+-	struct sipx_pool *dl_pool;
+-	struct sipx_pool *dl_ack_pool;
+-	struct sipx_pool *ul_pool;
+-	struct sipx_pool *ul_ack_pool;
+-	struct sipx_channel *channels[SMSG_VALID_CH_NR];
+-};
+-#endif /* !__SIPX_H */
+diff --git a/drivers/soc/sprd/modem/sipc_v2/spipe.c b/drivers/soc/sprd/modem/sipc_v2/spipe.c
+index bb4c7cddb..e07b9056f 100644
+--- a/drivers/soc/sprd/modem/sipc_v2/spipe.c
++++ b/drivers/soc/sprd/modem/sipc_v2/spipe.c
+@@ -24,88 +24,65 @@
+ 
+ #include "sipc_priv.h"
+ #include "spipe.h"
++#include "sbuf.h"
+ 
+-struct spipe_device {
+-	struct spipe_init_data *init;
+-	int major;
+-	int minor;
++struct spipe_endpoint {
++	struct device dev;
+ 	struct cdev cdev;
++	struct sbuf_mgr *sbuf;
++	u32 generation;
++	u32 ring;
++	bool dead;
+ };
+ 
+-struct spipe_sbuf {
+-	u8 dst;
+-	u8 channel;
+-	u32 bufid;
++struct spipe_device {
++	struct spipe_init_data *init;
++	struct device *parent;
++	struct sbuf_mgr *sbuf;
++	struct notifier_block notifier;
++	struct work_struct work;
++	struct spipe_endpoint **endpoints;
++	dev_t devid;
++	u32 generation;
++	bool attempted;
+ };
+ 
+ static struct class *spipe_class;
+ 
+-static ssize_t session_show(struct device *dev, struct device_attribute *attr,
+-			    char *buf)
+-{
+-	struct spipe_device *spipe = dev_get_drvdata(dev);
+-	u32 generation, state;
+-	int ret;
+-
+-	ret = sbuf_get_session(spipe->init->dst, spipe->init->channel,
+-			       &generation, &state);
+-	if (ret)
+-		return ret;
+-	return sysfs_emit(buf, "1 %u %u %u %u\n", spipe->init->dst,
+-			  spipe->init->channel, generation, state);
+-}
+-static DEVICE_ATTR_RO(session);
+-
+-static struct attribute *spipe_session_attrs[] = {
+-	&dev_attr_session.attr,
+-	NULL,
+-};
+-ATTRIBUTE_GROUPS(spipe_session);
+-
+ static int spipe_open(struct inode *inode, struct file *filp)
+ {
+-	int minor = iminor(filp->f_path.dentry->d_inode);
+-	struct spipe_device *spipe;
+-	struct spipe_sbuf *sbuf;
+-	int ret;
++	struct spipe_endpoint *ep =
++		container_of(inode->i_cdev, struct spipe_endpoint, cdev);
++	u32 generation;
++	int ret = sbuf_session_state(ep->sbuf, &generation);
+ 
+-	spipe = container_of(inode->i_cdev, struct spipe_device, cdev);
+-	ret = sbuf_status(spipe->init->dst, spipe->init->channel);
+ 	if (ret)
+ 		return ret;
+-
+-	sbuf = kmalloc_obj(struct spipe_sbuf, GFP_KERNEL);
+-	if (!sbuf)
+-		return -ENOMEM;
+-	filp->private_data = sbuf;
+-
+-	sbuf->dst = spipe->init->dst;
+-	sbuf->channel = spipe->init->channel;
+-	sbuf->bufid = minor - spipe->minor;
+-
++	if (READ_ONCE(ep->dead) || generation != ep->generation)
++		return -EPIPE;
++	get_device(&ep->dev);
++	filp->private_data = ep;
+ 	return stream_open(inode, filp);
+ }
+ 
+ static int spipe_release(struct inode *inode, struct file *filp)
+ {
+-	struct spipe_sbuf *sbuf = filp->private_data;
+-
+-	kfree(sbuf);
++	struct spipe_endpoint *ep = filp->private_data;
+ 
++	put_device(&ep->dev);
+ 	return 0;
+ }
+ 
+ static ssize_t spipe_read(struct file *filp, char __user *buf, size_t count,
+ 			  loff_t *ppos)
+ {
+-	struct spipe_sbuf *sbuf = filp->private_data;
+-	int ret, timeout = -1;
++	struct spipe_endpoint *ep = filp->private_data;
++	int ret, timeout = filp->f_flags & O_NONBLOCK ? 0 : -1;
+ 
+-	if (filp->f_flags & O_NONBLOCK)
+-		timeout = 0;
+-
+-	ret = sbuf_read_user(sbuf->dst, sbuf->channel, sbuf->bufid, buf,
+-			     min_t(size_t, count, MAX_RW_COUNT), timeout);
++	ret = sbuf_session_read(ep->sbuf, ep->generation, &ep->dead, ep->ring,
++				(void __force *)buf,
++				min_t(size_t, count, MAX_RW_COUNT), timeout,
++				true);
+ 	if (!timeout && (ret == -ENODATA || ret == -EBUSY))
+ 		return -EAGAIN;
+ 	return ret;
+@@ -114,14 +91,13 @@ static ssize_t spipe_read(struct file *filp, char __user *buf, size_t count,
+ static ssize_t spipe_write(struct file *filp, const char __user *buf,
+ 			   size_t count, loff_t *ppos)
+ {
+-	struct spipe_sbuf *sbuf = filp->private_data;
+-	int ret, timeout = -1;
+-
+-	if (filp->f_flags & O_NONBLOCK)
+-		timeout = 0;
++	struct spipe_endpoint *ep = filp->private_data;
++	int ret, timeout = filp->f_flags & O_NONBLOCK ? 0 : -1;
+ 
+-	ret = sbuf_write_user(sbuf->dst, sbuf->channel, sbuf->bufid, buf,
+-			      min_t(size_t, count, MAX_RW_COUNT), timeout);
++	ret = sbuf_session_write(ep->sbuf, ep->generation, &ep->dead, ep->ring,
++				 (const void __force *)buf,
++				 min_t(size_t, count, MAX_RW_COUNT), timeout,
++				 true);
+ 	if (!timeout && (ret == -ENODATA || ret == -EBUSY))
+ 		return -EAGAIN;
+ 	return ret;
+@@ -129,15 +105,10 @@ static ssize_t spipe_write(struct file *filp, const char __user *buf,
+ 
+ static __poll_t spipe_poll(struct file *filp, poll_table *wait)
+ {
+-	struct spipe_sbuf *sbuf = filp->private_data;
+-
+-	return sbuf_poll_wait(sbuf->dst, sbuf->channel, sbuf->bufid, filp,
+-			      wait);
+-}
++	struct spipe_endpoint *ep = filp->private_data;
+ 
+-static long spipe_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+-{
+-	return -ENOTTY;
++	return sbuf_session_poll(ep->sbuf, ep->generation, &ep->dead, ep->ring,
++				 filp, wait);
+ }
+ 
+ static const struct file_operations spipe_fops = {
+@@ -146,10 +117,112 @@ static const struct file_operations spipe_fops = {
+ 	.read = spipe_read,
+ 	.write = spipe_write,
+ 	.poll = spipe_poll,
+-	.unlocked_ioctl = spipe_ioctl,
+ 	.owner = THIS_MODULE,
+ };
+ 
++static void spipe_endpoint_release(struct device *dev)
++{
++	struct spipe_endpoint *ep =
++		container_of(dev, struct spipe_endpoint, dev);
++
++	sbuf_put_manager(ep->sbuf);
++	kfree(ep);
++}
++
++static void spipe_unregister_endpoints(struct spipe_device *spipe)
++{
++	u32 i;
++
++	for (i = 0; i < spipe->init->ringnr; i++) {
++		struct spipe_endpoint *ep = spipe->endpoints[i];
++
++		if (!ep)
++			continue;
++		sbuf_session_cancel(ep->sbuf, ep->ring, &ep->dead);
++		cdev_device_del(&ep->cdev, &ep->dev);
++		put_device(&ep->dev);
++		spipe->endpoints[i] = NULL;
++	}
++}
++
++static int spipe_register_endpoint(struct spipe_device *spipe, u32 ring)
++{
++	struct spipe_endpoint *ep;
++	int ret;
++
++	ep = kzalloc(sizeof(*ep), GFP_KERNEL);
++	if (!ep)
++		return -ENOMEM;
++	ep->sbuf = spipe->sbuf;
++	kref_get(&ep->sbuf->ref);
++	ep->generation = spipe->generation;
++	ep->ring = ring;
++	device_initialize(&ep->dev);
++	ep->dev.release = spipe_endpoint_release;
++	ep->dev.class = spipe_class;
++	ep->dev.parent = spipe->parent;
++	ep->dev.devt = spipe->devid + ring;
++	if (spipe->init->ringnr > 1)
++		ret = dev_set_name(&ep->dev, "%s%u", spipe->init->name, ring);
++	else
++		ret = dev_set_name(&ep->dev, "%s", spipe->init->name);
++	if (ret)
++		goto put;
++	cdev_init(&ep->cdev, &spipe_fops);
++	ep->cdev.owner = THIS_MODULE;
++	ret = cdev_device_add(&ep->cdev, &ep->dev);
++	if (ret)
++		goto put;
++	spipe->endpoints[ring] = ep;
++	return 0;
++put:
++	sbuf_session_cancel(ep->sbuf, ep->ring, &ep->dead);
++	put_device(&ep->dev);
++	return ret;
++}
++
++static void spipe_session_work(struct work_struct *work)
++{
++	struct spipe_device *spipe =
++		container_of(work, struct spipe_device, work);
++	u32 generation, i;
++	int ret = sbuf_session_state(spipe->sbuf, &generation);
++
++	/* The existing generation also catches RESET/READY coalesced by work. */
++	if (ret || generation != spipe->generation) {
++		spipe_unregister_endpoints(spipe);
++		spipe->attempted = false;
++	}
++	if (ret || spipe->attempted)
++		return;
++	spipe->generation = generation;
++	spipe->attempted = true;
++	for (i = 0; i < spipe->init->ringnr; i++) {
++		/* Preserve all 15 firmware rings, export only actual consumers. */
++		if (spipe->init->dst == 5 && spipe->init->channel == 4 &&
++		    i != 2 && i != 3 && i != 8)
++			continue;
++		ret = spipe_register_endpoint(spipe, i);
++		if (ret) {
++			dev_err(spipe->parent,
++				"session port registration: %d\n", ret);
++			spipe_unregister_endpoints(spipe);
++			break;
++		}
++	}
++}
++
++static int spipe_event(struct notifier_block *nb, unsigned long event,
++		       void *data)
++{
++	struct spipe_device *spipe =
++		container_of(nb, struct spipe_device, notifier);
++
++	if (event == SBUF_NOTIFY_READY || event == SBUF_NOTIFY_RESET)
++		schedule_work(&spipe->work);
++	return NOTIFY_OK;
++}
++
+ static int spipe_parse_dt(struct spipe_init_data **init, struct device_node *np,
+ 			  struct device *dev)
+ {
+@@ -207,110 +280,68 @@ static int spipe_parse_dt(struct spipe_init_data **init, struct device_node *np,
+ 	return ret;
+ }
+ 
+-static inline void spipe_destroy_pdata(struct spipe_init_data **init,
+-				       struct device *dev)
+-{
+-	struct spipe_init_data *pdata = *init;
+-
+-	devm_kfree(dev, pdata);
+-
+-	*init = NULL;
+-}
+-
+ static int spipe_probe(struct platform_device *pdev)
+ {
+ 	struct spipe_init_data *init;
+ 	struct spipe_device *spipe;
+-	struct device *dev;
+-	dev_t devid;
+-	int i, ret;
++	int ret;
+ 
+ 	if (!pdev->dev.of_node)
+ 		return -ENODEV;
+ 	ret = spipe_parse_dt(&init, pdev->dev.of_node, &pdev->dev);
+ 	if (ret)
+ 		return ret;
+-	if (!init->ringnr || init->ringnr > MINORMASK + 1U) {
+-		ret = -EINVAL;
+-		goto free_pdata;
+-	}
+-
++	if (!init->ringnr || init->ringnr > MINORMASK + 1U)
++		return -EINVAL;
+ 	spipe = devm_kzalloc(&pdev->dev, sizeof(*spipe), GFP_KERNEL);
+-	if (!spipe) {
+-		ret = -ENOMEM;
+-		goto free_pdata;
+-	}
++	if (!spipe)
++		return -ENOMEM;
++	spipe->endpoints = devm_kcalloc(&pdev->dev, init->ringnr,
++					sizeof(*spipe->endpoints), GFP_KERNEL);
++	if (!spipe->endpoints)
++		return -ENOMEM;
+ 	spipe->init = init;
++	spipe->parent = &pdev->dev;
++	INIT_WORK(&spipe->work, spipe_session_work);
++	spipe->notifier.notifier_call = spipe_event;
+ 	ret = sbuf_create(init->dst, init->channel, init->ringnr,
+ 			  init->txbuf_size, init->rxbuf_size);
+ 	if (ret)
+-		goto free_pdata;
+-	ret = alloc_chrdev_region(&devid, 0, init->ringnr, init->name);
++		return ret;
++	spipe->sbuf = sbuf_get_manager(init->dst, init->channel);
++	ret = alloc_chrdev_region(&spipe->devid, 0, init->ringnr, init->name);
+ 	if (ret)
+-		goto destroy_sbuf;
+-	spipe->major = MAJOR(devid);
+-	spipe->minor = MINOR(devid);
+-
+-	for (i = 0; i < init->ringnr; i++) {
+-		if (init->ringnr > 1)
+-			dev = device_create_with_groups(spipe_class, &pdev->dev,
+-							devid + i, spipe,
+-							spipe_session_groups,
+-							"%s%d", init->name, i);
+-		else
+-			dev = device_create_with_groups(spipe_class, &pdev->dev,
+-							devid, spipe,
+-							spipe_session_groups,
+-							"%s", init->name);
+-		if (IS_ERR(dev)) {
+-			ret = PTR_ERR(dev);
+-			goto destroy_devices;
+-		}
+-	}
+-
+-	/* Initialize all open-time data before the cdev becomes visible. */
+-	cdev_init(&spipe->cdev, &spipe_fops);
+-	spipe->cdev.owner = THIS_MODULE;
+-	ret = cdev_add(&spipe->cdev, devid, init->ringnr);
++		goto destroy;
++	ret = blocking_notifier_chain_register(&spipe->sbuf->events,
++					       &spipe->notifier);
+ 	if (ret)
+-		goto destroy_devices;
++		goto unregister;
+ 	platform_set_drvdata(pdev, spipe);
++	/* Covers READY before the notifier was attached. */
++	schedule_work(&spipe->work);
+ 	return 0;
+-
+-destroy_devices:
+-	while (i--)
+-		device_destroy(spipe_class, devid + i);
+-	unregister_chrdev_region(devid, init->ringnr);
+-destroy_sbuf:
++unregister:
++	unregister_chrdev_region(spipe->devid, init->ringnr);
++destroy:
+ 	sbuf_destroy(init->dst, init->channel);
+-free_pdata:
+-	spipe_destroy_pdata(&init, &pdev->dev);
++	sbuf_put_manager(spipe->sbuf);
+ 	return ret;
+ }
+ 
+ static void spipe_remove(struct platform_device *pdev)
+ {
+ 	struct spipe_device *spipe = platform_get_drvdata(pdev);
+-	int i;
+-
+-	if (spipe) {
+-		for (i = 0; i < spipe->init->ringnr; i++) {
+-			device_destroy(spipe_class,
+-				       MKDEV(spipe->major, spipe->minor + i));
+-		}
+-		cdev_del(&(spipe->cdev));
+-		unregister_chrdev_region(MKDEV(spipe->major, spipe->minor),
+-					 spipe->init->ringnr);
+-
+-		sbuf_destroy(spipe->init->dst, spipe->init->channel);
+-
+-		spipe_destroy_pdata(&spipe->init, &pdev->dev);
+-
+-		devm_kfree(&pdev->dev, spipe);
+-
+-		platform_set_drvdata(pdev, NULL);
+-	}
+ 
++	blocking_notifier_chain_unregister(&spipe->sbuf->events,
++					   &spipe->notifier);
++	cancel_work_sync(&spipe->work);
++	/* Invalidate and join ring I/O before removing nodes. Old files keep only
++	 * their endpoint and the dead manager, never this devm controller.
++	 */
++	sbuf_destroy(spipe->init->dst, spipe->init->channel);
++	spipe_unregister_endpoints(spipe);
++	unregister_chrdev_region(spipe->devid, spipe->init->ringnr);
++	sbuf_put_manager(spipe->sbuf);
+ }
+ 
+ static const struct of_device_id spipe_match_table[] = {
+diff --git a/drivers/staging/sprd/sipa/Kconfig b/drivers/staging/sprd/sipa/Kconfig
+index e2cfaacb1..7ae2e3f58 100644
+--- a/drivers/staging/sprd/sipa/Kconfig
++++ b/drivers/staging/sprd/sipa/Kconfig
+@@ -5,6 +5,7 @@ config SPRD_SIPA
+ 	bool "UDX710 SIPA AP packet transport"
+ 	depends on NET && INET && OF && HAS_IOMEM
+ 	select MFD_SYSCON
++	select WWAN
+ 	default n
+ 	help
+ 	  SIPA is a module for spreadtrum ip packet accelator driver.
+diff --git a/include/dt-bindings/soc/sprd,roc1-regs.h b/drivers/staging/sprd/sipa/roc1-regs.h
+similarity index 99%
+rename from include/dt-bindings/soc/sprd,roc1-regs.h
+rename to drivers/staging/sprd/sipa/roc1-regs.h
+index af12e7ab4..22a4b3f78 100644
+--- a/include/dt-bindings/soc/sprd,roc1-regs.h
++++ b/drivers/staging/sprd/sipa/roc1-regs.h
+@@ -5,8 +5,8 @@
+  * Copyright C 2018, Spreadtrum Communications Inc.
+  */
+ 
+-#ifndef __DT_BINDINGS_SPRD_GLB_REGS_H
+-#define __DT_BINDINGS_SPRD_GLB_REGS_H
++#ifndef _SPRD_SIPA_ROC1_REGS_H
++#define _SPRD_SIPA_ROC1_REGS_H
+ 
+ #define REG_AI_APB_APB_RST 0x0004
+ #define REG_AI_APB_GEN_CLK_CFG 0x0008
+diff --git a/drivers/staging/sprd/sipa/sipa_api.c b/drivers/staging/sprd/sipa/sipa_api.c
+index ca2f09ce6..ffc212931 100644
+--- a/drivers/staging/sprd/sipa/sipa_api.c
++++ b/drivers/staging/sprd/sipa/sipa_api.c
+@@ -19,6 +19,7 @@
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
++#include <linux/property.h>
+ #include <linux/regmap.h>
+ #include <linux/of_device.h>
+ #include <linux/mfd/syscon.h>
+@@ -1133,18 +1134,22 @@ int sipa_set_enabled(bool enable)
+ }
+ EXPORT_SYMBOL(sipa_set_enabled);
+ 
+-/* Bind USB resource policy to the actual modem transport node.  A missing
+- * declaration keeps cellular/AP transport usable but rejects USB offload.
++/* Local CP resource type comes from this SIPA's match data. Only the PCIe
++ * topology needs a peer declaration; neither path implies a remote grant.
+  */
+ static int sipa_parse_usb_transport(struct device *dev,
+-				    struct sipa_plat_drv_cfg *cfg)
++				    struct sipa_plat_drv_cfg *cfg,
++				    const struct sipa_hw_data *pdata)
+ {
+ 	struct device_node *peer, *rc;
+-	struct of_phandle_args mbox;
+ 	const char *type;
+-	u32 dst, core, ep;
++	u32 dst, ep;
+ 	int ret = -EINVAL;
+ 
++	if (!cfg->need_through_pcie) {
++		cfg->usb_remote_prod = pdata->local_usb_prod;
++		return 0;
++	}
+ 	cfg->usb_remote_prod = -ENODEV;
+ 	peer = of_parse_phandle(dev->of_node, "sprd,cp-transport", 0);
+ 	if (!peer)
+@@ -1154,26 +1159,7 @@ static int sipa_parse_usb_transport(struct device *dev,
+ 	    of_property_read_string(peer, "sprd,type", &type) ||
+ 	    of_property_read_u32(peer, "sprd,dst", &dst))
+ 		goto put;
+-	if (!strcmp(type, "mbox")) {
+-		/* The local CP delegate is explicitly PSCP dst5/core2. */
+-		if (cfg->need_through_pcie || cfg->standalone_subsys ||
+-		    dst != 5 ||
+-		    of_property_read_u32(peer, "sprd,core", &core) || core != 2)
+-			goto put;
+-		ret = of_parse_phandle_with_args(peer, "mboxes", "#mbox-cells",
+-						 0, &mbox);
+-		if (ret)
+-			goto put;
+-		ret = mbox.args_count == 1 && mbox.args[0] == core &&
+-				      of_device_is_available(mbox.np) &&
+-				      of_device_is_compatible(
+-					      mbox.np, "sprd,orca-mailbox") ?
+-			      0 :
+-			      -EINVAL;
+-		of_node_put(mbox.np);
+-		if (!ret)
+-			cfg->usb_remote_prod = SIPA_RM_RES_PROD_CP;
+-	} else if (!strcmp(type, "pcie")) {
++	if (!strcmp(type, "pcie")) {
+ 		/* This only identifies the dependency.  A real host-resource
+ 		 * producer must still be registered and grant every request.
+ 		 */
+@@ -1256,7 +1242,7 @@ static int sipa_parse_dts_configuration(struct platform_device *pdev,
+ 	cfg->need_through_pcie = of_property_read_bool(
+ 		pdev->dev.of_node, "sprd,need-through-pcie");
+ 
+-	ret = sipa_parse_usb_transport(&pdev->dev, cfg);
++	ret = sipa_parse_usb_transport(&pdev->dev, cfg, pdata);
+ 	if (ret)
+ 		return dev_err_probe(&pdev->dev, ret,
+ 				     "invalid CP transport topology\n");
+@@ -1733,11 +1719,41 @@ static void sipa_prepare_suspend_work(struct work_struct *work)
+ 	}
+ }
+ 
++static void sipa_put_modem(void *data)
++{
++	put_device(data);
++}
++
++static int sipa_modem_parent(struct device *dev, struct device **parent)
++{
++	struct fwnode_handle *node;
++	int ret;
++
++	node = fwnode_find_reference(dev_fwnode(dev), "sprd,modem", 0);
++	if (IS_ERR(node))
++		return PTR_ERR(node);
++	*parent = bus_find_device_by_fwnode(&platform_bus_type, node);
++	fwnode_handle_put(node);
++	if (!*parent)
++		return -EPROBE_DEFER;
++	if (!device_is_bound(*parent)) {
++		put_device(*parent);
++		return -EPROBE_DEFER;
++	}
++	ret = devm_add_action_or_reset(dev, sipa_put_modem, *parent);
++	if (ret)
++		return ret;
++	if (!device_link_add(dev, *parent, DL_FLAG_AUTOREMOVE_CONSUMER))
++		return -EINVAL;
++	return 0;
++}
++
+ static int sipa_plat_drv_probe(struct platform_device *pdev_p)
+ {
+ 	int ret;
+ 	struct device *dev = &pdev_p->dev;
+ 	struct sipa_control *ctrl;
++	struct device *modem;
+ 	/*
+ 	 * SIPA probe function can be called for multiple times as the same probe
+ 	 * function handles multiple compatibilities
+@@ -1747,6 +1763,9 @@ static int sipa_plat_drv_probe(struct platform_device *pdev_p)
+ 
+ 	if (READ_ONCE(s_sipa_ctrl))
+ 		return -EBUSY;
++	ret = sipa_modem_parent(dev, &modem);
++	if (ret)
++		return ret;
+ 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(40));
+ 	if (ret)
+ 		return ret;
+@@ -1763,20 +1782,14 @@ static int sipa_plat_drv_probe(struct platform_device *pdev_p)
+ 	ret = sipa_parse_dts_configuration(pdev_p, &ctrl->params_cfg);
+ 	if (ret) {
+ 		dev_err(dev, "sipa: dts parsing failed\n");
+-		WRITE_ONCE(s_sipa_ctrl, NULL);
+-		dev_set_drvdata(dev, NULL);
+-		kfree(ctrl);
+-		return ret;
++		goto free_ctrl;
+ 	}
+ 
+ 	ctrl->suspend_stage = SIPA_SUSPEND_MASK;
+ 	ret = ipa_pre_init(&ctrl->params_cfg);
+ 	if (ret) {
+ 		dev_err(dev, "sipa: pre init failed\n");
+-		WRITE_ONCE(s_sipa_ctrl, NULL);
+-		dev_set_drvdata(dev, NULL);
+-		kfree(ctrl);
+-		return ret;
++		goto free_ctrl;
+ 	}
+ 
+ 	mutex_init(&ctrl->resume_lock);
+@@ -1786,19 +1799,34 @@ static int sipa_plat_drv_probe(struct platform_device *pdev_p)
+ 	ctrl->power_wq = create_workqueue("sipa_power_wq");
+ 	if (!ctrl->power_wq) {
+ 		dev_err(dev, "sipa power wq create failed\n");
+-		return -ENOMEM;
++		ret = -ENOMEM;
++		goto free_ctrl;
+ 	}
+ 
++	/* Until sipa_init publishes ctx, link open returns -EPROBE_DEFER. */
++	ret = sipa_eth_init(modem, ctrl);
++	if (ret)
++		goto destroy_wq;
++
+ 	ret = sipa_init(&ctrl->ctx, &ctrl->params_cfg, dev);
+ 	if (ret) {
+ 		dev_err(dev, "sipa: sipa_init failed %d\n", ret);
+-		return ret;
++		sipa_eth_exit(modem);
++		goto destroy_wq;
+ 	}
+ 
+ 	device_init_wakeup(dev, true);
+ 	sipa_init_debugfs(&ctrl->params_cfg, ctrl);
+ 
+ 	return 0;
++
++destroy_wq:
++	destroy_workqueue(ctrl->power_wq);
++free_ctrl:
++	WRITE_ONCE(s_sipa_ctrl, NULL);
++	dev_set_drvdata(dev, NULL);
++	kfree(ctrl);
++	return ret;
+ }
+ 
+ /* Since different sipa of orca/roc1 series can have different register
+@@ -1809,12 +1837,14 @@ static struct sipa_hw_data roc1_defs_data = {
+ 	.ahb_reg = sipa_roc1_ahb_regmap,
+ 	.ahb_regnum = ROC1_AHB_MAX_REG,
+ 	.standalone_subsys = true,
++	.local_usb_prod = -ENODEV,
+ };
+ 
+ static struct sipa_hw_data orca_defs_data = {
+ 	.ahb_reg = sipa_orca_ahb_regmap,
+ 	.ahb_regnum = ORCA_AHB_MAX_REG,
+ 	.standalone_subsys = false,
++	.local_usb_prod = SIPA_RM_RES_PROD_CP,
+ };
+ 
+ static const struct of_device_id sipa_plat_drv_match[] = {
+diff --git a/drivers/staging/sprd/sipa/sipa_debug.h b/drivers/staging/sprd/sipa/sipa_debug.h
+index 00d0d801e..b80d3825f 100644
+--- a/drivers/staging/sprd/sipa/sipa_debug.h
++++ b/drivers/staging/sprd/sipa/sipa_debug.h
+@@ -16,7 +16,7 @@
+ 
+ #ifndef __SIPA_ROC1_LINUX_DEBUG_H__
+ #define __SIPA_ROC1_LINUX_DEBUG_H__
+-#include <dt-bindings/soc/sprd,roc1-regs.h>
++#include "roc1-regs.h"
+ 
+ #include "sipa_priv.h"
+ #include "sipa_hal_priv.h"
+diff --git a/drivers/staging/sprd/sipa/sipa_eth.c b/drivers/staging/sprd/sipa/sipa_eth.c
+index a144f9825..64ca7a8d9 100644
+--- a/drivers/staging/sprd/sipa/sipa_eth.c
++++ b/drivers/staging/sprd/sipa/sipa_eth.c
+@@ -27,13 +27,11 @@
+ #include <linux/ipv6.h>
+ #include <linux/udp.h>
+ #include <linux/if_arp.h>
+-#include <linux/platform_device.h>
++#include <linux/wwan.h>
+ #include <linux/sched.h>
+ #include <linux/kthread.h>
+ #include <linux/debugfs.h>
+ #include <linux/seq_file.h>
+-#include <linux/of_device.h>
+-#include <linux/of.h>
+ #include <linux/interrupt.h>
+ #include "sipa_eth.h"
+ #include "sipa_priv.h"
+@@ -74,8 +72,7 @@ static int sipa_eth_prepare_skb(struct SIPA_ETH *sipa_eth, struct sk_buff *skb)
+ 	struct iphdr *iph;
+ 	struct ethhdr *peth;
+ 	struct net_device *dev;
+-	struct sipa_eth_init_data *pdata = sipa_eth->pdata;
+-	unsigned int offset = pdata->mac_h ? ETH_HLEN : 0;
++	unsigned int offset = sipa_eth->mac_h ? ETH_HLEN : 0;
+ 	u8 version;
+ 
+ 	dev = sipa_eth->netdev;
+@@ -95,7 +92,7 @@ static int sipa_eth_prepare_skb(struct SIPA_ETH *sipa_eth, struct sk_buff *skb)
+ 	} else {
+ 		return -EPROTONOSUPPORT;
+ 	}
+-	if (!pdata->mac_h && skb_cow_head(skb, ETH_HLEN))
++	if (!sipa_eth->mac_h && skb_cow_head(skb, ETH_HLEN))
+ 		return -ENOMEM;
+ 
+ 	/* eth is rawip */
+@@ -116,7 +113,7 @@ static int sipa_eth_prepare_skb(struct SIPA_ETH *sipa_eth, struct sk_buff *skb)
+ 	 * because the information in the header room
+ 	 * is no longer useful for IP layer.
+ 	 */
+-	if (pdata->mac_h) {
++	if (sipa_eth->mac_h) {
+ 		skb_reset_mac_header(skb);
+ 		peth = (struct ethhdr *)skb->data;
+ 	} else {
+@@ -267,8 +264,7 @@ static void sipa_eth_notify_cb(void *priv, enum sipa_evt_type evt,
+ 
+ static int sipa_eth_start_xmit(struct sk_buff *skb, struct net_device *dev)
+ {
+-	struct SIPA_ETH *sipa_eth = netdev_priv(dev);
+-	struct sipa_eth_init_data *pdata = sipa_eth->pdata;
++	struct SIPA_ETH *sipa_eth = wwan_netdev_drvpriv(dev);
+ 	struct sipa_eth_dtrans_stats *dt_stats;
+ 	int ret = 0;
+ 	int netid;
+@@ -283,9 +279,9 @@ static int sipa_eth_start_xmit(struct sk_buff *skb, struct net_device *dev)
+ 		return NETDEV_TX_OK;
+ 	}
+ 
+-	netid = pdata->netid;
++	netid = sipa_eth->netid;
+ 	/* eth is rawip, so pull 14 bytes */
+-	if (!pdata->mac_h) {
++	if (!sipa_eth->mac_h) {
+ 		if (!pskb_may_pull(skb, ETH_HLEN))
+ 			goto err;
+ 		skb_pull_inline(skb, ETH_HLEN);
+@@ -293,12 +289,12 @@ static int sipa_eth_start_xmit(struct sk_buff *skb, struct net_device *dev)
+ 	/* Success transfers ownership: do not read skb after the call. */
+ 	payload_len = skb->len;
+ 
+-	ret = sipa_nic_tx(sipa_eth->nic_id, pdata->term_type, netid, skb);
++	ret = sipa_nic_tx(sipa_eth->nic_id, sipa_eth->term_type, netid, skb);
+ 	if (unlikely(ret != 0)) {
+ 		pr_err("fail to send skb, ret %d\n", ret);
+ 		if (ret == -EAGAIN || ret == -EINPROGRESS) {
+ 			/* NETDEV_TX_BUSY leaves ownership with the networking stack. */
+-			if (!pdata->mac_h)
++			if (!sipa_eth->mac_h)
+ 				skb_push(skb, ETH_HLEN);
+ 			dt_stats->tx_fail++;
+ 			sipa_eth->stats.tx_errors++;
+@@ -325,13 +321,12 @@ static int sipa_eth_start_xmit(struct sk_buff *skb, struct net_device *dev)
+ /* Open interface */
+ static int sipa_eth_open(struct net_device *dev)
+ {
+-	struct SIPA_ETH *sipa_eth = netdev_priv(dev);
+-	struct sipa_eth_init_data *pdata = sipa_eth->pdata;
++	struct SIPA_ETH *sipa_eth = wwan_netdev_drvpriv(dev);
+ 	int ret = 0;
+ 
+ 	pr_info("open %s netid %d term_type %d mac_h %d\n", dev->name,
+-		pdata->netid, pdata->term_type, pdata->mac_h);
+-	ret = sipa_nic_open(pdata->term_type, pdata->netid, sipa_eth_notify_cb,
++		sipa_eth->netid, sipa_eth->term_type, sipa_eth->mac_h);
++	ret = sipa_nic_open(sipa_eth->term_type, sipa_eth->netid, sipa_eth_notify_cb,
+ 			    (void *)sipa_eth);
+ 
+ 	if (ret < 0)
+@@ -361,7 +356,7 @@ static int sipa_eth_open(struct net_device *dev)
+ /* Close interface */
+ static int sipa_eth_close(struct net_device *dev)
+ {
+-	struct SIPA_ETH *sipa_eth = netdev_priv(dev);
++	struct SIPA_ETH *sipa_eth = wwan_netdev_drvpriv(dev);
+ 
+ 	pr_info("close %s!\n", dev->name);
+ 
+@@ -376,7 +371,7 @@ static int sipa_eth_close(struct net_device *dev)
+ 
+ static struct net_device_stats *sipa_eth_get_stats(struct net_device *dev)
+ {
+-	struct SIPA_ETH *sipa_eth = netdev_priv(dev);
++	struct SIPA_ETH *sipa_eth = wwan_netdev_drvpriv(dev);
+ 
+ 	return &sipa_eth->stats;
+ }
+@@ -406,180 +401,83 @@ int sipa_eth_flowtable_port(struct net_device *dev, u8 *port)
+ }
+ #endif
+ 
+-static int sipa_eth_parse_dt(struct sipa_eth_init_data **init,
+-			     struct device *dev)
++static void sipa_wwan_setup(struct net_device *dev)
+ {
+-	struct sipa_eth_init_data *pdata = NULL;
+-	struct device_node *np = dev->of_node;
+-	int ret;
+-	u32 udata, id;
+-	s32 sdata;
+-
+-	if (!np)
+-		pr_err("dev of_node np is null\n");
+-
+-	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
+-	if (!pdata)
+-		return -ENOMEM;
+-
+-	id = of_alias_get_id(np, "eth");
+-	switch (id) {
+-	case 0 ... 7:
+-		snprintf(pdata->name, IFNAMSIZ, "%s%d", SIPA_ETH_IFACE_PREF,
+-			 id);
+-		break;
+-	default:
+-		pr_err("wrong alias id from dts, id %d\n", id);
+-		return -EINVAL;
+-	}
+-
+-	ret = of_property_read_s32(np, "sprd,netid", &sdata);
+-	if (ret) {
+-		pr_err("read sprd,netid ret %d\n", ret);
+-		return ret;
+-	}
+-	/* dts reflect */
+-	pdata->netid = sdata - 1;
+-
+-	ret = of_property_read_u32(np, "sprd,term-type", &udata);
+-	if (ret) {
+-		pr_err("read sprd,term-type ret %d\n", ret);
+-		return ret;
+-	}
+-
+-	pdata->term_type = udata;
+-
+-	pdata->mac_h = of_property_read_bool(np, "sprd,mac-header");
++	struct SIPA_ETH *sipa_eth = wwan_netdev_drvpriv(dev);
+ 
+-	*init = pdata;
+-	pr_debug("after dt parse, name %s netid %d term-type %d mac_h %d\n",
+-		 pdata->name, pdata->netid, pdata->term_type, pdata->mac_h);
+-	return 0;
+-}
+-
+-static void s_setup(struct net_device *dev)
+-{
+ 	ether_setup(dev);
+-	/*
+-	 * avoid mdns to be send
+-	 * also disable arp
+-	 */
+ 	dev->flags &= ~(IFF_BROADCAST | IFF_MULTICAST);
+-	/* Cellular IP has no ARP peer. Retain its required 14-byte DMA framing. */
+ 	dev->flags |= IFF_NOARP;
++	/* Preserve the 14-byte DMA framing while presenting cellular raw IP. */
++	dev->type = ARPHRD_RAWIP;
++	dev->netdev_ops = &sipa_eth_ops;
++	dev->watchdog_timeo = HZ;
++	dev->needs_free_netdev = true;
++	eth_hw_addr_random(dev);
++	sipa_eth->netdev = dev;
++	sipa_eth->term_type = SIPA_TERM_VCP;
++	sipa_eth->mac_h = true;
++	sipa_eth->state = DEV_OFF;
++	sipa_eth_dt_stats_init(&sipa_eth->dt_stats);
++	netif_napi_add_weight(dev, &sipa_eth->napi, sipa_eth_rx_poll_handler,
++			     SIPA_ETH_NAPI_WEIGHT);
++	netif_carrier_off(dev);
+ }
+ 
+-static int sipa_eth_probe(struct platform_device *pdev)
++static int sipa_wwan_newlink(void *ctxt, struct net_device *dev, u32 link_id,
++			   struct netlink_ext_ack *extack)
+ {
+-	struct sipa_eth_init_data *pdata = pdev->dev.platform_data;
+-	struct net_device *netdev;
+-	struct SIPA_ETH *sipa_eth;
+-	char ifname[IFNAMSIZ];
++	struct sipa_control *ctrl = ctxt;
++	struct SIPA_ETH *sipa_eth = wwan_netdev_drvpriv(dev);
+ 	int ret;
+ 
+-	if (pdev->dev.of_node && !pdata) {
+-		ret = sipa_eth_parse_dt(&pdata, &pdev->dev);
+-		if (ret) {
+-			pr_err("failed to parse device tree, ret=%d\n", ret);
+-			return ret;
+-		}
+-		pdev->dev.platform_data = pdata;
+-	}
+-
+-	if (!pdata)
++	if (link_id >= 8)
+ 		return -EINVAL;
+-	if (!sipa_get_ctrl_pointer() || !sipa_get_ctrl_pointer()->ctx)
+-		return -EPROBE_DEFER;
+-	strscpy(ifname, pdata->name, IFNAMSIZ);
+-	netdev = alloc_netdev(sizeof(struct SIPA_ETH), ifname, NET_NAME_UNKNOWN,
+-			      s_setup);
+-
+-	if (!netdev) {
+-		pr_err("alloc_netdev() failed.\n");
+-		return -ENOMEM;
+-	}
+-
+-	/*
+-	 * If net_device's type is ARPHRD_ETHER, the ipv6 interface identifier
+-	 * specified by the network will be covered by addrconf_ifid_eui48,
+-	 * this will casue ipv6 fail in some test environment.
+-	 * So set the sipa_eth net_device's type to ARPHRD_RAWIP here.
+-	 */
+-	netdev->type = ARPHRD_RAWIP;
+-
+-	sipa_eth = netdev_priv(netdev);
+-	sipa_eth_dt_stats_init(&sipa_eth->dt_stats);
+-	sipa_eth->netdev = netdev;
+-	sipa_eth->pdata = pdata;
+-	netdev->netdev_ops = &sipa_eth_ops;
+-	netdev->watchdog_timeo = 1 * HZ;
+-	netdev->irq = 0;
+-	netdev->dma = 0;
+-
+-	eth_hw_addr_random(netdev);
+-
+-	netif_napi_add_weight(netdev, &sipa_eth->napi, sipa_eth_rx_poll_handler,
+-			      SIPA_ETH_NAPI_WEIGHT);
+-
+-	/* Register new Ethernet interface */
+-	ret = register_netdev(netdev);
+-	if (ret) {
+-		pr_err("register_netdev() failed (%d)\n", ret);
+-		netif_napi_del(&sipa_eth->napi);
+-		free_netdev(netdev);
++	/* Each CP netid has one receive queue; WWAN does not reject duplicates. */
++	if (ctrl->wwan_links & BIT(link_id))
++		return -EBUSY;
++	sipa_eth->netid = link_id;
++	ret = register_netdevice(dev);
++	if (ret)
+ 		return ret;
+-	}
+-
+-	sipa_eth->state = DEV_OFF;
+-	/* Set link as disconnected */
+-	netif_carrier_off(netdev);
+-	platform_set_drvdata(pdev, sipa_eth);
+-	sipa_eth_debugfs_mknod(root, (void *)sipa_eth);
++	ctrl->wwan_links |= BIT(link_id);
++	sipa_eth_debugfs_mknod(root, sipa_eth);
+ 	return 0;
+ }
+ 
+-/* Cleanup Ethernet device driver. */
+-static void sipa_eth_remove(struct platform_device *pdev)
++static void sipa_wwan_dellink(void *ctxt, struct net_device *dev,
++			    struct list_head *head)
+ {
+-	struct SIPA_ETH *sipa_eth = platform_get_drvdata(pdev);
++	struct sipa_control *ctrl = ctxt;
++	struct SIPA_ETH *sipa_eth = wwan_netdev_drvpriv(dev);
+ 
+ 	debugfs_remove_recursive(sipa_eth->debugfs_dir);
+-	unregister_netdev(sipa_eth->netdev);
+-	netif_napi_del(&sipa_eth->napi);
+-	free_netdev(sipa_eth->netdev);
+-	platform_set_drvdata(pdev, NULL);
++	ctrl->wwan_links &= ~BIT(sipa_eth->netid);
++	unregister_netdevice_queue(dev, head);
+ }
+ 
+-static const struct of_device_id sipa_eth_match_table[] = {
+-	{ .compatible = "sprd,sipa_eth" },
+-	{}
+-};
+-
+-static struct platform_driver sipa_eth_driver = {
+-	.probe = sipa_eth_probe,
+-	.remove = sipa_eth_remove,
+-	.driver = { .owner = THIS_MODULE,
+-		    .name = SIPA_ETH_IFACE_PREF,
+-		    .of_match_table = sipa_eth_match_table }
++static const struct wwan_ops sipa_wwan_ops = {
++	.priv_size = sizeof(struct SIPA_ETH),
++	.setup = sipa_wwan_setup,
++	.newlink = sipa_wwan_newlink,
++	.dellink = sipa_wwan_dellink,
+ };
+ 
+ static int sipa_eth_debug_show(struct seq_file *m, void *v)
+ {
+ 	struct SIPA_ETH *sipa_eth = (struct SIPA_ETH *)(m->private);
+ 	struct sipa_eth_dtrans_stats *stats;
+-	struct sipa_eth_init_data *pdata;
+ 
+ 	if (!sipa_eth) {
+ 		pr_err("invalid data, sipa_eth is NULL\n");
+ 		return -EINVAL;
+ 	}
+-	pdata = sipa_eth->pdata;
+ 	stats = &sipa_eth->dt_stats;
+ 
+ 	seq_puts(m, "*************************************************\n");
+ 	seq_printf(m, "DEVICE: %s, term_type %d, netid %d, state %s mac_h %d\n",
+-		   pdata->name, pdata->term_type, pdata->netid,
+-		   sipa_eth->state == DEV_ON ? "UP" : "DOWN", pdata->mac_h);
++		   sipa_eth->netdev->name, sipa_eth->term_type, sipa_eth->netid,
++		   sipa_eth->state == DEV_ON ? "UP" : "DOWN", sipa_eth->mac_h);
+ 	seq_puts(m, "\nRX statistics:\n");
+ 	seq_printf(m, "rx_sum=%u, rx_cnt=%u\n", stats->rx_sum, stats->rx_cnt);
+ 	seq_printf(m, "rx_fail=%u\n", stats->rx_fail);
+@@ -643,7 +541,7 @@ static int sipa_eth_debugfs_mknod(void *root, void *data)
+ 	return 0;
+ }
+ 
+-static void __init sipa_eth_debugfs_init(void)
++static void sipa_eth_debugfs_init(void)
+ {
+ 	root = debugfs_create_dir(SIPA_ETH_IFACE_PREF, NULL);
+ 	if (IS_ERR(root))
+@@ -653,26 +551,23 @@ static void __init sipa_eth_debugfs_init(void)
+ 			    &fops_gro_enable);
+ }
+ 
+-static int __init sipa_eth_init(void)
++int sipa_eth_init(struct device *dev, struct sipa_control *ctrl)
+ {
+ 	int ret;
+ 
+ 	sipa_eth_debugfs_init();
+-	ret = platform_driver_register(&sipa_eth_driver);
++	ret = wwan_register_ops(dev, &sipa_wwan_ops, ctrl, 0);
+ 	if (ret)
+ 		debugfs_remove_recursive(root);
+ 	return ret;
+ }
+ 
+-static void __exit sipa_eth_exit(void)
++void sipa_eth_exit(struct device *dev)
+ {
+-	platform_driver_unregister(&sipa_eth_driver);
++	wwan_unregister_ops(dev);
+ 	debugfs_remove_recursive(root);
+ }
+ 
+-module_init(sipa_eth_init);
+-module_exit(sipa_eth_exit);
+-
+ MODULE_AUTHOR("Wade.Shu");
+-MODULE_DESCRIPTION("Unisoc Ethernet device driver for IPA");
++MODULE_DESCRIPTION("Unisoc SIPA WWAN data links");
+ MODULE_LICENSE("GPL");
+diff --git a/drivers/staging/sprd/sipa/sipa_eth.h b/drivers/staging/sprd/sipa/sipa_eth.h
+index 0e710f224..61df64897 100644
+--- a/drivers/staging/sprd/sipa/sipa_eth.h
++++ b/drivers/staging/sprd/sipa/sipa_eth.h
+@@ -25,11 +25,6 @@ struct SIPA_ETH {
+ 	/* Record data_transfer statistics */
+ 	struct sipa_eth_dtrans_stats dt_stats;
+ 	struct net_device_stats stats; /* Net statistics */
+-	struct sipa_eth_init_data *pdata; /* Platform data */
+-};
+-
+-struct sipa_eth_init_data {
+-	char name[IFNAMSIZ];
+ 	u32 term_type;
+ 	s32 netid;
+ 	bool mac_h;
+diff --git a/drivers/staging/sprd/sipa/sipa_hal_priv.h b/drivers/staging/sprd/sipa/sipa_hal_priv.h
+index 7086bda79..fdaf035b3 100644
+--- a/drivers/staging/sprd/sipa/sipa_hal_priv.h
++++ b/drivers/staging/sprd/sipa/sipa_hal_priv.h
+@@ -306,5 +306,4 @@ struct sipa_hal_context {
+ u32 sipa_int_callback_func(int evt, void *cookie);
+ u32 sipa_fifo_ops_init(struct sipa_hal_fifo_ops *ops);
+ u32 sipa_glb_ops_init(struct sipa_hal_global_ops *ops);
+-u32 sipa_sys_proc_init(struct sipa_sys_ops *ops);
+ #endif
+diff --git a/drivers/staging/sprd/sipa/sipa_phy_v0/sipa_sys_hal.c b/drivers/staging/sprd/sipa/sipa_phy_v0/sipa_sys_hal.c
+deleted file mode 100644
+index 0374e9ce5..000000000
+--- a/drivers/staging/sprd/sipa/sipa_phy_v0/sipa_sys_hal.c
++++ /dev/null
+@@ -1,32 +0,0 @@
+-#include "../sipa_hal_priv.h"
+-
+-static u32 sipa_sys_hal_module_soft_rst(void __iomem *reg_base, u32 sys)
+-{
+-	u32 flag = 0;
+-
+-	flag = sipa_sys_phy_module_soft_rst(reg_base, sys);
+-
+-	return flag;
+-}
+-
+-static u32 sipa_sys_hal_module_enable(void __iomem *reg_base, u32 enable,
+-				      u32 sys)
+-{
+-	u32 flag = 0;
+-
+-	if (enable)
+-		flag = sipa_sys_phy_module_enable(reg_base, sys);
+-	else
+-		flag = sipa_sys_phy_module_disable(reg_base, sys);
+-
+-	return flag;
+-}
+-
+-u32 sipa_sys_proc_init(struct sipa_sys_ops *ops)
+-{
+-	ops->module_enable = sipa_sys_hal_module_enable;
+-	ops->module_soft_rst = sipa_sys_hal_module_soft_rst;
+-
+-	return TRUE;
+-}
+-EXPORT_SYMBOL(sipa_sys_proc_init);
+diff --git a/drivers/staging/sprd/sipa/sipa_priv.h b/drivers/staging/sprd/sipa/sipa_priv.h
+index 6eb6e91b9..aee4d69ad 100644
+--- a/drivers/staging/sprd/sipa/sipa_priv.h
++++ b/drivers/staging/sprd/sipa/sipa_priv.h
+@@ -113,6 +113,7 @@ struct sipa_hw_data {
+ 	const u32 ahb_regnum;
+ 	const struct ipa_register_map *ahb_reg;
+ 	const bool standalone_subsys;
++	const int local_usb_prod;
+ };
+ 
+ struct sipa_plat_drv_cfg {
+@@ -146,7 +147,7 @@ struct sipa_plat_drv_cfg {
+ 	bool tft_mode;
+ 	bool wiap_ul_dma;
+ 	bool need_through_pcie;
+-	/* Validated DT transport, not a producer readiness/grant flag. */
++	/* Platform resource type, not a producer readiness/grant flag. */
+ 	enum sipa_usb_format
+ 		usb_format; /* resume_lock; restored before USB FIFO */
+ 	int usb_remote_prod;
+@@ -351,6 +352,8 @@ struct sipa_control {
+ 
+ 	/* IPA NIC interface */
+ 	struct sipa_nic *nic[SIPA_NIC_MAX];
++	/* CP netids allocated through WWAN; protected by RTNL. */
++	unsigned long wwan_links;
+ 
+ 	/* sender & receiver */
+ 	struct sipa_skb_sender *sender[SIPA_PKT_TYPE_MAX];
+@@ -376,6 +379,8 @@ void destroy_sipa_skb_sender(struct sipa_skb_sender *sender);
+ u32 sipa_get_suspend_status(void);
+ 
+ struct sipa_control *sipa_get_ctrl_pointer(void);
++int sipa_eth_init(struct device *dev, struct sipa_control *ctrl);
++void sipa_eth_exit(struct device *dev);
+ 
+ int sipa_skb_sender_send_data(struct sipa_skb_sender *sender,
+ 			      struct sk_buff *skb, enum sipa_term_type dst,
+diff --git a/drivers/staging/sprd/sipa/sipa_rm.c b/drivers/staging/sprd/sipa/sipa_rm.c
+index cd817f308..8891fb0fb 100644
+--- a/drivers/staging/sprd/sipa/sipa_rm.c
++++ b/drivers/staging/sprd/sipa/sipa_rm.c
+@@ -140,19 +140,6 @@ static void sipa_rm_inactivity_timer_func(struct work_struct *work)
+ 			       flags);
+ }
+ 
+-/**
+- * sipa_rm_is_initialized() - check sipa_rm is initialized
+- *
+- * Returns: true on initialized
+- *
+- * This function is called to check sipa_rm is initialized
+- */
+-bool sipa_rm_is_initialized(void)
+-{
+-	/* External peers may enter only after the full SIPA context is published. */
+-	return sipa_rm_ctx && sipa_get_pdev();
+-}
+-
+ /**
+  * sipa_rm_create_resource() - create resource
+  * @create_params: [in] parameters needed
+diff --git a/drivers/staging/sprd/sipa_delegate/Makefile b/drivers/staging/sprd/sipa_delegate/Makefile
+index 0517553a3..fe43e2e3d 100644
+--- a/drivers/staging/sprd/sipa_delegate/Makefile
++++ b/drivers/staging/sprd/sipa_delegate/Makefile
+@@ -1,4 +1,2 @@
+ obj-$(CONFIG_SPRD_SIPA_DELEGATE) += sipa_delegate.o sipa_dele_cmn.o
+-obj-$(CONFIG_SPRD_SIPA_DELE_MINIAP_IN_AP) += sipa_dele_miniap_in_ap.o
+-obj-$(CONFIG_SPRD_SIPA_DELE_AP_IN_MINIAP) += sipa_dele_ap_in_miniap.o
+ obj-$(CONFIG_SPRD_SIPA_DELE_CP_IN_MINIAP) += sipa_dele_cp_in_miniap.o
+diff --git a/drivers/staging/sprd/sipa_delegate/sipa_dele_ap_in_miniap.c b/drivers/staging/sprd/sipa_delegate/sipa_dele_ap_in_miniap.c
+deleted file mode 100644
+index 567c3e2da..000000000
+--- a/drivers/staging/sprd/sipa_delegate/sipa_dele_ap_in_miniap.c
++++ /dev/null
+@@ -1,157 +0,0 @@
+-// SPDX-License-Identifier: GPL-2.0-only
+-/*
+- * Copyright (C) 2018-2019 Unisoc Corporation
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License
+- * version 2 as published by the Free Software Foundation.
+- *
+- * This program is distributed in the hope that it will be useful, but
+- * WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * General Public License for more details.
+- */
+-
+-#define pr_fmt(fmt) "sipa_dele: %s " fmt, __func__
+-
+-#include <linux/sipa.h>
+-#include <linux/sipc.h>
+-#include <linux/device.h>
+-#include <linux/init.h>
+-#include <linux/kernel.h>
+-#include <linux/mm.h>
+-#include <linux/module.h>
+-#include <linux/of.h>
+-#include <linux/platform_device.h>
+-#include <linux/sipc.h>
+-#include <linux/sipa.h>
+-#include "sipa_dele_priv.h"
+-#include "../pam_ipa/pam_ipa_core.h"
+-
+-#define FIFO_NODE_BYTES 16
+-
+-static struct ap_delegator *s_ap_delegator;
+-
+-static int sipa_alloc_fifo_mem(struct sipa_ext_fifo_params *param)
+-{
+-	param->rx_fifo_pal =
+-		smem_alloc(SIPC_ID_PSCP, param->rx_depth * FIFO_NODE_BYTES);
+-	if (!param->rx_fifo_pal)
+-		return -ENOMEM;
+-	param->rx_fifo_pah = 0;
+-	param->rx_fifo_va =
+-		shmem_ram_vmap_nocache(SIPC_ID_PSCP, param->rx_fifo_pal,
+-				       param->rx_depth * FIFO_NODE_BYTES);
+-	if (!param->rx_fifo_va)
+-		goto mem_fail;
+-
+-	param->tx_fifo_pal =
+-		smem_alloc(SIPC_ID_PSCP, param->tx_depth * FIFO_NODE_BYTES);
+-	if (!param->tx_fifo_pal)
+-		goto mem_fail;
+-	param->tx_fifo_pah = 0;
+-	param->tx_fifo_va =
+-		shmem_ram_vmap_nocache(SIPC_ID_PSCP, param->tx_fifo_pal,
+-				       param->tx_depth * FIFO_NODE_BYTES);
+-	if (!param->tx_fifo_va)
+-		goto mem_fail;
+-
+-	return 0;
+-
+-mem_fail:
+-	if (param->rx_fifo_va)
+-		shmem_ram_unmap(SIPC_ID_PSCP, param->rx_fifo_va);
+-	if (param->rx_fifo_pal)
+-		smem_free(SIPC_ID_PSCP, param->rx_fifo_pal,
+-			  param->rx_depth * FIFO_NODE_BYTES);
+-	if (param->tx_fifo_pal)
+-		smem_free(SIPC_ID_PSCP, param->tx_fifo_pal,
+-			  param->tx_depth * FIFO_NODE_BYTES);
+-
+-	return -ENOMEM;
+-}
+-
+-void ap_dele_on_open(void *priv, u16 flag, u32 data)
+-{
+-	int ret;
+-	struct smsg msg;
+-	struct sipa_pcie_open_params param = {};
+-	struct sipa_ext_fifo_params *recv;
+-	struct sipa_ext_fifo_params *send;
+-	struct sipa_delegator *delegator = priv;
+-
+-	/* call base class on_open func first */
+-	sipa_dele_on_open(priv, flag, data);
+-
+-	/* alloc memory for pcie sipa ep */
+-	recv = &param.ext_recv_param;
+-	recv->rx_depth = delegator->cfg->dl_fifo_depth;
+-	recv->tx_depth = delegator->cfg->dl_fifo_depth;
+-	ret = sipa_alloc_fifo_mem(recv);
+-	if (ret)
+-		pr_err("alloc recv fifo mem fail\n");
+-	send = &param.ext_send_param;
+-	send->rx_depth = delegator->cfg->ul_fifo_depth;
+-	send->tx_depth = delegator->cfg->ul_fifo_depth;
+-	ret = sipa_alloc_fifo_mem(send);
+-	if (ret)
+-		pr_err("alloc send fifo mem fail\n");
+-
+-	/* open pcie ep */
+-	param.id = SIPA_EP_PCIE;
+-	param.recv_param.intr_to_ap = 0;
+-	param.recv_param.tx_intr_delay_us = 5;
+-	param.recv_param.tx_intr_threshold = 5;
+-	param.send_param.intr_to_ap = 0;
+-	param.send_param.tx_intr_delay_us = 5;
+-	param.send_param.tx_intr_threshold = 5;
+-
+-	ret = sipa_ext_open_pcie(&param);
+-	if (ret)
+-		pr_err("open pcie ip fail\n");
+-
+-	/* dl tx */
+-	smsg_set(&msg, delegator->chan, SMSG_TYPE_EVENT,
+-		 SMSG_FLG_DELE_ADDR_DL_TX, recv->tx_fifo_pal);
+-	ret = smsg_send(delegator->dst, &msg, -1);
+-	if (ret)
+-		pr_err("dl tx smsg send fail %d\n", ret);
+-
+-	/* dl rx */
+-	smsg_set(&msg, delegator->chan, SMSG_TYPE_EVENT,
+-		 SMSG_FLG_DELE_ADDR_DL_RX, recv->rx_fifo_pal);
+-	ret = smsg_send(delegator->dst, &msg, -1);
+-	if (ret)
+-		pr_err("dl rx smsg send fail %d\n", ret);
+-	/* ul tx */
+-	smsg_set(&msg, delegator->chan, SMSG_TYPE_EVENT,
+-		 SMSG_FLG_DELE_ADDR_UL_TX, send->tx_fifo_pal);
+-	ret = smsg_send(delegator->dst, &msg, -1);
+-	if (ret)
+-		pr_err("ul tx smsg send fail %d\n", ret);
+-	/* ul rx */
+-	smsg_set(&msg, delegator->chan, SMSG_TYPE_EVENT,
+-		 SMSG_FLG_DELE_ADDR_UL_RX, send->rx_fifo_pal);
+-	ret = smsg_send(delegator->dst, &msg, -1);
+-	if (ret)
+-		pr_err("ul rx smsg send fail %d\n", ret);
+-}
+-
+-int ap_delegator_init(struct sipa_delegator_create_params *params)
+-{
+-	int ret;
+-
+-	s_ap_delegator =
+-		devm_kzalloc(params->pdev, sizeof(*s_ap_delegator), GFP_KERNEL);
+-	if (!s_ap_delegator)
+-		return -ENOMEM;
+-	ret = sipa_delegator_init(&s_ap_delegator->delegator, params);
+-	if (ret)
+-		return ret;
+-
+-	s_ap_delegator->delegator.on_open = ap_dele_on_open;
+-
+-	sipa_delegator_start(&s_ap_delegator->delegator);
+-
+-	return 0;
+-}
+diff --git a/drivers/staging/sprd/sipa_delegate/sipa_dele_miniap_in_ap.c b/drivers/staging/sprd/sipa_delegate/sipa_dele_miniap_in_ap.c
+deleted file mode 100644
+index 6fbcf0401..000000000
+--- a/drivers/staging/sprd/sipa_delegate/sipa_dele_miniap_in_ap.c
++++ /dev/null
+@@ -1,117 +0,0 @@
+-// SPDX-License-Identifier: GPL-2.0-only
+-/*
+- * Copyright (C) 2018-2019 Unisoc Corporation
+- *
+- * This program is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License
+- * version 2 as published by the Free Software Foundation.
+- *
+- * This program is distributed in the hope that it will be useful, but
+- * WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * General Public License for more details.
+- */
+-
+-#define pr_fmt(fmt) "sipa_dele: %s " fmt, __func__
+-
+-#include <linux/sipa.h>
+-#include <linux/sipc.h>
+-#include <linux/device.h>
+-#include <linux/init.h>
+-#include <linux/kernel.h>
+-#include <linux/mm.h>
+-#include <linux/module.h>
+-#include <linux/of.h>
+-#include <linux/platform_device.h>
+-#include <linux/soc/sprd/sprd_pcie_ep_device.h>
+-#include "sipa_dele_priv.h"
+-#include "../sipa/sipa_hal_priv.h"
+-#include "../pam_ipa/pam_ipa_core.h"
+-
+-static struct miniap_delegator *s_miniap_delegator;
+-
+-int notify_pam_ipa_miniap_ready(void)
+-{
+-	struct sipa_to_pam_info info;
+-	struct sipa_delegate_plat_drv_cfg *cfg;
+-	phys_addr_t reg_mapped;
+-
+-	/* map mini ap addresses */
+-	cfg = s_miniap_delegator->delegator.cfg;
+-	sprd_ep_ipa_map(PCIE_IPA_TYPE_MEM, cfg->mem_base,
+-			cfg->mem_end - cfg->mem_base);
+-	reg_mapped = sprd_ep_ipa_map(PCIE_IPA_TYPE_REG, cfg->reg_base,
+-				     cfg->reg_end - cfg->reg_base);
+-	/* notify pam_ipa */
+-	info.term = SIPA_TERM_PCIE0;
+-	info.dl_fifo.rx_fifo_base_addr = s_miniap_delegator->dl_free_fifo_phy;
+-	info.dl_fifo.tx_fifo_base_addr = s_miniap_delegator->dl_filled_fifo_phy;
+-	info.dl_fifo.fifo_sts_addr =
+-		reg_mapped + ((SIPA_FIFO_PCIE_DL + 1) * SIPA_FIFO_REG_SIZE);
+-
+-	info.ul_fifo.rx_fifo_base_addr = s_miniap_delegator->ul_filled_fifo_phy;
+-	info.ul_fifo.tx_fifo_base_addr = s_miniap_delegator->ul_free_fifo_phy;
+-
+-	info.ul_fifo.fifo_sts_addr =
+-		reg_mapped + ((SIPA_FIFO_PCIE_UL + 1) * SIPA_FIFO_REG_SIZE);
+-
+-	pam_ipa_on_miniap_ready(&info);
+-	return 0;
+-}
+-
+-void miniap_dele_on_event(void *priv, u16 flag, u32 data)
+-{
+-	switch (flag) {
+-	case SMSG_FLG_DELE_ADDR_DL_TX:
+-		s_miniap_delegator->dl_filled_fifo_phy =
+-			PAM_IPA_STI_64BIT(data, PAM_IPA_DDR_MAP_OFFSET_H);
+-		break;
+-	case SMSG_FLG_DELE_ADDR_DL_RX:
+-		s_miniap_delegator->dl_free_fifo_phy =
+-			PAM_IPA_STI_64BIT(data, PAM_IPA_DDR_MAP_OFFSET_H);
+-		break;
+-	case SMSG_FLG_DELE_ADDR_UL_TX:
+-		s_miniap_delegator->ul_free_fifo_phy =
+-			PAM_IPA_STI_64BIT(data, PAM_IPA_DDR_MAP_OFFSET_H);
+-		break;
+-	case SMSG_FLG_DELE_ADDR_UL_RX:
+-		s_miniap_delegator->ul_filled_fifo_phy =
+-			PAM_IPA_STI_64BIT(data, PAM_IPA_DDR_MAP_OFFSET_H);
+-		/* received last evt, notify pam_ipa mini_ap is ready */
+-		s_miniap_delegator->ready = true;
+-		notify_pam_ipa_miniap_ready();
+-		break;
+-	default:
+-		break;
+-	}
+-}
+-
+-void miniap_dele_on_close(void *priv, u16 flag, u32 data)
+-{
+-	/* call base class on_close func first */
+-	sipa_dele_on_close(priv, flag, data);
+-
+-	s_miniap_delegator->ready = false;
+-}
+-
+-int miniap_delegator_init(struct sipa_delegator_create_params *params)
+-{
+-	int ret;
+-
+-	s_miniap_delegator = devm_kzalloc(
+-		params->pdev, sizeof(*s_miniap_delegator), GFP_KERNEL);
+-	if (!s_miniap_delegator)
+-		return -ENOMEM;
+-	ret = sipa_delegator_init(&s_miniap_delegator->delegator, params);
+-	if (ret)
+-		return ret;
+-
+-	s_miniap_delegator->delegator.on_close = miniap_dele_on_close;
+-	s_miniap_delegator->delegator.on_evt = miniap_dele_on_event;
+-
+-	s_miniap_delegator->ready = false;
+-
+-	sipa_delegator_start(&s_miniap_delegator->delegator);
+-
+-	return 0;
+-}
+diff --git a/drivers/staging/sprd/sipa_delegate/sipa_dele_priv.h b/drivers/staging/sprd/sipa_delegate/sipa_dele_priv.h
+index 91aae856d..ef42ba753 100644
+--- a/drivers/staging/sprd/sipa_delegate/sipa_dele_priv.h
++++ b/drivers/staging/sprd/sipa_delegate/sipa_dele_priv.h
+@@ -124,8 +124,6 @@ struct sipa_delegator_create_params {
+ 	u32 chan;
+ };
+ 
+-int miniap_delegator_init(struct sipa_delegator_create_params *params);
+-int ap_delegator_init(struct sipa_delegator_create_params *params);
+ int cp_delegator_init(struct sipa_delegator_create_params *params);
+ 
+ int sipa_delegator_init(struct sipa_delegator *delegator,
+diff --git a/drivers/staging/sprd/sipa_delegate/sipa_delegate.c b/drivers/staging/sprd/sipa_delegate/sipa_delegate.c
+index c64ca0db2..7d1586305 100644
+--- a/drivers/staging/sprd/sipa_delegate/sipa_delegate.c
++++ b/drivers/staging/sprd/sipa_delegate/sipa_delegate.c
+@@ -81,10 +81,38 @@ static int sipa_dele_parse_dts_cfg(struct platform_device *pdev,
+ 	return 0;
+ }
+ 
++/* Binding the SIPA supplier establishes resource-manager availability;
++ * it does not register this delegate's producer or grant a remote request.
++ */
++static int sipa_dele_supplier_ready(struct device *dev)
++{
++	struct device_node *node;
++	struct platform_device *supplier;
++	int ret = 0;
++
++	node = of_parse_phandle(dev->of_node, "sprd,sipa", 0);
++	if (!node)
++		return -EINVAL;
++	if (!of_device_is_available(node)) {
++		of_node_put(node);
++		return -ENODEV;
++	}
++	supplier = of_find_device_by_node(node);
++	of_node_put(node);
++	if (!supplier)
++		return -EPROBE_DEFER;
++	if (!device_is_bound(&supplier->dev) || !platform_get_drvdata(supplier))
++		ret = -EPROBE_DEFER;
++	else if (!device_link_add(dev, &supplier->dev,
++				 DL_FLAG_AUTOREMOVE_CONSUMER))
++		ret = -ENOMEM;
++	put_device(&supplier->dev);
++	return ret;
++}
++
+ /* The mailbox supplier may itself defer while its controller is probing.
+  * CP firmware does not have to be running: after this dependency is ready,
+  * the existing smsg_ch_open(..., -1) waits for the remote OPEN handshake.
+- * Opt in per board; legacy device trees keep their existing dependencies.
+  */
+ static int sipa_dele_cp_transport_ready(struct device *dev)
+ {
+@@ -93,8 +121,7 @@ static int sipa_dele_cp_transport_ready(struct device *dev)
+ 	u32 dst;
+ 	int ret = 0;
+ 
+-	if (!IS_ENABLED(CONFIG_SPRD_SIPA_DELE_CP_IN_MINIAP) ||
+-	    !of_find_property(dev->of_node, "sprd,cp-transport", NULL))
++	if (!IS_ENABLED(CONFIG_SPRD_SIPA_DELE_CP_IN_MINIAP))
+ 		return 0;
+ 	node = of_parse_phandle(dev->of_node, "sprd,cp-transport", 0);
+ 	if (!node)
+@@ -126,8 +153,9 @@ static int sipa_dele_plat_drv_probe(struct platform_device *pdev_p)
+ 	struct sipa_delegate_plat_drv_cfg *cfg = &s_sipa_dele_cfg;
+ 	struct sipa_delegator_create_params create_params;
+ 
+-	if (!sipa_rm_is_initialized())
+-		return -EPROBE_DEFER;
++	ret = sipa_dele_supplier_ready(dev);
++	if (ret)
++		return dev_err_probe(dev, ret, "SIPA supplier is not ready\n");
+ 	ret = sipa_dele_cp_transport_ready(dev);
+ 	if (ret)
+ 		return dev_err_probe(dev, ret,
+@@ -145,34 +173,6 @@ static int sipa_dele_plat_drv_probe(struct platform_device *pdev_p)
+ 	create_params.cfg = cfg;
+ 	create_params.chan = SMSG_CH_COMM_SIPA;
+ 
+-#ifdef CONFIG_SPRD_SIPA_DELE_MINIAP_IN_AP
+-	create_params.prod_id = SIPA_RM_RES_PROD_MINI_AP;
+-	create_params.cons_prod = SIPA_RM_RES_CONS_WWAN_UL;
+-	create_params.cons_user = SIPA_RM_RES_CONS_WWAN_DL;
+-	create_params.dst = SIPC_ID_MINIAP;
+-
+-	ret = miniap_delegator_init(&create_params);
+-	if (ret) {
+-		dev_err(dev, "miniap_delegator_init failed: %d\n", ret);
+-		return ret;
+-	}
+-	pr_debug("miniap_delegator_init!\n");
+-#endif /* CONFIG_SPRD_SIPA_DELE_MINIAP_IN_AP */
+-
+-#ifdef CONFIG_SPRD_SIPA_DELE_AP_IN_MINIAP
+-	create_params.prod_id = SIPA_RM_RES_PROD_AP;
+-	create_params.cons_prod = SIPA_RM_RES_CONS_WWAN_DL;
+-	create_params.cons_user = SIPA_RM_RES_CONS_WWAN_UL;
+-	create_params.dst = SIPC_ID_AP;
+-
+-	ret = ap_delegator_init(&create_params);
+-	if (ret) {
+-		dev_err(dev, "ap_delegator_init failed: %d\n", ret);
+-		return ret;
+-	}
+-	pr_debug("ap_delegator_init!\n");
+-#endif /* CONFIG_SPRD_SIPA_DELE_AP_IN_MINIAP */
+-
+ #ifdef CONFIG_SPRD_SIPA_DELE_CP_IN_MINIAP
+ 	create_params.prod_id = SIPA_RM_RES_PROD_CP;
+ 	create_params.cons_prod = SIPA_RM_RES_CONS_WWAN_UL;
+@@ -185,7 +185,7 @@ static int sipa_dele_plat_drv_probe(struct platform_device *pdev_p)
+ 		return ret;
+ 	}
+ 	pr_debug("cp_delegator_init!\n");
+-#endif /* CONFIG_SPRD_SIPA_DELE_AP_IN_MINIAP */
++#endif /* CONFIG_SPRD_SIPA_DELE_CP_IN_MINIAP */
+ 
+ 	return ret;
+ }
+diff --git a/drivers/usb/misc/sprd-pamu3.c b/drivers/usb/misc/sprd-pamu3.c
+index 6b2fb5b8e..ab3507e56 100644
+--- a/drivers/usb/misc/sprd-pamu3.c
++++ b/drivers/usb/misc/sprd-pamu3.c
+@@ -919,22 +919,6 @@ static int pamu3_pause_locked(struct sprd_pamu3 *pam)
+ 	return pamu3_rm_put(pam);
+ }
+ 
+-int sprd_pamu3_pause(struct device *dev)
+-{
+-	struct sprd_pamu3 *pam = dev_get_drvdata(dev);
+-	int ret;
+-
+-	if (!pam)
+-		return -ENODEV;
+-	if (in_interrupt())
+-		return -EWOULDBLOCK;
+-	mutex_lock(&pam->lock);
+-	ret = pamu3_pause_locked(pam);
+-	mutex_unlock(&pam->lock);
+-	return ret;
+-}
+-EXPORT_SYMBOL_GPL(sprd_pamu3_pause);
+-
+ int sprd_pamu3_stop(struct device *dev)
+ {
+ 	struct sprd_pamu3 *pam = dev_get_drvdata(dev);
+@@ -962,7 +946,7 @@ static void pamu3_put_device(void *data)
+ static int sprd_pamu3_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+-	struct platform_device *controller;
++	struct platform_device *controller, *sipa;
+ 	struct sprd_pamu3 *pam;
+ 	struct device_node *np;
+ 	struct resource *res;
+@@ -1009,13 +993,23 @@ static int sprd_pamu3_probe(struct platform_device *pdev)
+ 		return ret;
+ 	if (!dev_get_drvdata(pam->controller))
+ 		return -EPROBE_DEFER;
+-	pam->sipa = sipa_get_pdev();
+-	if (!pam->sipa)
++	np = of_parse_phandle(dev->of_node, "sprd,sipa", 0);
++	if (!np)
++		return -EINVAL;
++	if (!of_device_is_available(np)) {
++		of_node_put(np);
++		return -ENODEV;
++	}
++	sipa = of_find_device_by_node(np);
++	of_node_put(np);
++	if (!sipa)
+ 		return -EPROBE_DEFER;
+-	get_device(pam->sipa);
++	pam->sipa = &sipa->dev;
+ 	ret = devm_add_action_or_reset(dev, pamu3_put_device, pam->sipa);
+ 	if (ret)
+ 		return ret;
++	if (!device_is_bound(pam->sipa) || !dev_get_drvdata(pam->sipa))
++		return -EPROBE_DEFER;
+ 	if (!device_link_add(dev, pam->controller,
+ 			     DL_FLAG_AUTOREMOVE_CONSUMER) ||
+ 	    !device_link_add(dev, pam->sipa, DL_FLAG_AUTOREMOVE_CONSUMER))
+diff --git a/include/linux/sipa.h b/include/linux/sipa.h
+index 157d8d75a..732e7853b 100644
+--- a/include/linux/sipa.h
++++ b/include/linux/sipa.h
+@@ -334,7 +334,6 @@ struct sipa_rm_perf_profile {
+ int sipa_register_ipa_ready_cb(void (*sipa_ready_cb)(void *user_data),
+ 			       void *user_data);
+ 
+-bool sipa_rm_is_initialized(void);
+ 
+ int sipa_set_enabled(bool enable);
+ 
+diff --git a/include/linux/sipc.h b/include/linux/sipc.h
+index a36fa8478..ffcdc8601 100644
+--- a/include/linux/sipc.h
++++ b/include/linux/sipc.h
+@@ -987,163 +987,6 @@ int sblock_receive_for_generation(u8 dst, u8 channel, struct sblock *blk,
+ 
+ /* ****************************************************************** */
+ 
+-#define SIPX_ACK_BLK_LEN (100)
+-
+-/**
+- * sipx_chan_create -- create a sipx channel
+- *
+- * @dst: dest processor ID
+- * @channel: channel ID
+- * @return: 0 on success, <0 on failure
+- */
+-int sipx_chan_create(u8 dst, u8 channel);
+-
+-/**
+- * sipx_chan_destroy -- destroy seblock manager on a channel
+- *
+- * @dst: dest processor ID
+- * @channel: channel ID
+- */
+-int sipx_chan_destroy(u8 dst, u8 channel);
+-
+-/**
+- * sipx_get_ack_blk_len  -- get sipx ack block max length
+- *
+- * @dst: dest processor ID
+- * @return: length
+- */
+-u32 sipx_get_ack_blk_len(u8 dst);
+-
+-/**
+- * sipx_get  -- get a free sblock for sender
+- *
+- * @dst: dest processor ID
+- * @channel: channel ID
+- * @blk: return a gotten sblock pointer
+- * @is_ack: if want to get block for ack packet
+- * @return: 0 on success, <0 on failure
+- */
+-int sipx_get(u8 dst, u8 channel, struct sblock *blk, int is_ack);
+-
+-/**
+- * sipx_chan_register_notifier -- register a callback that's called
+- * when a tx sblock is available or a rx block is received.
+- * on-blocked sblock_get or sblock_receive can be called.
+- *
+- * @dst: dest processor ID
+- * @channel: channel ID
+- * @handler: a callback handler
+- * @event: SBLOCK_NOTIFY_GET, SBLOCK_NOTIFY_RECV, or both
+- * @data: opaque data passed to the receiver
+- * @return: 0 on success, <0 on failure
+- */
+-int sipx_chan_register_notifier(u8 dst, u8 channel,
+-				void (*handler)(int event, void *data),
+-				void *data);
+-
+-/**
+- * sipx_send  -- send a sblock with smsg, it should be from seblock_get
+- *
+- * @dst: dest processor ID
+- * @channel: channel ID
+- * @blk: the sblock to be sent
+- * @return: 0 on success, <0 on failure
+- */
+-int sipx_send(u8 dst, u8 channel, struct sblock *blk);
+-
+-/**
+- * sipx_flush  -- trigger an smsg to notify that sblock has been sent
+- *
+- * @dst: dest processor ID
+- * @channel: channel ID
+- * @return: 0 on success, <0 on failure
+- */
+-int sipx_flush(u8 dst, u8 channel);
+-
+-/**
+- * sipx_receive  -- receive a sblock, it should be released after it's handled
+- *
+- * @dst: dest processor ID
+- * @channel: channel ID
+- * @blk: return a received sblock pointer
+- * @return: 0 on success, <0 on failure
+- */
+-int sipx_receive(u8 dst, u8 channel, struct sblock *blk);
+-
+-/**
+- * sipx_release  -- release a sblock from reveiver
+- *
+- * @dst: dest processor ID
+- * @channel: channel ID
+- * @return: 0 on success, <0 on failure
+- */
+-int sipx_release(u8 dst, u8 channel, struct sblock *blk);
+-
+-/**
+- * sipx_get_arrived_count  -- get the count of sblock(s) arrived at
+- * AP (sblock_send on CP) but not received (sblock_receive on AP).
+- *
+- * @dst: dest processor ID
+- * @channel: channel ID
+- * @return: >=0  the count of blocks
+- */
+-int sipx_get_arrived_count(u8 dst, u8 channel);
+-
+-/**
+- * sipx_get_free_count  -- get the count of available sblock(s) resident in
+- * normal pool on AP.
+- *
+- * @dst: dest processor ID
+- * @channel: channel ID
+- * @return: >=0  the count of blocks
+- */
+-int sipx_get_free_count(u8 dst, u8 channel);
+-
+-/**
+- * sipx_put  -- put a free sblock for sender
+- *
+- * @dst: dest processor ID
+- * @channel: channel ID
+- * @blk: sblock pointer
+- * @return: void
+- */
+-int sipx_put(u8 dst, u8 channel, struct sblock *blk);
+-
+-/* ****************************************************************** */
+-
+-#ifdef CONFIG_SPRD_SIPC_ZERO_COPY_SIPX
+-
+-#define SBLOCK_CREATE(dst, channel, txblocknum, txblocksize, txpoolsize, \
+-		      rxblocknum, rxblocksize, rxpoolsize)               \
+-	sipx_chan_create(dst, channel)
+-
+-#define SBLOCK_DESTROY(dst, channel) sipx_chan_destroy(dst, channel)
+-
+-#define SBLOCK_GET(dst, channel, blk, ack, timeout) \
+-	sipx_get(dst, channel, blk, ack)
+-
+-#define SBLOCK_REGISTER_NOTIFIER(dst, channel, handler, data) \
+-	sipx_chan_register_notifier(dst, channel, handler, data)
+-
+-#define SBLOCK_SEND(dst, channel, blk) sipx_send(dst, channel, blk)
+-
+-#define SBLOCK_SEND_PREPARE(dst, channel, blk) sipx_send(dst, channel, blk)
+-
+-#define SBLOCK_SEND_FINISH(dst, channel) sipx_flush(dst, channel)
+-
+-#define SBLOCK_RECEIVE(dst, channel, blk, timeout) \
+-	sipx_receive(dst, channel, blk)
+-
+-#define SBLOCK_RELEASE(dst, channel, blk) sipx_release(dst, channel, blk)
+-
+-#define SBLOCK_GET_ARRIVED_COUNT(dst, channel) \
+-	sipx_get_arrived_count(dst, channel)
+-
+-#define SBLOCK_GET_FREE_COUNT(dst, channel) sipx_get_free_count(dst, channel)
+-
+-#define SBLOCK_PUT(dst, channel, blk) sipx_put(dst, channel, blk)
+-
+-#else /* CONFIG_SPRD_SIPC_ZERO_COPY_SIPX */
+ 
+ #define SBLOCK_CREATE(dst, channel, txblocknum, txblocksize, txpoolsize, \
+ 		      rxblocknum, rxblocksize, rxpoolsize)               \
+@@ -1177,7 +1020,6 @@ int sipx_put(u8 dst, u8 channel, struct sblock *blk);
+ 
+ #define SBLOCK_PUT(dst, channel, blk) sblock_put(dst, channel, blk)
+ 
+-#endif /* CONFIG_SPRD_SIPC_ZERO_COPY_SIPX */
+ 
+ /*
+  * Shared RAM may be mapped with Device attributes. Use byte-width accesses:
+diff --git a/include/linux/usb/sprd-pamu3.h b/include/linux/usb/sprd-pamu3.h
+index 9f35a3848..a9d7ebb22 100644
+--- a/include/linux/usb/sprd-pamu3.h
++++ b/include/linux/usb/sprd-pamu3.h
+@@ -48,7 +48,6 @@ int sprd_pamu3_put(struct device *dev);
+ /* Before controller pullup, acquire/wait/release a real network resource. */
+ int sprd_pamu3_wait_ready(struct device *dev);
+ int sprd_pamu3_arm(struct device *dev, struct usb_ep *out, struct usb_ep *in);
+-int sprd_pamu3_pause(struct device *dev);
+ void sprd_pamu3_quiesce_atomic(struct device *dev);
+ /* Preparation allocates and programs disabled hardware; it is not a start. */
+ int sprd_pamu3_prepare(struct device *dev);

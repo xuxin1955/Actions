@@ -1,0 +1,328 @@
+#!/bin/sh
+# luci-theme-outline: detached package worker for System › Outline Theme › Package.
+#
+#   job check     resolve the latest release
+#   job update    download the latest release and install it over this one
+#   job auto      cron's entry (Automatic updates): check, and update only
+#                 when the release is newer than the installed package
+#   job uninstall remove the theme and its leftovers; settings stay
+#   job purge     remove the theme, its settings and brand images
+#
+# Started by rpcd (luci.outline job_start) with stdio closed; it reports
+# through $RUN/job.json (state/step/error) and $RUN/job.log, which the
+# Package page polls. It re-executes itself from /tmp first: updating or
+# removing the theme replaces or deletes this very file.
+
+ACTION="$1"
+ID="${2:-$(date +%s)}"
+
+RUN=/tmp/outline-theme
+PKG=luci-theme-outline
+MEDIA=/luci-static/outline
+
+if [ "$OUTLINE_JOB_DETACHED" != 1 ]; then
+	mkdir -p "$RUN"
+	# One job at a time. rpcd refuses a second one from the page; a cron run
+	# that finds one going just skips this round -- before copying, since the
+	# running job is executing $RUN/job.sh.
+	if [ -f "$RUN/job.pid" ] && [ -d "/proc/$(cat "$RUN/job.pid" 2>/dev/null)" ]; then
+		[ "$1" = auto ] && exit 0
+	fi
+	cp "$0" "$RUN/job.sh" && chmod 700 "$RUN/job.sh"
+	OUTLINE_JOB_DETACHED=1 exec "$RUN/job.sh" "$@"
+fi
+
+LOG="$RUN/job.log"
+STEP=resolve
+echo $$ > "$RUN/job.pid"
+
+status() { # state step [error]
+	STEP="$2"
+	printf '{"id":"%s","action":"%s","state":"%s","step":"%s","error":"%s","updated":%s}\n' \
+		"$ID" "$ACTION" "$1" "$2" "${3:-}" "$(date +%s)" > "$RUN/job.json.tmp" &&
+		mv "$RUN/job.json.tmp" "$RUN/job.json"
+}
+
+log() { echo "$*" >> "$LOG"; }
+
+# Automatic runs have nobody watching the page; they also tell syslog.
+syslog() { logger -t outline-theme "$*" 2>/dev/null || true; }
+
+fail() { # error-code
+	log "error: $1"
+	status error "$STEP" "$1"
+	rm -f "$RUN/job.pid"
+	exit 1
+}
+
+finish() {
+	status done done
+	rm -f "$RUN/job.pid"
+}
+
+if [ -x /usr/bin/apk ]; then PM=apk
+elif [ -x /bin/opkg ]; then PM=opkg
+else PM=
+fi
+
+fetch() { # url file
+	uclient-fetch -q -T 20 -O "$2" "$1" >> "$LOG" 2>&1 && [ -s "$2" ]
+}
+
+repo() {
+	local r="$(uci -q get outline.updates.repo)"
+	case "$r" in
+		*/*) case "$r" in *[!A-Za-z0-9._/-]*|*..*) ;; *) echo "$r"; return ;; esac ;;
+	esac
+	echo tickcount/luci-theme-outline
+}
+
+# Resolve the latest release into REL_TAG, REL_VERSION, REL_URL and
+# REL_SHA256 for this router's package format. GitHub's API rate-limits
+# shared/CGNAT addresses, so it is tried second: the release's manifest.json
+# first (CDN-served, carries checksums), then the API, then the public Atom
+# feed plus the release's asset list. install.sh in the repository uses the
+# same chain.
+resolve() {
+	local urls tag="" m="$RUN/resolve"
+	REL_REPO="$(repo)"
+	REL_TAG= REL_VERSION= REL_URL= REL_SHA256=
+	rm -f "$m".*
+
+	log "resolving $PKG from github.com/$REL_REPO"
+	if fetch "https://github.com/$REL_REPO/releases/latest/download/manifest.json" "$m.manifest" &&
+	   tag="$(jsonfilter -i "$m.manifest" -e '@.tag' 2>/dev/null)" && [ -n "$tag" ]; then
+		log "  manifest: $tag"
+		urls="$(jsonfilter -i "$m.manifest" -e '@.files[*].url' 2>/dev/null)"
+	elif fetch "https://api.github.com/repos/$REL_REPO/releases/latest" "$m.api" &&
+	     tag="$(jsonfilter -i "$m.api" -e '@.tag_name' 2>/dev/null)" && [ -n "$tag" ]; then
+		log "  api: $tag"
+		urls="$(jsonfilter -i "$m.api" -e '@.assets[*].browser_download_url' 2>/dev/null)"
+	elif fetch "https://github.com/$REL_REPO/releases.atom" "$m.atom"; then
+		tag="$(grep -o 'releases/tag/[^"<]*' "$m.atom" | head -n1 | sed 's#releases/tag/##')"
+		[ -n "$tag" ] || return 1
+		log "  atom: $tag"
+		fetch "https://github.com/$REL_REPO/releases/expanded_assets/$tag" "$m.assets" || return 1
+		urls="$(grep -o "/$REL_REPO/releases/download/$tag/[^\"]*" "$m.assets" | sed 's#^#https://github.com#' | sort -u)"
+	else
+		return 1
+	fi
+
+	REL_TAG="$tag"
+	case "$PM" in
+		apk) REL_URL="$(echo "$urls" | grep "/$PKG-[0-9][^/]*\.apk\$" | head -n1)" ;;
+		*)   REL_URL="$(echo "$urls" | grep "/${PKG}_[^/]*_all\.ipk\$" | head -n1)" ;;
+	esac
+	[ -n "$REL_URL" ] || { log "  no package for $PM in $tag"; return 2; }
+
+	local file="${REL_URL##*/}"
+	case "$PM" in
+		apk) REL_VERSION="${file#$PKG-}"; REL_VERSION="${REL_VERSION%.apk}" ;;
+		*)   REL_VERSION="${file#${PKG}_}"; REL_VERSION="${REL_VERSION%_all.ipk}" ;;
+	esac
+	[ -f "$m.manifest" ] && REL_SHA256="$(jsonfilter -i "$m.manifest" -e "@.files[@.name='$file'].sha256" 2>/dev/null)"
+	log "  $file ($REL_VERSION)"
+	return 0
+}
+
+clear_luci_cache() {
+	rm -f /tmp/luci-indexcache* 2>/dev/null
+	rm -rf /tmp/luci-modulecache 2>/dev/null
+}
+
+activate() {
+	uci -q batch <<-EOF
+		set luci.themes.Outline=$MEDIA
+		set luci.main.mediaurlbase=$MEDIA
+		commit luci
+	EOF
+}
+
+# Point LuCI away from Outline before it disappears: Bootstrap when present,
+# else the first other theme whose files exist.
+deactivate() {
+	local cur fallback="" name path
+	cur="$(uci -q get luci.main.mediaurlbase)"
+	if [ -d /www/luci-static/bootstrap ]; then
+		fallback=/luci-static/bootstrap
+	else
+		for name in $(uci -q show luci.themes | sed -n 's/^luci\.themes\.\([^=]*\)=.*/\1/p'); do
+			path="$(uci -q get "luci.themes.$name")"
+			[ "$path" != "$MEDIA" ] && [ -d "/www$path" ] && { fallback="$path"; break; }
+		done
+	fi
+	if [ "$cur" = "$MEDIA" ] && [ -n "$fallback" ]; then
+		uci -q set luci.main.mediaurlbase="$fallback"
+	fi
+	uci -q delete luci.themes.Outline
+	uci -q commit luci
+}
+
+installed_version() {
+	case "$PM" in
+		apk) apk list -I "$PKG" 2>/dev/null | sed -n "s/^$PKG-\([0-9][^ ]*\) .*/\1/p" | head -n1 ;;
+		*)   sed -n 's/^Version: *//p' "/usr/lib/opkg/info/$PKG.control" 2>/dev/null ;;
+	esac
+}
+
+# Is $1 a newer package version than $2? The package manager decides.
+newer() {
+	[ -n "$1" ] && [ -n "$2" ] || return 1
+	case "$PM" in
+		apk) [ "$(apk version -t "$1" "$2" 2>/dev/null)" = ">" ] ;;
+		*)   opkg compare-versions "$1" '>>' "$2" 2>/dev/null ;;
+	esac
+}
+
+installed() {
+	case "$PM" in
+		apk) apk info -e "$PKG" >/dev/null 2>&1 ;;
+		*)   [ -f "/usr/lib/opkg/info/$PKG.control" ] ;;
+	esac
+}
+
+do_check() {
+	status running resolve
+	local rc=0 out
+	resolve || rc=$?
+	if [ $rc = 0 ]; then
+		out="$(printf '{"tag":"%s","version":"%s","url":"%s","repo":"%s"}' "$REL_TAG" "$REL_VERSION" "$REL_URL" "$REL_REPO")"
+	else
+		out="$(printf '{"error":"%s","repo":"%s"}' "$([ $rc = 2 ] && echo no_asset || echo no_release)" "$REL_REPO")"
+	fi
+	printf '{"checked":%s,"theme":%s}\n' "$(date +%s)" "$out" > "$RUN/updates.json"
+	[ $rc = 0 ] && finish || fail "$([ $rc = 2 ] && echo no_asset || echo no_release)"
+}
+
+do_update() {
+	local file
+	WAS_ACTIVE=0
+	[ "$(uci -q get luci.main.mediaurlbase)" = "$MEDIA" ] && WAS_ACTIVE=1
+	if [ -z "$REL_URL" ]; then
+		status running resolve
+		resolve
+		case $? in 0) ;; 2) fail no_asset ;; *) fail no_release ;; esac
+	fi
+
+	# Only ever install what a release of the configured repository serves.
+	case "$REL_URL" in
+		"https://github.com/$REL_REPO/releases/download/"*) ;;
+		*) fail bad_url ;;
+	esac
+
+	status running download
+	file="$RUN/${REL_URL##*/}"
+	rm -f "$RUN"/*.ipk "$RUN"/*.apk
+	log "downloading $REL_URL"
+	fetch "$REL_URL" "$file" || fail download
+	if [ -n "$REL_SHA256" ]; then
+		[ "$(sha256sum "$file" | cut -d' ' -f1)" = "$REL_SHA256" ] || fail checksum
+		log "sha256 ok"
+	fi
+
+	status running install
+	case "$PM" in
+		apk) apk add --allow-untrusted "$file" >> "$LOG" 2>&1 || fail install ;;
+		*)   opkg install --force-reinstall "$file" >> "$LOG" 2>&1 || fail install ;;
+	esac
+	rm -f "$file"
+
+	# An update keeps LuCI on whatever theme it was showing.
+	if [ "$WAS_ACTIVE" = 1 ]; then
+		status running activate
+		activate
+	fi
+	clear_luci_cache
+	rm -f "$RUN/updates.json"
+	log "installed $PKG $REL_VERSION"
+	finish
+}
+
+# cron line Automatic updates installs (luci.outline set_auto_update).
+drop_cron() {
+	[ -f /etc/crontabs/root ] || return 0
+	grep -q '/usr/libexec/outline/job auto' /etc/crontabs/root || return 0
+	sed -i '\#/usr/libexec/outline/job auto#d' /etc/crontabs/root
+	/etc/init.d/cron restart >/dev/null 2>&1
+}
+
+remove_theme() {
+	status running deactivate
+	deactivate
+	status running remove
+	if installed; then
+		case "$PM" in
+			apk) apk del "$PKG" >> "$LOG" 2>&1 || fail remove ;;
+			*)   opkg remove "$PKG" >> "$LOG" 2>&1 || fail remove ;;
+		esac
+	fi
+	status running cleanup
+	drop_cron
+	# Whatever the package manager left: files a reinstall over a manual
+	# copy never owned, and this worker's own installed path.
+	rm -rf /www/luci-static/outline /usr/share/ucode/luci/template/themes/outline \
+		/www/luci-static/resources/outline /www/luci-static/resources/view/outline \
+		/usr/libexec/outline
+	rm -f /www/luci-static/resources/menu-outline.js /www/luci-static/resources/sidebar-outline.js \
+		/www/luci-static/resources/router-outline.js \
+		/usr/share/rpcd/ucode/luci.outline /usr/share/rpcd/acl.d/luci-theme-outline.json \
+		/usr/share/luci/menu.d/luci-theme-outline.json
+	clear_luci_cache
+}
+
+do_uninstall() {
+	remove_theme
+	log "theme removed; settings kept in /etc/config/outline"
+	finish
+	/etc/init.d/rpcd reload >/dev/null 2>&1
+}
+
+do_purge() {
+	remove_theme
+	rm -rf /www/luci-static/outline-brand /etc/outline
+	rm -f /etc/config/outline /tmp/outline-brand.upload
+	log "theme, settings and brand images removed"
+	# Report before rpcd drops luci.outline: the page stops polling at
+	# "done" and reloads into Bootstrap.
+	finish
+	sleep 2
+	/etc/init.d/rpcd reload >/dev/null 2>&1
+	rm -rf "$RUN"
+}
+
+# Automatic updates, started by cron. Quietly does nothing when switched
+# off, when another job is running, or when nothing newer is out.
+do_auto() {
+	[ "$(uci -q get outline.updates.auto)" = 1 ] || { rm -f "$RUN/job.pid"; exit 0; }
+	status running resolve
+	local rc=0 have
+	resolve || rc=$?
+	if [ $rc != 0 ]; then
+		syslog "automatic update: no release found"
+		fail "$([ $rc = 2 ] && echo no_asset || echo no_release)"
+	fi
+	printf '{"checked":%s,"theme":{"tag":"%s","version":"%s","url":"%s","repo":"%s"},"auto":1}\n' \
+		"$(date +%s)" "$REL_TAG" "$REL_VERSION" "$REL_URL" "$REL_REPO" > "$RUN/updates.json"
+	have="$(installed_version)"
+	if newer "$REL_VERSION" "$have"; then
+		syslog "automatic update: installing $REL_VERSION (was ${have:-unknown})"
+		log "automatic update: $have -> $REL_VERSION"
+		do_update
+		syslog "automatic update: $REL_VERSION installed"
+	else
+		log "automatic update: $have is current ($REL_VERSION is the latest)"
+		finish
+	fi
+}
+
+[ -n "$PM" ] || [ "$ACTION" = check ] || fail no_pkg_manager
+
+
+case "$ACTION" in
+	auto) do_auto ;;
+	check) do_check ;;
+	update) do_update ;;
+	uninstall) do_uninstall ;;
+	purge) do_purge ;;
+	*) fail invalid ;;
+esac

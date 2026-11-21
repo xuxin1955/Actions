@@ -1,0 +1,20 @@
+--- a/service/instance.c
++++ b/service/instance.c
+@@ -2726,6 +2726,8 @@ void instance_dump(struct blob_buf *b, struct service_instance *in, int verbose)
+ 		void *r = blobmsg_open_table(b, "jail");
+ 		if (in->jail.name)
+ 			blobmsg_add_string(b, "name", in->jail.name);
++		if (in->jail.pidfile)
++			blobmsg_add_string(b, "pidfile", in->jail.pidfile);
+ 		if (!in->bundle) {
+ 			if (in->jail.hostname)
+ 				blobmsg_add_string(b, "hostname", in->jail.hostname);
+@@ -2739,8 +2741,5 @@
+ 			blobmsg_add_u8(b, "userns", in->jail.userns);
+ 			blobmsg_add_u8(b, "cgroupsns", in->jail.cgroupsns);
+ 		} else {
+-			if (in->jail.pidfile)
+-				blobmsg_add_string(b, "pidfile", in->jail.pidfile);
+-
+ 			if (in->jail.stop_timeout)
+ 				blobmsg_add_u32(b, "stop_timeout", in->jail.stop_timeout);

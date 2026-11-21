@@ -1,0 +1,3 @@
+#!/bin/sh
+# Shared live readiness check; does not reconfigure or bind the gadget.
+exec /usr/libexec/udx-boot-state management-ready

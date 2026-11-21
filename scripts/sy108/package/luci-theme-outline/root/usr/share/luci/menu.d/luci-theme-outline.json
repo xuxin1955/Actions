@@ -1,0 +1,36 @@
+{
+  "admin/system/outline": {
+    "title": "Outline Theme",
+    "order": 90,
+    "action": {
+      "type": "firstchild"
+    },
+    "depends": {
+      "acl": ["luci-theme-outline"]
+    }
+  },
+  "admin/system/outline/appearance": {
+    "title": "Appearance",
+    "order": 10,
+    "action": {
+      "type": "view",
+      "path": "outline/appearance"
+    }
+  },
+  "admin/system/outline/branding": {
+    "title": "Branding",
+    "order": 20,
+    "action": {
+      "type": "view",
+      "path": "outline/branding"
+    }
+  },
+  "admin/system/outline/package": {
+    "title": "Package",
+    "order": 30,
+    "action": {
+      "type": "view",
+      "path": "outline/package"
+    }
+  }
+}

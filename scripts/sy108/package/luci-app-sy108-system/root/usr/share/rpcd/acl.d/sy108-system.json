@@ -1,0 +1,39 @@
+{
+  "sy108-system": {
+    "description": "SY108 system maintenance actions",
+    "read": {
+      "file": {
+        "/proc/sys/kernel/random/boot_id": [
+          "read"
+        ],
+        "/etc/udx-recovery-root": [
+          "list"
+        ]
+      },
+      "ubus": {
+        "file": [
+          "read",
+          "stat"
+        ]
+      }
+    },
+    "write": {
+      "file": {
+        "/usr/libexec/sy108-system reboot openwrt": [
+          "exec"
+        ],
+        "/usr/libexec/sy108-system reboot recovery": [
+          "exec"
+        ],
+        "/usr/libexec/sy108-system reset": [
+          "exec"
+        ]
+      },
+      "ubus": {
+        "file": [
+          "exec"
+        ]
+      }
+    }
+  }
+}

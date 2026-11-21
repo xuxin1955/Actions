@@ -1,0 +1,38 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: zh_Hans\n"
+
+msgid "Preparing system operation"
+msgstr "正在准备系统操作"
+
+msgid "Stopping services and waiting for the device. This may take several minutes."
+msgstr "正在停止服务并等待设备。此过程可能需要数分钟。"
+
+msgid "Reboot completion has not been confirmed. Check the device."
+msgstr "尚未确认重启完成，请检查设备。"
+
+msgid "System operation failed."
+msgstr "系统操作失败。"
+
+msgid "Clear the OpenWrt configuration and reboot? Device SSH keys and factory NV are retained. The login password will be reset to admin."
+msgstr "清除 OpenWrt 配置并重启？保留设备 SSH 密钥和原厂 NV，登录密码恢复为 admin。"
+
+msgid "Configuration restore failed"
+msgstr "配置恢复失败"
+
+msgid "Reboot into main system"
+msgstr "重启进入主系统"
+
+msgid "Reboot into Recovery"
+msgstr "重启进入 Recovery"
+
+
+msgid "System maintenance"
+msgstr "系统维护"
+
+msgid "Switch system"
+msgstr "切换系统"
+
+msgid "There are unsaved changes. Rebooting will discard them."
+msgstr "存在未保存的更改，重启将丢弃这些更改。"

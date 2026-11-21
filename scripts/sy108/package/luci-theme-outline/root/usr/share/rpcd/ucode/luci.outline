@@ -1,0 +1,408 @@
+// luci-theme-outline: rpcd backend for System › Outline Theme (object "luci.outline")
+// Licensed to the public under the Apache License 2.0.
+
+'use strict';
+
+import { access, readfile, writefile, rename, mkdir, chmod, popen, lsdir, stat, unlink, open } from 'fs';
+import { cursor } from 'uci';
+
+const CONF = 'outline';
+const RUN_DIR = '/tmp/outline-theme';
+const JOB = '/usr/libexec/outline/job';
+const THEME_PKG = 'luci-theme-outline';
+const THEME_MEDIA = '/luci-static/outline';
+
+/* Brand asset library. Files live outside the theme's directory so a theme
+   reinstall keeps them; header.ut and sysauth.ut resolve the slots. */
+const BRAND_DIR = '/www/luci-static/outline-brand';
+const BRAND_TMP = '/tmp/outline-brand.upload';
+const BRAND_MAX = 4 * 1024 * 1024;
+const BRAND_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const BRAND_TYPES = [ 'svg', 'png', 'jpg', 'jpeg', 'webp', 'ico' ];
+/* What each slot may point at: what the browser accepts in that place. */
+const BRAND_SLOTS = {
+	logo: [ 'svg', 'png', 'jpg', 'jpeg', 'webp' ],
+	/* The App icon source picture; the five icon slots below are generated
+	   from it in the browser and uploaded into their own slots. */
+	icon: [ 'svg', 'png', 'jpg', 'jpeg', 'webp' ],
+	favicon: [ 'svg', 'png' ],
+	favicon_ico: [ 'ico', 'png' ],
+	apple_touch: [ 'png', 'jpg', 'jpeg' ],
+	pwa_192: [ 'png' ],
+	pwa_512: [ 'png' ]
+};
+
+
+function shellquote(s) {
+	return `'${replace(s, "'", "'\\''")}'`;
+}
+
+function pkg_manager() {
+	if (access('/usr/bin/apk')) return 'apk';
+	if (access('/bin/opkg')) return 'opkg';
+	return null;
+}
+
+/* Installed version, or null. Reads the package database directly: no fork
+   for opkg, one for apk. */
+function pkg_version(name) {
+	if (pkg_manager() == 'opkg') {
+		const ctrl = readfile(`/usr/lib/opkg/info/${name}.control`);
+		const m = ctrl ? match(ctrl, /(^|\n)Version: *([^\n]+)/) : null;
+		return m ? trim(m[2]) : null;
+	}
+	if (pkg_manager() == 'apk') {
+		const fd = popen('apk list -I ' + shellquote(name) + ' 2>/dev/null');
+		if (!fd) return null;
+		const out = fd.read('all');
+		fd.close();
+		const m = match(out, regexp('^' + replace(name, /[.+-]/g, '\\$&') + '-([0-9][^ ]*)'));
+		return m ? m[1] : null;
+	}
+	return null;
+}
+
+function distrib() {
+	const rel = readfile('/etc/openwrt_release') ?? '';
+	const get = (k) => match(rel, regexp(k + "='([^']*)'"))?.[1];
+	return { release: get('DISTRIB_RELEASE'), target: get('DISTRIB_TARGET'), arch: get('DISTRIB_ARCH') };
+}
+
+function read_json(path) {
+	const s = readfile(path);
+	if (!s) return null;
+	try { return json(s); } catch (e) { return null; }
+}
+
+function ensure_config(c) {
+	if (!access('/etc/config/outline'))
+		writefile('/etc/config/outline', '');
+	c.load(CONF);
+	for (let s in [ 'appearance', 'light', 'dark', 'updates', 'branding' ])
+		if (!c.get(CONF, s))
+			c.set(CONF, s, s == 'light' || s == 'dark' ? 'theme' : s);
+}
+
+function section(c, name) {
+	const all = c.get_all(CONF, name) ?? {};
+	const out = {};
+	for (let k, v in all)
+		if (substr(k, 0, 1) != '.')
+			out[k] = v;
+	return out;
+}
+
+function theme_state() {
+	return {
+		version: pkg_version(THEME_PKG),
+		active: cursor().get('luci', 'main', 'mediaurlbase') == THEME_MEDIA
+	};
+}
+
+/* ── Automatic updates ──
+   One line in root's crontab runs `job auto`; the interval is the cron
+   schedule itself, so nothing has to remember when it last ran. The time is
+   picked at random once (03:00-05:59, any minute) so routers do not all ask
+   GitHub at the same moment, then kept. */
+
+const CRON = '/etc/crontabs/root';
+const CRON_CMD = '/usr/libexec/outline/job auto';
+const INTERVALS = [ 'daily', 'weekly', 'monthly' ];
+
+function cron_has_line() {
+	return index(readfile(CRON) ?? '', CRON_CMD) >= 0;
+}
+
+function auto_state() {
+	const c = cursor();
+	c.load(CONF);
+	const u = section(c, 'updates');
+	return {
+		enabled: u.auto == '1' && cron_has_line(),
+		interval: index(INTERVALS, u.interval) >= 0 ? u.interval : 'weekly',
+		hour: +(u.hour ?? 4), minute: +(u.minute ?? 0),
+		weekday: +(u.weekday ?? 0), monthday: +(u.monthday ?? 1)
+	};
+}
+
+function job_state() {
+	const job = read_json(`${RUN_DIR}/job.json`);
+	if (!job) return null;
+	/* A job whose worker died without finishing must not block the next. */
+	if (job.state == 'running') {
+		const pid = trim(readfile(`${RUN_DIR}/job.pid`) ?? '');
+		if (!pid || !access(`/proc/${pid}`)) {
+			job.state = 'error';
+			job.error = job.error || 'interrupted';
+		}
+	}
+	return job;
+}
+
+function log_tail() {
+	const log = readfile(`${RUN_DIR}/job.log`) ?? '';
+	return length(log) > 6000 ? substr(log, -6000) : log;
+}
+
+/* ── Validation ── */
+
+function v_enum(v, list, def) {
+	return index(list, v) >= 0 ? v : def;
+}
+
+/* ── Brand assets ── */
+
+function ext_of(name) {
+	const m = match(name, /\.([A-Za-z0-9]+)$/);
+	return m ? lc(m[1]) : '';
+}
+
+/* An SVG is served from LuCI's own origin, so opening it directly must not
+   be able to run script or pull anything in. Anything active is refused
+   rather than stripped. */
+function svg_safe(data) {
+	if (!match(data, /<svg[\s>]/i))
+		return false;
+	return !match(data, /<script|<foreignObject|<iframe|<embed|<object|<!ENTITY|javascript:|[\s"'\/]on[a-z]+\s*=|(xlink:)?href\s*=\s*["']\s*(https?:|\/\/|data:text)/i);
+}
+
+/* The file must be what its extension says. */
+function sniff(data, ext) {
+	const b = (i) => ord(data, i);
+	switch (ext) {
+	case 'png':  return substr(data, 0, 8) == '\x89PNG\r\n\x1a\n';
+	case 'jpg':
+	case 'jpeg': return b(0) == 0xff && b(1) == 0xd8 && b(2) == 0xff;
+	case 'webp': return substr(data, 0, 4) == 'RIFF' && substr(data, 8, 4) == 'WEBP';
+	case 'ico':  return b(0) == 0 && b(1) == 0 && b(2) == 1 && b(3) == 0;
+	case 'svg':  return svg_safe(data);
+	}
+	return false;
+}
+
+/* PNG width/height from IHDR, for the "192×192" hint beside app icons. */
+function png_size(path) {
+	const fd = open(path, 'r');
+	if (!fd) return null;
+	const h = fd.read(24);
+	fd.close();
+	if (length(h) < 24 || substr(h, 1, 3) != 'PNG') return null;
+	const be = (o) => (ord(h, o) << 24) | (ord(h, o + 1) << 16) | (ord(h, o + 2) << 8) | ord(h, o + 3);
+	return [ be(16), be(20) ];
+}
+
+function brand_assets() {
+	const out = [];
+	for (let f in lsdir(BRAND_DIR) ?? []) {
+		if (!match(f, BRAND_NAME) || index(BRAND_TYPES, ext_of(f)) < 0) continue;
+		const st = stat(`${BRAND_DIR}/${f}`);
+		if (!st || st.type != 'file') continue;
+		const a = { name: f, type: ext_of(f), size: st.size, mtime: st.mtime };
+		if (a.type == 'png') {
+			const wh = png_size(`${BRAND_DIR}/${f}`);
+			if (wh) { a.width = wh[0]; a.height = wh[1]; }
+		}
+		push(out, a);
+	}
+	return sort(out, (x, y) => y.mtime - x.mtime);
+}
+
+function brand_state(c) {
+	const b = section(c, 'branding');
+	const slots = {};
+	for (let k in keys(BRAND_SLOTS)) slots[k] = b[k] ?? '';
+	/* OpenWrt's own logo, offered as a logo choice where LuCI's Bootstrap
+	   theme ships it; the slot then holds the word `openwrt`. */
+	const builtin = {};
+	if (access('/www/luci-static/bootstrap/logo.svg'))
+		builtin.openwrt = '/luci-static/bootstrap/logo.svg';
+	return { assets: brand_assets(), slots: slots, app_name: b.app_name ?? '', max: BRAND_MAX, rev: b.rev ?? '0', builtin: builtin };
+}
+
+/* `rev` is the ?v= cache-buster header.ut appends to every brand URL. A
+   file changed on disk needs it bumped now, not at the next Save & Apply;
+   this cursor commits only its own change, never the session's staged
+   edits. */
+function bump_rev() {
+	const c = cursor();
+	ensure_config(c);
+	c.set(CONF, 'branding', 'rev', `${time()}`);
+	c.commit(CONF);
+	return brand_state(c);
+}
+
+/* World-readable like the rest of /www's inputs; rpcd's umask is 077. */
+function write_atomic(path, data) {
+	const tmp = path + '.tmp';
+	if (writefile(tmp, data) == null) return false;
+	chmod(tmp, 0644);
+	return rename(tmp, path);
+}
+
+const methods = {
+	get_state: {
+		call: function() {
+			const c = cursor();
+			c.load(CONF);
+			const d = distrib();
+			const job = job_state();
+			if (job) job.log = null;
+			return {
+				config: {
+					appearance: section(c, 'appearance'),
+					light: section(c, 'light'),
+					dark: section(c, 'dark'),
+					updates: section(c, 'updates')
+				},
+				theme: theme_state(),
+				system: { pkg_manager: pkg_manager(), release: d.release, target: d.target, arch: d.arch },
+				updates: read_json(`${RUN_DIR}/updates.json`),
+				auto: auto_state(),
+				job: job
+			};
+		}
+	},
+
+	/* LuCI's theme switch: the same two options System › Language and Style
+	   writes. Deactivating falls back to Bootstrap when it is installed. */
+	activate: {
+		args: { enable: false },
+		call: function(req) {
+			const c = cursor();
+			c.load('luci');
+			if (req.args.enable) {
+				c.set('luci', 'themes', 'Outline', THEME_MEDIA);
+				c.set('luci', 'main', 'mediaurlbase', THEME_MEDIA);
+			}
+			else {
+				let fallback = null;
+				for (let name, path in c.get_all('luci', 'themes') ?? {})
+					if (substr(name, 0, 1) != '.' && path != THEME_MEDIA && access('/www' + path) && fallback == null)
+						fallback = path;
+				if (access('/www/luci-static/bootstrap')) fallback = '/luci-static/bootstrap';
+				if (!fallback) return { error: 'no other theme installed' };
+				c.set('luci', 'main', 'mediaurlbase', fallback);
+			}
+			return c.commit('luci') ? { result: true } : { error: 'cannot commit' };
+		}
+	},
+
+	set_auto_update: {
+		args: { enable: false, interval: '' },
+		call: function(req) {
+			const interval = v_enum(req.args.interval, INTERVALS, null);
+			if (!interval) return { error: 'invalid interval' };
+
+			const c = cursor();
+			ensure_config(c);
+			if (c.get(CONF, 'updates', 'minute') == null) {
+				const r = readfile('/dev/urandom', 4) ?? '\0\0\0\0';
+				c.set(CONF, 'updates', 'minute', `${ord(r, 0) % 60}`);
+				c.set(CONF, 'updates', 'hour', `${3 + ord(r, 1) % 3}`);
+				c.set(CONF, 'updates', 'weekday', `${ord(r, 2) % 7}`);
+				c.set(CONF, 'updates', 'monthday', `${1 + ord(r, 3) % 28}`);
+			}
+			c.set(CONF, 'updates', 'auto', req.args.enable ? '1' : '0');
+			c.set(CONF, 'updates', 'interval', interval);
+			if (!c.commit(CONF)) return { error: 'cannot commit' };
+
+			const u = section(c, 'updates');
+			const spec = {
+				daily: `${u.minute} ${u.hour} * * *`,
+				weekly: `${u.minute} ${u.hour} * * ${u.weekday}`,
+				monthly: `${u.minute} ${u.hour} ${u.monthday} * *`
+			}[interval];
+
+			/* Rewrite only our line; every other entry stays as it was. */
+			let lines = filter(split(readfile(CRON) ?? '', '\n'), (l) => l != '' && index(l, CRON_CMD) < 0);
+			if (req.args.enable)
+				push(lines, `${spec} ${CRON_CMD} >/dev/null 2>&1`);
+			if (writefile(CRON, length(lines) ? join('\n', lines) + '\n' : '') == null)
+				return { error: 'cannot write ' + CRON };
+			system('/etc/init.d/cron enable >/dev/null 2>&1; /etc/init.d/cron restart >/dev/null 2>&1');
+
+			return { result: true, auto: auto_state() };
+		}
+	},
+
+	/* Starts the detached worker. Only fixed words reach the shell. */
+	job_start: {
+		args: { action: '' },
+		call: function(req) {
+			const action = v_enum(req.args.action, [ 'check', 'update', 'uninstall', 'purge' ], null);
+			if (!action) return { error: 'invalid' };
+			if (!pkg_manager() && action != 'check') return { error: 'no_pkg_manager' };
+
+			const job = job_state();
+			if (job && job.state == 'running') return { error: 'busy' };
+
+			if (!access(RUN_DIR)) mkdir(RUN_DIR, 0700);
+			const id = `${time()}`;
+			writefile(`${RUN_DIR}/job.json`, sprintf('%J', { id: id, action: action, state: 'running', step: 'resolve', error: '' }));
+			writefile(`${RUN_DIR}/job.log`, '');
+			system(`${JOB} ${action} ${id} </dev/null >/dev/null 2>&1 &`);
+			return { result: true, id: id };
+		}
+	},
+
+	brand_list: {
+		call: function() {
+			const c = cursor();
+			c.load(CONF);
+			return brand_state(c);
+		}
+	},
+
+	/* The browser has put the file at BRAND_TMP through cgi-upload. It lands
+	   as `<slot>-<time>.<ext>` only after type, size and content checks for
+	   that slot; the tmp file is gone afterwards either way. Older uploads
+	   for the slot are pruned to the two newest plus whatever the committed
+	   config still points at, so an unsaved change never breaks the look the
+	   rest of LuCI is showing. */
+	brand_upload: {
+		args: { slot: '', name: '' },
+		call: function(req) {
+			const slot = req.args.slot ?? '';
+			const ext = ext_of(req.args.name ?? '');
+			const fail = (e) => { unlink(BRAND_TMP); return { error: e }; };
+
+			if (!exists(BRAND_SLOTS, slot)) return fail('invalid slot');
+			if (index(BRAND_SLOTS[slot], ext) < 0) return fail('unsupported type');
+			const st = stat(BRAND_TMP);
+			if (!st || st.type != 'file') return { error: 'no upload' };
+			if (st.size > BRAND_MAX) return fail('too large');
+			const data = readfile(BRAND_TMP);
+			if (data == null || !sniff(data, ext)) return fail('content does not match type');
+
+			if (!access(BRAND_DIR)) mkdir(BRAND_DIR, 0755);
+			const name = `${replace(slot, '_', '-')}-${time()}.${ext}`;
+			/* /tmp and /www are different filesystems: copy, never rename. */
+			if (!write_atomic(`${BRAND_DIR}/${name}`, data)) return fail('cannot write');
+			unlink(BRAND_TMP);
+
+			const c = cursor();
+			c.load(CONF);
+			const committed = c.get(CONF, 'branding', slot);
+			const prefix = replace(slot, '_', '-') + '-';
+			let mine = filter(brand_assets(), (x) => substr(x.name, 0, length(prefix)) == prefix);
+			for (let i = 2; i < length(mine); i++)
+				if (mine[i].name != committed && mine[i].name != name)
+					unlink(`${BRAND_DIR}/${mine[i].name}`);
+
+			const state = bump_rev();
+			state.name = name;
+			return { result: true, state: state };
+		}
+	},
+
+	job_status: {
+		call: function() {
+			const job = job_state();
+			if (!job) return {};
+			job.log = log_tail();
+			return job;
+		}
+	}
+};
+
+return { 'luci.outline': methods };

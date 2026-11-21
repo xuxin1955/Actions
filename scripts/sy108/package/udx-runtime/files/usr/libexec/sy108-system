@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+case "${1:-}:${2:-}" in
+	reboot:openwrt|reboot:recovery)
+		[ "$#" = 2 ] || exit 64
+		exec /usr/sbin/udx-runtime --reboot "$2";;
+	reset:)
+		[ "$#" = 1 ] && [ -f /etc/udx-openwrt-root ] || exit 64
+		# Let procd own the asynchronous reset; no private job protocol or journal.
+		exec ubus call service add '{"name":"sy108-reset","instances":{"reset":{"command":["/usr/sbin/udx-reset-config","--execute"],"stdout":true,"stderr":true,"term_timeout":335}}}' ;;
+	*) exit 64;;
+esac

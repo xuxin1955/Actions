@@ -1,0 +1,109 @@
+#!/bin/sh
+# Run by init or a single procd apply instance, never by an HTTP request body.
+. /usr/lib/udx-usb/gadget.sh
+umask 077
+mkdir -p "$UDX_RUN" || exit 1
+queued=0
+rebooting=0
+[ "${1:-}" != apply ] || { queued=1; shift; }
+finish() {
+	local result=$?
+	trap - EXIT
+	printf 'result=%s\n' "$result" > "$UDX_RUN/last-result"
+	if [ "$queued" = 1 ]; then
+		rm -f "$UDX_RUN/pending"
+		# The new state is already committed before procd refreshes console.
+		[ "$rebooting" = 1 ] || /etc/init.d/udx-usb reload >/dev/null 2>&1 || true
+	fi
+	exit "$result"
+}
+trap finish EXIT
+
+if [ "$queued" = 1 ]; then g_lock wait; else g_lock; fi || exit $?
+# Mounting configfs doesn't alter other gadgets. Never unbind a foreign owner.
+if [ ! -d "$UDX_CF" ]; then
+	mount -t configfs configfs /sys/kernel/config 2>/dev/null || true
+fi
+
+g_console_stop() {
+	ubus call service delete '{"name":"udx-usb","instance":"console"}' >/dev/null 2>&1 || true
+	[ -d "$UDX_G/functions/acm.maint" ] || return 0
+	local tries fd target busy
+	# shellcheck disable=SC2034
+	for tries in 1 2 3 4 5; do
+		busy=0
+		for fd in /proc/[0-9]*/fd/*; do
+			target=$(readlink "$fd" 2>/dev/null) || continue
+			case "$target" in /dev/ttyGS0|'/dev/ttyGS0 (deleted)') busy=1; break;; esac
+		done
+		[ "$busy" = 1 ] || return 0
+		sleep 1
+	done
+	g_error 'ttyGS0 still has an owner; gadget unchanged'
+	return 75
+}
+
+g_network_ready() {
+	# netifd owns bridge/IP/membership; the gadget only supplies stable ports.
+	ubus call network.interface.usbmgmt up >/dev/null 2>&1 || true
+}
+
+case "${1:-}" in
+	start)
+		[ "$(uci -q get udx-usb.main.enabled)" = 1 ] || exit 0
+		g_load_config && g_preflight || exit 1
+		if [ -d "$UDX_G" ]; then
+			[ "$(g_read "$UDX_G/UDC")" = "$UDX_UDC" ] && [ -f "$UDX_RUN/applied" ] || exit 1
+			g_error 'already bound; configuration changes require explicit switch'
+			exit 0
+		fi
+		if ! g_create; then g_destroy || true; exit 1; fi
+		g_state_save || exit 1
+		g_network_ready
+		;;
+	reset)
+		g_reset || exit $?
+		;;
+	stop)
+		g_console_stop && g_destroy || exit $?
+		;;
+	switch)
+		[ "$#" = 3 ] || exit 64
+		requested_profile=$2 requested_acm=$3
+		g_load_config || exit 1
+		PROFILE=$requested_profile ACM=$requested_acm
+		g_preflight || exit $?
+		active_profile=$(sed -n 's/^profile=//p' "$UDX_RUN/applied" 2>/dev/null)
+		if [ "$active_profile" != "$PROFILE" ]; then
+			# PAM-to-software transitions require the controller/PHY boot
+			# sequence. Keep the active gadget intact until normal shutdown
+			# stops it; do not report the requested mode as already applied.
+			uci set "udx-usb.main.profile=$PROFILE" && uci set "udx-usb.main.acm=$ACM" &&
+				uci commit udx-usb || { g_error 'saving the boot preference failed; restart not requested'; exit 1; }
+			sync
+			reboot || { g_error 'restart failed; saved profile will apply on the next boot'; exit 1; }
+			rebooting=1
+			exit 0
+		fi
+		previous=$UDX_RUN/previous
+		rm -f "$previous"
+		[ ! -f "$UDX_RUN/applied" ] || cp "$UDX_RUN/applied" "$previous" || exit 1
+		g_console_stop && g_destroy || exit $?
+		if g_create && g_state_save; then
+			uci set "udx-usb.main.profile=$PROFILE" && uci set "udx-usb.main.acm=$ACM" &&
+			uci commit udx-usb || { g_error 'active profile changed but saving the boot preference failed'; exit 1; }
+			g_network_ready
+			rm -f "$previous"
+		else
+			g_error 'requested profile failed; restoring the previous profile once'
+			g_destroy || exit 1
+			if [ -f "$previous" ]; then
+				g_state_load "$previous" && g_preflight && g_create && g_state_save && g_network_ready || {
+					g_error 'previous profile could not be restored; use the authenticated maintenance console'; exit 1;
+				}
+			fi
+			exit 1
+		fi
+		;;
+	*) exit 64;;
+esac

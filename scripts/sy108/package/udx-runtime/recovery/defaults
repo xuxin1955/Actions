@@ -1,0 +1,14 @@
+#!/bin/sh
+# Recovery supplies a management lease only; it is not a DNS/WAN router.
+uci -q set udx-usb.main.profile='ncm-software'
+uci -q set udx-usb.main.acm='0'
+uci -q commit udx-usb
+uci -q set system.@system[0].hostname='sy108-recovery'
+uci -q set dhcp.@dnsmasq[0].port='0'
+uci -q set dhcp.@dnsmasq[0].noresolv='1'
+uci -q delete dhcp.@dnsmasq[0].domain
+uci -q delete dhcp.@dnsmasq[0].local
+uci -q set dhcp.@dnsmasq[0].expandhosts='0'
+uci -q commit system
+uci -q commit dhcp
+exit 0

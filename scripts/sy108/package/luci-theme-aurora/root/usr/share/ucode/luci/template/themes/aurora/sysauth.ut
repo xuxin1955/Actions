@@ -1,0 +1,90 @@
+{#
+ luci-theme-aurora:
+ Copyright 2025 eamonxg <eamonxiong@gmail.com>
+ This theme is derived from luci-theme-bootstrap UT template.
+ luci-theme-bootstrap:
+ Copyright 2022 Jo-Philipp Wich <jo@mein.io>
+ Licensed to the public under the Apache License 2.0.
+-#}
+
+{%
+import { cursor } from 'uci';
+const boardinfo = ubus.call('system', 'board') ?? {};
+const themeTokens = cursor().get_all('aurora', 'theme') || {};
+const loginLogoSvg = themeTokens.logo_svg || 'logo.svg';
+const loginIconVer = themeTokens.icon_cache_version || '0';
+-%}
+{% include('header', {
+	blank_page: true,
+	prefetched_boardinfo: boardinfo,
+	prefetched_tokens: themeTokens
+}) %}
+
+{% if (themeTokens.struct_login_bg): %}
+<div class="page-bg" aria-hidden="true"></div>
+{% endif %}
+
+<main class="login-screen">
+	<div class="login-shell">
+		<form method="post" class="login-card">
+			<div class="login-brand">
+				<div class="login-logo">
+					<img src="{{ media }}/images/{{ loginLogoSvg }}?v={{ loginIconVer }}" alt="">
+				</div>
+				<div class="login-title">
+					<span class="login-hostname">{{ striptags(boardinfo?.hostname ?? '?') }}</span>
+					<span class="login-subtitle">{{ _('Authorization Required') }}</span>
+				</div>
+			</div>
+
+			<hr class="login-divider">
+
+			<div class="login-form">
+				<div class="login-fields">
+					<div class="login-field">
+						<label class="login-label" for="luci_username">{{ _('Username') }}</label>
+						<div class="input-wrap">
+							<input name="luci_username" id="luci_username" type="text" class="login-input" value="{{ entityencode(duser ?? '', true) }}" autocomplete="username">
+						</div>
+					</div>
+
+					<div class="login-field">
+						<label class="login-label" for="luci_password">{{ _('Password') }}</label>
+						<div class="input-wrap">
+							<input name="luci_password" id="luci_password" type="password" class="login-input" autocomplete="current-password">
+						</div>
+					</div>
+				</div>
+
+				{% if (fuser): %}
+				<div class="login-error" role="alert">{{ _('Invalid username and/or password! Please try again.') }}</div>
+				{% endif %}
+
+				<div class="login-actions">
+					<button type="submit" class="login-submit">{{ _('Log in') }}</button>
+				</div>
+			</div>
+		</form>
+	</div>
+
+	<footer class="login-footer">
+		<p>© <a href="https://github.com/eamonxg/luci-theme-aurora/graphs/contributors?all=1" target="_blank" rel="noreferrer">Aurora Theme Contributors</a> · Powered by <a href="{{ entityencode(version.disturl ?? '#', true) }}" target="_blank" rel="noreferrer">{{ version.distname }}</a> & <a href="https://github.com/openwrt/luci" target="_blank" rel="noreferrer">{{ version.luciname }}</a></p>
+	</footer>
+</main>
+
+<script>
+document.getElementById('luci_username').value ? document.getElementById('luci_password').focus() : document.getElementById('luci_username').focus();
+
+(function () {
+	var bg = document.querySelector('.page-bg');
+	if (!bg) return;
+	var val = getComputedStyle(bg).getPropertyValue('--page-bg').trim();
+	var m = val.match(/url\(["']?(.+?)["']?\)/);
+	if (!m) return;
+	var img = new Image();
+	img.onload = function () { bg.classList.add('full-loaded'); };
+	img.src = m[1];
+}());
+</script>
+
+{% include('footer', { blank_page: true }) %}

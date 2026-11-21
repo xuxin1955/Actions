@@ -1,0 +1,1 @@
+[data-page=admin-status-vnstat2-graphs] img[data-iface]{border:1px solid var(--border);border-radius:16px;max-width:100%;height:auto;display:block;margin:0 0 16px!important}[data-page=admin-status-vnstat2-graphs] img[data-iface]:where([data-darkmode=true],[data-darkmode=true] *){filter:invert(.92)hue-rotate(180deg)}

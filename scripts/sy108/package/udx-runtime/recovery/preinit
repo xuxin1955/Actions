@@ -1,0 +1,16 @@
+#!/bin/sh
+# Record the Recovery checkpoint after OpenWrt mounts its RAM root.
+sy108_recovery_checkpoint() {
+	[ -e /etc/udx-recovery-root ] || exit 64
+	[ -e /sys/firmware/devicetree/base/chosen/udx,trial-rtc-stages ] || return 0
+	local found= path
+	for path in /sys/bus/platform/devices/*/udx_trial_stage; do
+		[ -f "$path" ] || continue
+		[ -z "$found" ] || exit 1
+		found=$path
+	done
+	[ -n "$found" ] || exit 1
+	printf 'initramfs\n' > "$found" || exit 1
+	printf '<6>SY108 Recovery checkpoint: %s\n' "$(cat "$found")" > /dev/kmsg
+}
+boot_hook_add preinit_essential sy108_recovery_checkpoint

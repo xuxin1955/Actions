@@ -1,0 +1,47 @@
+# SY108 Recovery: fixed USB device, software NCM and minimal platform drivers.
+# Merged after config-7.3 to omit baseband and hardware USB offload.
+# CONFIG_USB_XHCI_HCD is not set
+# CONFIG_USB_XHCI_PLATFORM is not set
+# CONFIG_USB_DWC3_HOST is not set
+# CONFIG_USB_DWC3_DUAL_ROLE is not set
+CONFIG_USB_DWC3_GADGET=y
+# CONFIG_USB_STORAGE is not set
+# CONFIG_USB_UAS is not set
+# CONFIG_USB_ACM is not set
+# CONFIG_USB_PRINTER is not set
+# CONFIG_USB_SERIAL is not set
+# CONFIG_USB_USBNET is not set
+# CONFIG_USB_RTL8152 is not set
+# CONFIG_SCSI is not set
+# CONFIG_BLK_DEV_SD is not set
+# CONFIG_HID_SUPPORT is not set
+# CONFIG_SOUND is not set
+# CONFIG_SND is not set
+# CONFIG_MEDIA_SUPPORT is not set
+# CONFIG_FAT_FS is not set
+# CONFIG_VFAT_FS is not set
+# CONFIG_EXFAT_FS is not set
+# CONFIG_NTFS3_FS is not set
+# CONFIG_SPRD_PAMU3 is not set
+# CONFIG_SPRD_SIPA is not set
+# CONFIG_WWAN is not set
+# CONFIG_SPRD_SIPC_WWAN is not set
+# CONFIG_SPRD_SIPA_USB_ACCEL is not set
+# CONFIG_SPRD_SIPA_DELEGATE is not set
+# CONFIG_SPRD_SIPA_DELE_CP_IN_MINIAP is not set
+# CONFIG_PPP is not set
+# CONFIG_PERF_EVENTS is not set
+
+# Preserve standalone defaults when OpenWrt merges package selections.
+CONFIG_AX88796B_PHY=y
+CONFIG_FIXED_PHY=y
+CONFIG_FWNODE_MDIO=y
+CONFIG_MEDIA_CEC_SUPPORT=y
+CONFIG_NET_SELFTESTS=y
+CONFIG_OF_MDIO=y
+CONFIG_PHYLIB=y
+CONFIG_PHYLIB_LEDS=y
+CONFIG_SMSC_PHY=y
+CONFIG_SWPHY=y
+CONFIG_USB_ROLE_SWITCH=y
+CONFIG_USB_WDM=y

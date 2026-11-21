@@ -1,0 +1,1569 @@
+From f7134255119bf2e382025c6523e255d1782b2b23 Mon Sep 17 00:00:00 2001
+From: jason-liu-4980 <38558962+jason-liu-4980@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 06:09:12 +0800
+Subject: [PATCH 08/11] dt-bindings: sprd: describe UDX710 and SY108 hardware
+ interfaces
+
+Describe the current hardware and firmware interfaces with standard
+bindings and retain only the active public ABI documentation. Keep the
+standard chosen schema unchanged; the existing boot flags remain a
+separate ABI validation concern.
+---
+ .../ABI/testing/sysfs-bus-serial-sy108-mcu    | 31 ++++++
+ .../ABI/testing/sysfs-platform-sprd-efuse-uid | 19 ----
+ .../ABI/testing/sysfs-udx710-cellular-session | 20 ----
+ .../devicetree/bindings/arm/cpus.yaml         |  4 +
+ .../bindings/arm/sprd/sprd,sysdump.yaml       | 39 ++++++++
+ .../devicetree/bindings/arm/sprd/sprd.yaml    |  4 +
+ .../bindings/clock/sprd,orca-clk.yaml         |  2 +-
+ .../bindings/cpufreq/sprd,orca-cluster.yaml   | 35 +++++++
+ .../bindings/devfreq/sprd,orca-ddr.yaml       | 28 ++++++
+ .../bindings/iio/adc/meig,sy108-mcu.yaml      | 53 ++++++++++
+ .../devicetree/bindings/mfd/sprd,sc2731.yaml  | 11 ++-
+ .../bindings/mfd/sprd,sc27xx-syscon.yaml      | 30 ++++++
+ .../bindings/mfd/sprd,udx710-syscon.yaml      | 51 ++++++++++
+ .../bindings/mtd/sprd,orca-nandc.yaml         | 56 +++++++++++
+ .../bindings/net/sprd,orca-sipa-delegate.yaml | 50 ++++++++++
+ .../bindings/net/sprd,orca-sipa.yaml          | 98 +++++++++++++++++++
+ .../bindings/net/sprd,udx710-wwan-at.yaml     | 38 +++++++
+ .../bindings/nvmem/sprd,orca-efuse.yaml       | 30 ++++--
+ .../bindings/pci/sprd,orca-pcie.yaml          |  4 +-
+ .../bindings/phy/sprd,orca-usb-phy.yaml       |  5 +
+ .../bindings/pinctrl/sprd,orca-pinctrl.yaml   | 13 ++-
+ .../remoteproc/sprd,udx710-modem.yaml         | 88 +++++++++++++++++
+ .../sprd,udx710-pmsys.yaml                    | 12 +--
+ .../reserved-memory/sprd,sysdump-uboot.yaml   | 29 ++++++
+ .../bindings/reset/sprd,orca-usb-reset.yaml   |  2 +
+ .../bindings/serial/sprd,sc9836-uart-ex.yaml  | 39 ++++++++
+ .../bindings/soc/sprd/sprd,sipc.yaml          | 94 ++++++++++++++++++
+ .../bindings/soc/sprd/sprd,spipe.yaml         | 49 ++++++++++
+ .../bindings/soc/sprd/sprd,spool.yaml         | 61 ++++++++++++
+ .../bindings/sound/sprd,sc9860-mcdt.yaml      | 33 ++++++-
+ .../thermal/sprd,orca-aggregate-thermal.yaml  |  2 +-
+ .../devicetree/bindings/usb/snps,dwc3.yaml    |  6 ++
+ .../bindings/usb/sprd,orca-dwc3.yaml          |  2 +-
+ .../bindings/usb/sprd,orca-pamu3.yaml         | 50 ++++++++++
+ .../devicetree/bindings/vendor-prefixes.yaml  |  2 +
+ .../bindings/watchdog/sprd,sc2730-wdt.yaml    | 36 +++++++
+ 36 files changed, 1062 insertions(+), 64 deletions(-)
+ create mode 100644 Documentation/ABI/testing/sysfs-bus-serial-sy108-mcu
+ delete mode 100644 Documentation/ABI/testing/sysfs-platform-sprd-efuse-uid
+ create mode 100644 Documentation/devicetree/bindings/arm/sprd/sprd,sysdump.yaml
+ create mode 100644 Documentation/devicetree/bindings/cpufreq/sprd,orca-cluster.yaml
+ create mode 100644 Documentation/devicetree/bindings/devfreq/sprd,orca-ddr.yaml
+ create mode 100644 Documentation/devicetree/bindings/iio/adc/meig,sy108-mcu.yaml
+ create mode 100644 Documentation/devicetree/bindings/mfd/sprd,sc27xx-syscon.yaml
+ create mode 100644 Documentation/devicetree/bindings/mfd/sprd,udx710-syscon.yaml
+ create mode 100644 Documentation/devicetree/bindings/mtd/sprd,orca-nandc.yaml
+ create mode 100644 Documentation/devicetree/bindings/net/sprd,orca-sipa-delegate.yaml
+ create mode 100644 Documentation/devicetree/bindings/net/sprd,orca-sipa.yaml
+ create mode 100644 Documentation/devicetree/bindings/net/sprd,udx710-wwan-at.yaml
+ create mode 100644 Documentation/devicetree/bindings/remoteproc/sprd,udx710-modem.yaml
+ rename Documentation/devicetree/bindings/{soc/sprd => remoteproc}/sprd,udx710-pmsys.yaml (71%)
+ create mode 100644 Documentation/devicetree/bindings/reserved-memory/sprd,sysdump-uboot.yaml
+ create mode 100644 Documentation/devicetree/bindings/serial/sprd,sc9836-uart-ex.yaml
+ create mode 100644 Documentation/devicetree/bindings/soc/sprd/sprd,sipc.yaml
+ create mode 100644 Documentation/devicetree/bindings/soc/sprd/sprd,spipe.yaml
+ create mode 100644 Documentation/devicetree/bindings/soc/sprd/sprd,spool.yaml
+ create mode 100644 Documentation/devicetree/bindings/usb/sprd,orca-pamu3.yaml
+ create mode 100644 Documentation/devicetree/bindings/watchdog/sprd,sc2730-wdt.yaml
+
+diff --git a/Documentation/ABI/testing/sysfs-bus-serial-sy108-mcu b/Documentation/ABI/testing/sysfs-bus-serial-sy108-mcu
+new file mode 100644
+index 000000000..b9b3e41df
+--- /dev/null
++++ b/Documentation/ABI/testing/sysfs-bus-serial-sy108-mcu
+@@ -0,0 +1,31 @@
++What:           /sys/bus/serial/devices/.../event
++Date:           October 2026
++Contact:        linux-iio@vger.kernel.org
++Description:
++                Read-only SY108 MCU event snapshot. It reports "none" before
++                any event, otherwise "seq=<number> kind=poweroff|usb-reset".
++                A power request awaiting orderly shutdown takes precedence
++                over the latest USB event, including during early boot.
++
++                The driver emits a change uevent with MCU_EVENT and MCU_SEQ.
++                USB ACKs are sent by the driver before the uevent. A pending
++                power ACK is attempted only from the SYS_POWER_OFF blocking
++                reboot notifier, before UART device shutdown. There is no
++                userspace ACK attribute. A restart does not send a power ACK.
++
++What:           /sys/bus/serial/devices/.../firmware_version
++Date:           October 2026
++Contact:        linux-iio@vger.kernel.org
++Description:
++                Read-only MCU firmware version returned by the UART protocol.
++                A transport error is returned to the reader.
++
++What:           /sys/bus/serial/devices/.../status
++Date:           October 2026
++Contact:        linux-iio@vger.kernel.org
++Description:
++                Read-only transport counters, including received frames,
++                protocol errors, ADC requests, timeouts, MCU events and ACK
++                attempts. last_ack_error is the result of the last UART write.
++                A completed write and transmit drain do not prove receipt by
++                the MCU. ADC3..5 use the standard IIO raw voltage attributes.
+diff --git a/Documentation/ABI/testing/sysfs-platform-sprd-efuse-uid b/Documentation/ABI/testing/sysfs-platform-sprd-efuse-uid
+deleted file mode 100644
+index d7b057a9b..000000000
+--- a/Documentation/ABI/testing/sysfs-platform-sprd-efuse-uid
++++ /dev/null
+@@ -1,19 +0,0 @@
+-What:           /sys/bus/platform/devices/63400000.efuse/soc_uid
+-Date:           October 2026
+-Contact:        UDX710 board maintainers
+-Description:
+-                Read-only SoC UID for the Orca eFuse variant. The file mode is
+-                0400 and its size is exactly 8 bytes. It contains two
+-                little-endian 32-bit words: physical eFuse block 0 followed by
+-                block 1, with bit 31 cleared in each word. The controller reads
+-                both blocks in double mode, matching the board's original
+-                U-Boot READ_UID response. Partial reads are supported.
+-
+-                Hardware lock, clock and controller failures return an error
+-                without exposing partial UID bytes. All-zero or all-one masked
+-                UID values return ENODATA. This interface never programs eFuse.
+-
+-                The existing orca-public-efuse calibration provider retains
+-                its 180-byte aperture at physical blocks 2 through 46. Its
+-                offset 0 is not the UID. CONFIG_NVMEM_SYSFS is not required for
+-                this dedicated attribute.
+diff --git a/Documentation/ABI/testing/sysfs-udx710-cellular-session b/Documentation/ABI/testing/sysfs-udx710-cellular-session
+index 8e84f42c6..ff38c59df 100644
+--- a/Documentation/ABI/testing/sysfs-udx710-cellular-session
++++ b/Documentation/ABI/testing/sysfs-udx710-cellular-session
+@@ -1,23 +1,3 @@
+-What:           /sys/class/spipe/<name>/session
+-Date:           October 2026
+-Contact:        UDX710 AP-side port maintainers
+-Description:
+-                Read-only ASCII line: "1 dst channel generation state\n".
+-                Values are decimal u32; version is currently 1. Generation
+-                is the driver's SBUF software generation, wrapping at 2^32.
+-                State 0 means idle/unready, 1 means the SBUF transport handshake
+-                is ready, and 2 means stopping. This is not CP authentication,
+-                HALO, SIM, registration or data-session readiness. Reads only
+-                snapshot existing software fields under state_lock; they do not
+-                consume SMSG/SBUF, inspect MMIO, or change any state.
+-                All character nodes on one channel report the same snapshot.
+-                The fixed UDX710 PSCP nodes are spipe_lte2 (dst5/channel4),
+-                stty_lte0 (dst5/channel6), and snv_lte (dst5/channel40).
+-                A userspace owner may arm a baseline after observing state1;
+-                then any generation difference (equality comparison, not order),
+-                state loss, read error or malformed record invalidates its old
+-                descriptors. Close/reopen alone does not prove SIPA DMA drain.
+-
+ What:           /sys/bus/platform/devices/89600000.sipa-dele/cp_session
+ Date:           October 2026
+ Contact:        UDX710 AP-side port maintainers
+diff --git a/Documentation/devicetree/bindings/arm/cpus.yaml b/Documentation/devicetree/bindings/arm/cpus.yaml
+index 5be89c584..83185cfe6 100644
+--- a/Documentation/devicetree/bindings/arm/cpus.yaml
++++ b/Documentation/devicetree/bindings/arm/cpus.yaml
+@@ -39,6 +39,10 @@ description: |+
+   described below.
+ 
+ properties:
++  cpufreq-data-v1:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: Legacy Orca cluster parameters for the secure DVFS firmware.
++
+   reg:
+     maxItems: 1
+     description: >
+diff --git a/Documentation/devicetree/bindings/arm/sprd/sprd,sysdump.yaml b/Documentation/devicetree/bindings/arm/sprd/sprd,sysdump.yaml
+new file mode 100644
+index 000000000..95ce64885
+--- /dev/null
++++ b/Documentation/devicetree/bindings/arm/sprd/sprd,sysdump.yaml
+@@ -0,0 +1,39 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/arm/sprd/sprd,sysdump.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Spreadtrum bootloader system dump memory selection
++
++maintainers:
++  - Orson Zhai <orsonzhai@gmail.com>
++  - Baolin Wang <baolin.wang7@gmail.com>
++
++description: |
++  The installed bootloader finds /sprd-sysdump by path and reads the selected
++  physical memory and reserved-region phandles during dump collection. The
++  legacy property names are part of that interface.
++
++select:
++  properties:
++    $nodename:
++      const: sprd-sysdump
++  required: [$nodename]
++
++properties:
++  memory-region:
++    description: Physical memory node selected by the bootloader.
++    maxItems: 1
++  memory-region-re:
++    $ref: /schemas/types.yaml#/definitions/phandle-array
++    description: Reserved-region handles used by the legacy dump collector.
++  memory-region-se:
++    $ref: /schemas/types.yaml#/definitions/phandle-array
++    description: Optional separately selected dump regions.
++  version:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: Legacy dump format selector; absent means version zero.
++
++required: [memory-region]
++additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/arm/sprd/sprd.yaml b/Documentation/devicetree/bindings/arm/sprd/sprd.yaml
+index 40fc3c8b9..d216471ac 100644
+--- a/Documentation/devicetree/bindings/arm/sprd/sprd.yaml
++++ b/Documentation/devicetree/bindings/arm/sprd/sprd.yaml
+@@ -40,6 +40,10 @@ properties:
+               - sprd,ums9620-2h10
+           - const: sprd,ums9620
+ 
++      - items:
++          - const: sprd,sy108
++          - const: sprd,udx710
++
+ additionalProperties: true
+ 
+ ...
+diff --git a/Documentation/devicetree/bindings/clock/sprd,orca-clk.yaml b/Documentation/devicetree/bindings/clock/sprd,orca-clk.yaml
+index 76a371763..f89e14b08 100644
+--- a/Documentation/devicetree/bindings/clock/sprd,orca-clk.yaml
++++ b/Documentation/devicetree/bindings/clock/sprd,orca-clk.yaml
+@@ -65,7 +65,7 @@ required:
+ 
+ oneOf:
+   - required: [reg]
+-  - required: [sprd,syscon]
++  - required: ['sprd,syscon']
+ 
+ allOf:
+   - if:
+diff --git a/Documentation/devicetree/bindings/cpufreq/sprd,orca-cluster.yaml b/Documentation/devicetree/bindings/cpufreq/sprd,orca-cluster.yaml
+new file mode 100644
+index 000000000..29aa2ceb1
+--- /dev/null
++++ b/Documentation/devicetree/bindings/cpufreq/sprd,orca-cluster.yaml
+@@ -0,0 +1,35 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/cpufreq/sprd,orca-cluster.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Spreadtrum Orca legacy CPU cluster firmware parameters
++
++maintainers:
++  - Orson Zhai <orsonzhai@gmail.com>
++  - Baolin Wang <baolin.wang7@gmail.com>
++
++description: |
++  Parameters consumed through the CPU cpufreq-data-v1 phandle by the Orca
++  secure-firmware DVFS driver. These are configuration arguments to the
++  firmware service, not a static voltage/frequency table.
++
++select:
++  properties:
++    $nodename:
++      const: cpufreq-clus0
++  required: [$nodename]
++
++properties:
++  voltage-step:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: Firmware CONFIG voltage argument in microvolts.
++  tuning-latency-us: true
++  boost-duration:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    const: 0
++    description: Legacy boot boost interval; not supported by the SIP driver.
++
++required: [voltage-step, tuning-latency-us, boost-duration]
++additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/devfreq/sprd,orca-ddr.yaml b/Documentation/devicetree/bindings/devfreq/sprd,orca-ddr.yaml
+new file mode 100644
+index 000000000..662d02008
+--- /dev/null
++++ b/Documentation/devicetree/bindings/devfreq/sprd,orca-ddr.yaml
+@@ -0,0 +1,28 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/devfreq/sprd,orca-ddr.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Spreadtrum Orca firmware DDR frequency interface
++
++maintainers:
++  - Orson Zhai <orsonzhai@gmail.com>
++  - Baolin Wang <baolin.wang7@gmail.com>
++
++description: |
++  The DDR driver queries the frequency table and current state through the
++  PM_SYS SIPC control channel. Firmware owns frequency selection and training;
++  this interface exposes monitoring through devfreq. No MMIO OPP table is
++  supplied by this node.
++
++properties:
++  compatible:
++    const: sprd,dfs
++  freq-num:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    minimum: 1
++    description: Number of entries in the peer firmware's frequency table.
++
++required: [compatible, freq-num]
++additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/iio/adc/meig,sy108-mcu.yaml b/Documentation/devicetree/bindings/iio/adc/meig,sy108-mcu.yaml
+new file mode 100644
+index 000000000..26e68a9ee
+--- /dev/null
++++ b/Documentation/devicetree/bindings/iio/adc/meig,sy108-mcu.yaml
+@@ -0,0 +1,53 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/iio/adc/meig,sy108-mcu.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: SY108 board management MCU
++
++description: |
++  The SY108 MCU communicates over a 115200 baud, 8N1 UART. It exposes
++  ADC channels 3 through 5 and reports board power and USB reset requests.
++  The reset and wake GPIOs retain the levels required by the board firmware.
++
++maintainers:
++  - jason-liu-4980 <38558962+jason-liu-4980@users.noreply.github.com>
++
++allOf:
++  - $ref: /schemas/serial/serial-peripheral-props.yaml#
++
++properties:
++  compatible:
++    const: meig,sy108-mcu
++
++  rst-mcu-gpios:
++    maxItems: 1
++    description: MCU reset line, held low during normal operation.
++
++  wkup-mcu-gpios:
++    maxItems: 1
++    description: MCU wake line, held high during normal operation.
++
++  '#io-channel-cells':
++    const: 1
++    description: ADC channel number, from 3 through 5.
++
++required:
++  - compatible
++  - rst-mcu-gpios
++  - wkup-mcu-gpios
++  - '#io-channel-cells'
++
++unevaluatedProperties: false
++
++examples:
++  - |
++    serial {
++        mcu {
++            compatible = "meig,sy108-mcu";
++            rst-mcu-gpios = <&gpio 70 0>;
++            wkup-mcu-gpios = <&gpio 71 0>;
++            #io-channel-cells = <1>;
++        };
++    };
+diff --git a/Documentation/devicetree/bindings/mfd/sprd,sc2731.yaml b/Documentation/devicetree/bindings/mfd/sprd,sc2731.yaml
+index 481793f59..789848894 100644
+--- a/Documentation/devicetree/bindings/mfd/sprd,sc2731.yaml
++++ b/Documentation/devicetree/bindings/mfd/sprd,sc2731.yaml
+@@ -58,11 +58,16 @@ properties:
+       - $ref: /schemas/regulator/sprd,sc2730-regulator.yaml#
+       - $ref: /schemas/regulator/sprd,sc2731-regulator.yaml#
+ 
+-patternProperties:
+-  "^poweroff@1820$":
+-    type: object
++  syscon@1800:
++    $ref: /schemas/mfd/sprd,sc27xx-syscon.yaml#
++
++  watchdog@40:
++    $ref: /schemas/watchdog/sprd,sc2730-wdt.yaml#
++
++  poweroff@1820:
+     $ref: /schemas/power/reset/sprd,sc2730-poweroff.yaml#
+ 
++patternProperties:
+   "^adc@[0-9a-f]+$":
+     type: object
+     $ref: /schemas/iio/adc/sprd,sc2720-adc.yaml#
+diff --git a/Documentation/devicetree/bindings/mfd/sprd,sc27xx-syscon.yaml b/Documentation/devicetree/bindings/mfd/sprd,sc27xx-syscon.yaml
+new file mode 100644
+index 000000000..b37ce4490
+--- /dev/null
++++ b/Documentation/devicetree/bindings/mfd/sprd,sc27xx-syscon.yaml
+@@ -0,0 +1,30 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/mfd/sprd,sc27xx-syscon.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Spreadtrum SC2730 legacy analog system registers
++
++maintainers:
++  - Orson Zhai <orsonzhai@gmail.com>
++  - Baolin Wang <baolin.wang7@gmail.com>
++
++description: |
++  Legacy SC2730 descriptor for analog chip identification, charger detection
++  and charger control. Register addresses are offsets in the parent ADI regmap.
++  The SC2730 global register map names offsets 0x1800, 0x1ba0 and 0x1b98 as
++  CHIP_ID_LOW, CHGR_DET_FGU_CTRL and CHGR_CTRL respectively. This node is kept
++  as a hardware description; Linux functional children use the parent regmap.
++
++properties:
++  compatible:
++    const: sprd,sc27xx-syscon
++  reg:
++    items:
++      - description: Chip identification low register.
++      - description: Charger detection and fuel gauge control register.
++      - description: Charger control register.
++
++required: [compatible, reg]
++additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/mfd/sprd,udx710-syscon.yaml b/Documentation/devicetree/bindings/mfd/sprd,udx710-syscon.yaml
+new file mode 100644
+index 000000000..81824a713
+--- /dev/null
++++ b/Documentation/devicetree/bindings/mfd/sprd,udx710-syscon.yaml
+@@ -0,0 +1,51 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/mfd/sprd,udx710-syscon.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Unisoc UDX710 system and analog register banks
++
++maintainers:
++  - Orson Zhai <orsonzhai@gmail.com>
++  - Baolin Wang <baolin.wang7@gmail.com>
++
++description: |
++  Register banks shared by the UDX710 clock, reset, PHY and coprocessor
++  controllers. The AP/PMU/AON compatibles are retained platform interfaces.
++  The analog G0/G1/G2/G3/G4/G5/G8/G9/G10/G11 and AP interrupt banks follow the
++  UDX710 register map; each AP interrupt bank has the same register layout.
++
++properties:
++  compatible:
++    items:
++      - enum:
++          - sprd,sys-ap-ahb
++          - sprd,sys-ap-apb
++          - sprd,sys-ap-ipa-ahb
++          - sprd,sys-pmu-apb
++          - sprd,sys-aon-apb
++          - sprd,udx710-anlg-g0-syscon
++          - sprd,udx710-anlg-g1-syscon
++          - sprd,udx710-anlg-g10-syscon
++          - sprd,udx710-anlg-g11-syscon
++          - sprd,udx710-anlg-g2-syscon
++          - sprd,udx710-anlg-g3-syscon
++          - sprd,udx710-anlg-g4-syscon
++          - sprd,udx710-anlg-g5-syscon
++          - sprd,udx710-anlg-g8-syscon
++          - sprd,udx710-anlg-g9-syscon
++          - sprd,udx710-ap-intc-syscon
++          - sprd,udx710-audcp-ahb-syscon
++          - sprd,udx710-audcp-apb-syscon
++          - sprd,udx710-dmc-mpu-syscon
++          - sprd,udx710-pub-apb-syscon
++      - const: syscon
++  reg:
++    maxItems: 1
++  '#syscon-cells':
++    const: 2
++    description: Register offset and bit mask for legacy syscon specifiers.
++
++required: [compatible, reg]
++additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/mtd/sprd,orca-nandc.yaml b/Documentation/devicetree/bindings/mtd/sprd,orca-nandc.yaml
+new file mode 100644
+index 000000000..9f19cdfb6
+--- /dev/null
++++ b/Documentation/devicetree/bindings/mtd/sprd,orca-nandc.yaml
+@@ -0,0 +1,56 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/mtd/sprd,orca-nandc.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Spreadtrum Orca NAND flash controller
++
++maintainers:
++  - Orson Zhai <orsonzhai@gmail.com>
++  - Baolin Wang <baolin.wang7@gmail.com>
++
++description: |
++  Orca parallel NAND controller with hardware BCH ECC. The nine clocks name
++  the NAND/ECC sources, selectable SDR/DDR parents and their separate gates.
++  The current controller interface attaches one NAND chip at chip select zero.
++
++allOf:
++  - $ref: nand-controller.yaml#
++
++properties:
++  compatible:
++    const: sprd,orca-nandc
++  reg:
++    maxItems: 1
++  interrupts:
++    maxItems: 1
++  clocks:
++    maxItems: 9
++  clock-names:
++    items:
++      - const: nandc_clk
++      - const: nandc_ecc_clk
++      - const: nandc_parent_sdr
++      - const: nandc_parent_ddr
++      - const: nandc_ahb_enable
++      - const: nandc_ecc_enable
++      - const: nandc_26m_enable
++      - const: nandc_1x_enable
++      - const: nandc_2x_enable
++  sprd,random-mode:
++    type: boolean
++    description: Enable the controller data randomizer for the board NAND format.
++
++patternProperties:
++  '^nand@[0-9a-f]+$':
++    type: object
++    $ref: raw-nand-chip.yaml#
++    properties:
++      reg:
++        items:
++          - const: 0
++    unevaluatedProperties: false
++
++required: [compatible, reg, clocks, clock-names]
++unevaluatedProperties: false
+diff --git a/Documentation/devicetree/bindings/net/sprd,orca-sipa-delegate.yaml b/Documentation/devicetree/bindings/net/sprd,orca-sipa-delegate.yaml
+new file mode 100644
+index 000000000..b4ca3962a
+--- /dev/null
++++ b/Documentation/devicetree/bindings/net/sprd,orca-sipa-delegate.yaml
+@@ -0,0 +1,50 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/net/sprd,orca-sipa-delegate.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Unisoc ORCA SIPA CP resource delegate
++
++maintainers:
++  - jason-liu-4980 <38558962+jason-liu-4980@users.noreply.github.com>
++
++description: |
++  The delegate registers the CP producer and exchanges its resource
++  request, grant and release messages over SIPC. SIPA and SIPC binding
++  does not imply that CP has granted a resource request.
++
++properties:
++  compatible:
++    enum:
++      - sprd,orca-sipa-delegate
++      - sprd,roc1-sipa-delegate
++  reg:
++    maxItems: 2
++  reg-names:
++    items:
++      - const: mem-base
++      - const: reg-base
++  sprd,sipa:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: SIPA supplying the resource manager and shared FIFOs.
++  sprd,cp-transport:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: PSCP SIPC transport used for resource protocol messages.
++  sprd,ul-fifo-depth:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: Number of descriptors in the CP uplink FIFO.
++  sprd,dl-fifo-depth:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: Number of descriptors in the CP downlink FIFO.
++
++required:
++  - compatible
++  - reg
++  - reg-names
++  - sprd,sipa
++  - sprd,cp-transport
++  - sprd,ul-fifo-depth
++  - sprd,dl-fifo-depth
++
++additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/net/sprd,orca-sipa.yaml b/Documentation/devicetree/bindings/net/sprd,orca-sipa.yaml
+new file mode 100644
+index 000000000..97724b026
+--- /dev/null
++++ b/Documentation/devicetree/bindings/net/sprd,orca-sipa.yaml
+@@ -0,0 +1,98 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/net/sprd,orca-sipa.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Unisoc ORCA and ROC1 SIPA packet accelerator
++
++maintainers:
++  - jason-liu-4980 <38558962+jason-liu-4980@users.noreply.github.com>
++
++description: |
++  SIPA owns the hardware packet FIFOs and resource manager. ORCA uses a
++  local CP producer; a PCIe transport can be explicitly selected for
++  platforms that route packets through PCIe. Producer registration and
++  resource grants are performed by the corresponding runtime delegate.
++
++properties:
++  compatible:
++    enum:
++      - sprd,orca-sipa
++      - sprd,roc1-sipa
++  reg:
++    maxItems: 2
++  reg-names:
++    items:
++      - const: glb-base
++      - const: iram-base
++  interrupts:
++    maxItems: 1
++  interrupt-names:
++    const: local_ipa_irq
++  sprd,modem:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: Modem remote processor that owns the cellular channels.
++  sprd,enable-syscon:
++    $ref: /schemas/types.yaml#/definitions/phandle-array
++    description: IPA enable syscon, register offset and enable bit mask.
++    items:
++      - items:
++          - description: Syscon phandle
++          - description: Register offset
++          - description: Enable bit mask
++  sprd,sipa-bypass-mode:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: Hardware bypass mode selection.
++    enum: [0, 1]
++  sprd,tft-mode:
++    type: boolean
++    description: Use the traffic flow template mode.
++  sprd,wiap-ul-dma:
++    type: boolean
++    description: Use Wi-Fi AP uplink DMA.
++  sprd,need-through-pcie:
++    type: boolean
++    description: Route the remote USB producer through PCIe.
++  sprd,cp-transport:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: PCIe SIPC transport for a remote USB resource producer.
++  sprd,from-pcie-no-mac:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: Legacy receive PCIe framing flag.
++    enum: [0, 1]
++  sprd,to-pcie-no-mac:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: Legacy transmit PCIe framing flag.
++    enum: [0, 1]
++  vpower-supply:
++    description: Power supply for a standalone SIPA subsystem.
++
++patternProperties:
++  '^sprd,(usb|cp|wifi|ap-eth|ap-ip)-(dl|ul)-(tx|rx)$':
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    description: FIFO location (zero for DDR, one for IRAM) and descriptor count.
++    items:
++      - enum: [0, 1]
++      - minimum: 0
++
++required:
++  - compatible
++  - reg
++  - reg-names
++  - interrupts
++  - interrupt-names
++  - sprd,enable-syscon
++
++allOf:
++  - if:
++      required:
++        - sprd,need-through-pcie
++    then:
++      required:
++        - sprd,cp-transport
++    else:
++      properties:
++        sprd,cp-transport: false
++
++additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/net/sprd,udx710-wwan-at.yaml b/Documentation/devicetree/bindings/net/sprd,udx710-wwan-at.yaml
+new file mode 100644
+index 000000000..f3d23a3d2
+--- /dev/null
++++ b/Documentation/devicetree/bindings/net/sprd,udx710-wwan-at.yaml
+@@ -0,0 +1,38 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/net/sprd,udx710-wwan-at.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Unisoc UDX710 native SBUF AT streams
++
++maintainers:
++  - jason-liu-4980 <38558962+jason-liu-4980@users.noreply.github.com>
++
++description: |
++  The PSCP SIPC destination 5 channel 6 contains 32 original shared-memory
++  rings with 2048-byte RX and TX areas per ring. Ring 0 carries unsolicited
++  AT notifications and ring 1 carries commands and responses. The remaining
++  ring slots remain part of the firmware layout. Both AT ports belong to
++  the same modem as the SIPA data links.
++
++properties:
++  compatible:
++    const: sprd,udx710-wwan-at
++
++  sprd,modem:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: Modem platform device shared with the SIPA WWAN links.
++
++required:
++  - compatible
++  - sprd,modem
++
++additionalProperties: false
++
++examples:
++  - |
++    modem-at {
++        compatible = "sprd,udx710-wwan-at";
++        sprd,modem = <&modem>;
++    };
+diff --git a/Documentation/devicetree/bindings/nvmem/sprd,orca-efuse.yaml b/Documentation/devicetree/bindings/nvmem/sprd,orca-efuse.yaml
+index 35b8395b5..bad8baf18 100644
+--- a/Documentation/devicetree/bindings/nvmem/sprd,orca-efuse.yaml
++++ b/Documentation/devicetree/bindings/nvmem/sprd,orca-efuse.yaml
+@@ -9,8 +9,11 @@ title: Spreadtrum Orca public read-only eFuse
+ description: |
+   The byte-addressed public region covers hardware blocks 2 through 46
+   inclusive (180 bytes). Offset zero maps to hardware block 2. All public
+-  blocks use the redundant double-bit read mode. The driver provides no
+-  programming operation. Thermal calibration uses the standard NVMEM cell
++  blocks use the redundant double-bit read mode. The 8-byte UID at offset
++  0xb4 maps hardware blocks 0 and 1 in double-bit mode, with bit 31 of each
++  word cleared as in the original UID format. Calibration offsets remain
++  unchanged. The resulting read-only NVMEM view is 188 bytes. The driver
++  provides no programming operation. Thermal calibration uses the standard NVMEM cell
+   bits property; no calibrated values are encoded in this binding.
+ 
+ maintainers:
+@@ -34,6 +37,9 @@ properties:
+   hwlocks:
+     maxItems: 1
+ 
++  nvmem-layout:
++    $ref: layouts/fixed-layout.yaml#
++
+ required:
+   - compatible
+   - reg
+@@ -43,7 +49,6 @@ required:
+ 
+ allOf:
+   - $ref: nvmem.yaml#
+-  - $ref: nvmem-deprecated-cells.yaml#
+ 
+ unevaluatedProperties: false
+ 
+@@ -57,13 +62,20 @@ examples:
+       clocks = <&aonapb_gate CLK_EFUSE_EB>;
+       clock-names = "enable";
+       hwlocks = <&hwlock 8>;
+-      #address-cells = <1>;
+-      #size-cells = <1>;
++      nvmem-layout {
++          compatible = "fixed-layout";
++          #address-cells = <1>;
++          #size-cells = <1>;
++
++          uid@b4 {
++            reg = <0xb4 0x8>;
++          };
+ 
+-      /* Data cells */
+-      thermal_calib: calib@98 {
+-        reg = <0x98 0x4>;
+-        bits = <1 7>;
++          /* Calibration cells */
++          thermal_calib: calib@98 {
++            reg = <0x98 0x4>;
++            bits = <1 7>;
++          };
+       };
+     };
+ ...
+diff --git a/Documentation/devicetree/bindings/pci/sprd,orca-pcie.yaml b/Documentation/devicetree/bindings/pci/sprd,orca-pcie.yaml
+index 4409f34c6..ba13e64e7 100644
+--- a/Documentation/devicetree/bindings/pci/sprd,orca-pcie.yaml
++++ b/Documentation/devicetree/bindings/pci/sprd,orca-pcie.yaml
+@@ -63,9 +63,11 @@ properties:
+     properties:
+       label:
+         const: msi_int
+-      interrupt-parent: true
++      # The legacy width marker does not make this child a provider.
++      interrupt-controller: false
+       '#interrupt-cells':
+         const: 3
++        description: Legacy specifier-width marker matching the GIC parent.
+       interrupts:
+         maxItems: 1
+     required:
+diff --git a/Documentation/devicetree/bindings/phy/sprd,orca-usb-phy.yaml b/Documentation/devicetree/bindings/phy/sprd,orca-usb-phy.yaml
+index fbe8eb65d..7096bd9dc 100644
+--- a/Documentation/devicetree/bindings/phy/sprd,orca-usb-phy.yaml
++++ b/Documentation/devicetree/bindings/phy/sprd,orca-usb-phy.yaml
+@@ -25,16 +25,21 @@ properties:
+     maxItems: 1
+   vdd-supply: true
+   sprd,vdd-voltage:
++    description: PHY analog supply voltage in microvolts.
+     $ref: /schemas/types.yaml#/definitions/uint32
+     minimum: 1200000
+     maximum: 3750000
+   sprd,syscon-anag4:
++    description: Shared analog control register bank.
+     $ref: /schemas/types.yaml#/definitions/phandle
+   sprd,syscon-aon-apb:
++    description: Always-on APB control register bank used by the PHY.
+     $ref: /schemas/types.yaml#/definitions/phandle
+   sprd,syscon-ap-ahb:
++    description: AP AHB control register bank used by USB0.
+     $ref: /schemas/types.yaml#/definitions/phandle
+   sprd,syscon-ipa-ahb:
++    description: IPA AHB control register bank used by USB1.
+     $ref: /schemas/types.yaml#/definitions/phandle
+ required:
+   - compatible
+diff --git a/Documentation/devicetree/bindings/pinctrl/sprd,orca-pinctrl.yaml b/Documentation/devicetree/bindings/pinctrl/sprd,orca-pinctrl.yaml
+index 79aa46d67..e93997d4c 100644
+--- a/Documentation/devicetree/bindings/pinctrl/sprd,orca-pinctrl.yaml
++++ b/Documentation/devicetree/bindings/pinctrl/sprd,orca-pinctrl.yaml
+@@ -73,13 +73,22 @@ patternProperties:
+         $ref: /schemas/types.yaml#/definitions/uint32
+ 
+     patternProperties:
++      '^[a-z][a-z0-9-]*-pins$':
++        $ref: '#/$defs/pin-node'
++        unevaluatedProperties: false
++        description: Independently referenced pad configuration beneath a mux group.
++        properties:
++          sprd,sleep-mode:
++            $ref: /schemas/types.yaml#/definitions/uint32
++            maximum: 15
++            description: Sleep-domain selector of the pad register.
++
+       '^[a-z][a-z0-9-]*-sleep$':
+         $ref: '#/$defs/pin-node'
+         unevaluatedProperties: false
+ 
+         properties:
+-          sleep-hardware-state:
+-            const: true
++          sleep-hardware-state: true
+           bias-pull-up:
+             type: boolean
+           output-high: false
+diff --git a/Documentation/devicetree/bindings/remoteproc/sprd,udx710-modem.yaml b/Documentation/devicetree/bindings/remoteproc/sprd,udx710-modem.yaml
+new file mode 100644
+index 000000000..86107f6b7
+--- /dev/null
++++ b/Documentation/devicetree/bindings/remoteproc/sprd,udx710-modem.yaml
+@@ -0,0 +1,88 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/remoteproc/sprd,udx710-modem.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Unisoc UDX710 modem subsystem
++
++maintainers:
++  - jason-liu-4980 <38558962+jason-liu-4980@users.noreply.github.com>
++
++description: |
++  The modem CP, V3 PHY and NR PHY share one boot lifecycle. All original
++  raw firmware, DSP images, prepared NV and the modem command line must be
++  loaded before any core is released. There is no ELF resource table.
++  The reserved modem memory also contains SIPC and SIPA shared buffers;
++  only the named image windows are loaded by this device.
++
++properties:
++  compatible:
++    const: sprd,udx710-modem
++
++  reg:
++    minItems: 12
++    maxItems: 12
++
++  reg-names:
++    items:
++      - const: cp-iram
++      - const: v3-iram
++      - const: nr-iram
++      - const: modem
++      - const: v3phy
++      - const: nrphy
++      - const: nrdsp1
++      - const: nrdsp2
++      - const: deltanv
++      - const: cpcmdline
++      - const: fixnv
++      - const: runnv
++
++  memory-region:
++    maxItems: 1
++
++  firmware-name:
++    description: Raw files in the same order as the nine image windows.
++    minItems: 9
++    maxItems: 9
++
++  sprd,aon-apb:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: AON APB syscon containing the core reset controls.
++
++  sprd,pmu-apb:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: PMU APB syscon containing sleep, shutdown and system reset controls.
++
++  sprd,cp-iram-data:
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    description: Original CP ARM bootstrap instructions and literal data.
++    minItems: 49
++    maxItems: 49
++
++  sprd,v3-iram-data:
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    description: Original V3 PHY ARM bootstrap instructions and literal data.
++    minItems: 49
++    maxItems: 49
++
++  sprd,nr-iram-data:
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    description: Original NR PHY ARM bootstrap instructions and literal data.
++    minItems: 49
++    maxItems: 49
++
++required:
++  - compatible
++  - reg
++  - reg-names
++  - memory-region
++  - firmware-name
++  - sprd,aon-apb
++  - sprd,pmu-apb
++  - sprd,cp-iram-data
++  - sprd,v3-iram-data
++  - sprd,nr-iram-data
++
++additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/soc/sprd/sprd,udx710-pmsys.yaml b/Documentation/devicetree/bindings/remoteproc/sprd,udx710-pmsys.yaml
+similarity index 71%
+rename from Documentation/devicetree/bindings/soc/sprd/sprd,udx710-pmsys.yaml
+rename to Documentation/devicetree/bindings/remoteproc/sprd,udx710-pmsys.yaml
+index a0aa0aa4f..d1db497dc 100644
+--- a/Documentation/devicetree/bindings/soc/sprd/sprd,udx710-pmsys.yaml
++++ b/Documentation/devicetree/bindings/remoteproc/sprd,udx710-pmsys.yaml
+@@ -1,7 +1,7 @@
+ # SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+ %YAML 1.2
+ ---
+-$id: http://devicetree.org/schemas/soc/sprd/sprd,udx710-pmsys.yaml#
++$id: http://devicetree.org/schemas/remoteproc/sprd,udx710-pmsys.yaml#
+ $schema: http://devicetree.org/meta-schemas/core.yaml#
+ 
+ title: Spreadtrum UDX710 PM_SYS Cortex-M4 firmware loader
+@@ -10,7 +10,7 @@ maintainers:
+   - jason-liu-4980 <38558962+jason-liu-4980@users.noreply.github.com>
+ 
+ description: |
+-  PM_SYS runs the board's original firmware from the named UBI volume. Its
++  PM_SYS runs the board's original raw firmware through the firmware loader. Its
+   Cortex-M4 remains held in reset until the SIPC mailbox receiver is
+   registered.
+ 
+@@ -22,15 +22,15 @@ properties:
+   sprd,aon-apb:
+     $ref: /schemas/types.yaml#/definitions/phandle
+     description: AON APB syscon containing the PM_SYS reset register.
+-  sprd,firmware-volume:
++  firmware-name:
+     $ref: /schemas/types.yaml#/definitions/string
+-    const: nr_pmsys
+-    description: Original firmware volume on the board's UBI device 0.
++    const: sprd/udx710-pmsys.bin
++    description: Original raw firmware prepared by userspace.
+ 
+ required:
+   - compatible
+   - reg
+   - sprd,aon-apb
+-  - sprd,firmware-volume
++  - firmware-name
+ 
+ additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/reserved-memory/sprd,sysdump-uboot.yaml b/Documentation/devicetree/bindings/reserved-memory/sprd,sysdump-uboot.yaml
+new file mode 100644
+index 000000000..6f848576f
+--- /dev/null
++++ b/Documentation/devicetree/bindings/reserved-memory/sprd,sysdump-uboot.yaml
+@@ -0,0 +1,29 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/reserved-memory/sprd,sysdump-uboot.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Spreadtrum bootloader dump reservation
++
++maintainers:
++  - Orson Zhai <orsonzhai@gmail.com>
++  - Baolin Wang <baolin.wang7@gmail.com>
++
++description: |
++  Legacy detour-mem reservation for the bootloader dump area. The installed
++  bootloader searches for the sysdump-uboot node name and rewrites its range;
++  the user-version SY108 fixup sets its size to zero. Preserve the legacy
++  compatible and node name for that interface.
++
++allOf:
++  - $ref: reserved-memory.yaml#
++
++properties:
++  compatible:
++    const: detour-mem
++  reg:
++    maxItems: 1
++
++required: [compatible, reg]
++unevaluatedProperties: false
+diff --git a/Documentation/devicetree/bindings/reset/sprd,orca-usb-reset.yaml b/Documentation/devicetree/bindings/reset/sprd,orca-usb-reset.yaml
+index fc5044a5a..3aced1b73 100644
+--- a/Documentation/devicetree/bindings/reset/sprd,orca-usb-reset.yaml
++++ b/Documentation/devicetree/bindings/reset/sprd,orca-usb-reset.yaml
+@@ -17,8 +17,10 @@ properties:
+   '#reset-cells':
+     const: 1
+   sprd,ap-ahb:
++    description: AP AHB system controller containing the USB0 reset bit.
+     $ref: /schemas/types.yaml#/definitions/phandle
+   sprd,ipa-ahb:
++    description: IPA AHB system controller containing the USB1 and PAM reset bits.
+     $ref: /schemas/types.yaml#/definitions/phandle
+ required: [compatible, '#reset-cells', 'sprd,ap-ahb', 'sprd,ipa-ahb']
+ additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/serial/sprd,sc9836-uart-ex.yaml b/Documentation/devicetree/bindings/serial/sprd,sc9836-uart-ex.yaml
+new file mode 100644
+index 000000000..b0afcfd3d
+--- /dev/null
++++ b/Documentation/devicetree/bindings/serial/sprd,sc9836-uart-ex.yaml
+@@ -0,0 +1,39 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/serial/sprd,sc9836-uart-ex.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Spreadtrum SP UART with PM system interrupt proxy
++
++maintainers:
++  - Orson Zhai <orsonzhai@gmail.com>
++  - Baolin Wang <baolin.wang7@gmail.com>
++
++description: |
++  SP UART uses the PM system SIPC notification endpoint to deliver receive
++  notifications. Its own interrupt is described for the hardware, but the
++  Linux driver leaves interrupt ownership with the PM firmware. The driver
++  retains the existing 26 MHz parent/rate rather than reprogramming shared
++  clock domains. A serial peripheral may be attached as a child node.
++
++allOf:
++  - $ref: serial.yaml#
++
++properties:
++  compatible:
++    const: sprd,sc9836-uart-ex
++  reg:
++    maxItems: 1
++  interrupts:
++    maxItems: 1
++  clocks:
++    maxItems: 3
++  clock-names:
++    items:
++      - const: enable
++      - const: uart
++      - const: source
++
++required: [compatible, reg, clocks, clock-names]
++unevaluatedProperties: false
+diff --git a/Documentation/devicetree/bindings/soc/sprd/sprd,sipc.yaml b/Documentation/devicetree/bindings/soc/sprd/sprd,sipc.yaml
+new file mode 100644
+index 000000000..d587ae148
+--- /dev/null
++++ b/Documentation/devicetree/bindings/soc/sprd/sprd,sipc.yaml
+@@ -0,0 +1,94 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/soc/sprd/sprd,sipc.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Unisoc interprocessor message transport
++
++maintainers:
++  - jason-liu-4980 <38558962+jason-liu-4980@users.noreply.github.com>
++
++description: |
++  SIPC carries short messages and shared-memory ring control between the
++  application processor and a remote processor. Mailbox channels identify
++  hardware destinations; sprd,dst identifies the SIPC protocol peer.
++
++properties:
++  compatible:
++    const: sprd,sipc
++  sprd,name:
++    $ref: /schemas/types.yaml#/definitions/string
++    description: Transport name used in driver diagnostics.
++  sprd,type:
++    $ref: /schemas/types.yaml#/definitions/string
++    enum: [mbox, pcie, ipi]
++    description: Hardware notification transport.
++  sprd,dst:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    maximum: 8
++    description: SIPC peer identifier.
++  sprd,core:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: Mailbox destination, matching the smsg channel argument.
++  sprd,core_sensor:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: Legacy sensor mailbox destination.
++  sprd,client:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    enum: [0, 1]
++    description: PCIe host (zero) or client (one) side.
++  sprd,ep-dev:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: PCIe endpoint device index on the host side.
++  sprd,ep-fun:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: PCIe endpoint function index on the client side.
++  sprd,rc-ctrl:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: PCIe root controller for the transport.
++  sprd,smem-type:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    enum: [0, 1]
++    description: Local (zero) or PCIe (one) shared memory.
++  sprd,smem-info:
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    description: Local base, peer base, and size in bytes of the shared memory.
++    items:
++      - description: Local base
++      - description: Peer base
++      - description: Size in bytes
++  sprd,high-offset:
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    description: High address offsets for local and peer shared memory.
++    items:
++      - description: Local offset
++      - description: Peer offset
++  sprd,pm-sys:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: PM_SYS remote processor for this transport.
++  mboxes:
++    maxItems: 1
++  mbox-names:
++    const: smsg
++  interrupts:
++    maxItems: 1
++
++required:
++  - compatible
++  - sprd,name
++  - sprd,type
++  - sprd,dst
++  - sprd,smem-info
++
++allOf:
++  - if:
++      properties:
++        sprd,type:
++          const: mbox
++    then:
++      required:
++        - mboxes
++        - mbox-names
++
++additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/soc/sprd/sprd,spipe.yaml b/Documentation/devicetree/bindings/soc/sprd/sprd,spipe.yaml
+new file mode 100644
+index 000000000..2fc275b4a
+--- /dev/null
++++ b/Documentation/devicetree/bindings/soc/sprd/sprd,spipe.yaml
+@@ -0,0 +1,49 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/soc/sprd/sprd,spipe.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Spreadtrum SIPC shared byte-ring pipe
++
++maintainers:
++  - Orson Zhai <orsonzhai@gmail.com>
++  - Baolin Wang <baolin.wang7@gmail.com>
++
++description: |
++  Legacy SIPC shared-memory endpoint instantiated for the firmware ABI.
++  These nodes describe protocol channels, not MMIO addresses. Destination
++  and channel select the existing SIPC transport; buffer geometry must agree
++  with the peer firmware.
++
++properties:
++  compatible:
++    const: sprd,spipe
++  sprd,name:
++    $ref: /schemas/types.yaml#/definitions/string
++    description: Userspace device name.
++  sprd,dst:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: SIPC destination ID.
++  sprd,channel:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: SMSG channel ID.
++  sprd,ringnr:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: Number of shared byte rings.
++  sprd,size-rxbuf:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: Receive ring capacity in bytes.
++  sprd,size-txbuf:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: Transmit ring capacity in bytes; zero is valid for receive-only pipes.
++
++required:
++  - compatible
++  - sprd,name
++  - sprd,dst
++  - sprd,channel
++  - sprd,ringnr
++  - sprd,size-rxbuf
++  - sprd,size-txbuf
++additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/soc/sprd/sprd,spool.yaml b/Documentation/devicetree/bindings/soc/sprd/sprd,spool.yaml
+new file mode 100644
+index 000000000..dec57476e
+--- /dev/null
++++ b/Documentation/devicetree/bindings/soc/sprd/sprd,spool.yaml
+@@ -0,0 +1,61 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/soc/sprd/sprd,spool.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Spreadtrum SIPC shared block pool
++
++maintainers:
++  - Orson Zhai <orsonzhai@gmail.com>
++  - Baolin Wang <baolin.wang7@gmail.com>
++
++description: |
++  Legacy SIPC shared-memory endpoint instantiated for the firmware ABI.
++  These nodes describe protocol channels, not MMIO addresses. Destination
++  and channel select the existing SIPC transport; buffer geometry must agree
++  with the peer firmware.
++
++properties:
++  compatible:
++    const: sprd,spool
++  sprd,name:
++    $ref: /schemas/types.yaml#/definitions/string
++    description: Userspace device name.
++  sprd,dst:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: SIPC destination ID.
++  sprd,channel:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: SMSG channel ID.
++  sprd,tx-blksize:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: TX block size in bytes.
++  sprd,tx-blknum:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: TX block count; zero is valid for an unused direction.
++  sprd,rx-blksize:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: RX block size in bytes.
++  sprd,rx-blknum:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: RX block count; zero is valid for an unused direction.
++  sprd,preconfigured:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    enum: [0, 1]
++    description: Use the peer-preconfigured receive block pool.
++  sprd,nodev:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    enum: [0, 1]
++    description: Do not create a userspace character device.
++
++required:
++  - compatible
++  - sprd,name
++  - sprd,dst
++  - sprd,channel
++  - sprd,tx-blksize
++  - sprd,tx-blknum
++  - sprd,rx-blksize
++  - sprd,rx-blknum
++additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/sound/sprd,sc9860-mcdt.yaml b/Documentation/devicetree/bindings/sound/sprd,sc9860-mcdt.yaml
+index 3b66bedef..f607dae27 100644
+--- a/Documentation/devicetree/bindings/sound/sprd,sc9860-mcdt.yaml
++++ b/Documentation/devicetree/bindings/sound/sprd,sc9860-mcdt.yaml
+@@ -19,7 +19,9 @@ maintainers:
+ 
+ properties:
+   compatible:
+-    const: sprd,sc9860-mcdt
++    enum:
++      - sprd,sc9860-mcdt
++      - sprd,roc1-mcdt
+ 
+   reg:
+     maxItems: 1
+@@ -27,6 +29,25 @@ properties:
+   interrupts:
+     maxItems: 1
+ 
++  clocks:
++    maxItems: 1
++    description: Optional access clock, held while a channel is allocated.
++
++  sprd,ap-addr-offset:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description:
++      Offset subtracted from the AP physical FIFO address to obtain the
++      address used by the ROC1 audio DMA controller.
++
++allOf:
++  - if:
++      properties:
++        compatible:
++          const: sprd,sc9860-mcdt
++    then:
++      properties:
++        sprd,ap-addr-offset: false
++
+ required:
+   - compatible
+   - reg
+@@ -44,4 +65,14 @@ examples:
+       reg = <0x41490000 0x170>;
+       interrupts = <GIC_SPI 48 IRQ_TYPE_LEVEL_HIGH>;
+     };
++  - |
++    #include <dt-bindings/interrupt-controller/arm-gic.h>
++
++    mcdt@56490000 {
++      compatible = "sprd,roc1-mcdt";
++      reg = <0x56490000 0x170>;
++      interrupts = <GIC_SPI 118 IRQ_TYPE_LEVEL_HIGH>;
++      clocks = <&audio_access>;
++      sprd,ap-addr-offset = <0x55000000>;
++    };
+ ...
+diff --git a/Documentation/devicetree/bindings/thermal/sprd,orca-aggregate-thermal.yaml b/Documentation/devicetree/bindings/thermal/sprd,orca-aggregate-thermal.yaml
+index 1d2f33942..907ed0fe7 100644
+--- a/Documentation/devicetree/bindings/thermal/sprd,orca-aggregate-thermal.yaml
++++ b/Documentation/devicetree/bindings/thermal/sprd,orca-aggregate-thermal.yaml
+@@ -31,10 +31,10 @@ properties:
+   "#thermal-sensor-cells":
+     const: 1
+   sensor-names:
++    # The shared string-array type already enforces unique entries.
+     $ref: /schemas/types.yaml#/definitions/string-array
+     minItems: 1
+     maxItems: 16
+-    uniqueItems: true
+     description: Names of enabled child nodes below /thermal-zones.
+   k-po:
+     $ref: /schemas/types.yaml#/definitions/uint32
+diff --git a/Documentation/devicetree/bindings/usb/snps,dwc3.yaml b/Documentation/devicetree/bindings/usb/snps,dwc3.yaml
+index 4380bb6fa..db0a91341 100644
+--- a/Documentation/devicetree/bindings/usb/snps,dwc3.yaml
++++ b/Documentation/devicetree/bindings/usb/snps,dwc3.yaml
+@@ -57,6 +57,12 @@ properties:
+         - enum: [bus_early, ref, suspend]
+         - true
+ 
++  sprd,pamu3-offload:
++    type: boolean
++    description: |
++      Orca PAM U3 shares this peripheral controller's event buffers and endpoint
++      resources. The PAM supplier references this controller by phandle.
++
+   dma-coherent: true
+ 
+   iommus:
+diff --git a/Documentation/devicetree/bindings/usb/sprd,orca-dwc3.yaml b/Documentation/devicetree/bindings/usb/sprd,orca-dwc3.yaml
+index d5190a9b6..f3209517f 100644
+--- a/Documentation/devicetree/bindings/usb/sprd,orca-dwc3.yaml
++++ b/Documentation/devicetree/bindings/usb/sprd,orca-dwc3.yaml
+@@ -32,7 +32,7 @@ properties:
+   phy-names:
+     const: usb
+ patternProperties:
+-  '^dwc3@[0-9a-f]+$':
++  '^usb@[0-9a-f]+$':
+     $ref: snps,dwc3.yaml#
+     properties:
+       dr_mode:
+diff --git a/Documentation/devicetree/bindings/usb/sprd,orca-pamu3.yaml b/Documentation/devicetree/bindings/usb/sprd,orca-pamu3.yaml
+new file mode 100644
+index 000000000..cb381726e
+--- /dev/null
++++ b/Documentation/devicetree/bindings/usb/sprd,orca-pamu3.yaml
+@@ -0,0 +1,50 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/usb/sprd,orca-pamu3.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Unisoc ORCA PAM USB3 accelerator
++
++maintainers:
++  - jason-liu-4980 <38558962+jason-liu-4980@users.noreply.github.com>
++
++description: |
++  PAM connects the DWC3 endpoint DMA rings to SIPA. The supplier links
++  describe devices needed to prepare the rings; remote CP resource grants
++  and DMA completion remain runtime protocol events.
++
++properties:
++  compatible:
++    const: sprd,orca-pamu3
++  reg:
++    maxItems: 1
++  reg-names:
++    const: pamu3_glb_regs
++  clocks:
++    maxItems: 1
++  clock-names:
++    const: pamu3_clk
++  resets:
++    maxItems: 1
++  reset-names:
++    const: pamu3
++  sprd,dwc3:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: DWC3 controller whose endpoints are used by PAM.
++  sprd,sipa:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: SIPA packet accelerator supplying the shared FIFO interface.
++
++required:
++  - compatible
++  - reg
++  - reg-names
++  - clocks
++  - clock-names
++  - resets
++  - reset-names
++  - sprd,dwc3
++  - sprd,sipa
++
++additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/vendor-prefixes.yaml b/Documentation/devicetree/bindings/vendor-prefixes.yaml
+index ba2002969..6e096a71d 100644
+--- a/Documentation/devicetree/bindings/vendor-prefixes.yaml
++++ b/Documentation/devicetree/bindings/vendor-prefixes.yaml
+@@ -1055,6 +1055,8 @@ patternProperties:
+     description: Medion AG
+   "^megachips,.*":
+     description: MegaChips
++  "^meig,.*":
++    description: MeiG Smart
+   "^mele,.*":
+     description: Shenzhen MeLE Digital Technology Ltd.
+   "^melexis,.*":
+diff --git a/Documentation/devicetree/bindings/watchdog/sprd,sc2730-wdt.yaml b/Documentation/devicetree/bindings/watchdog/sprd,sc2730-wdt.yaml
+new file mode 100644
+index 000000000..e9fd705c5
+--- /dev/null
++++ b/Documentation/devicetree/bindings/watchdog/sprd,sc2730-wdt.yaml
+@@ -0,0 +1,36 @@
++# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/watchdog/sprd,sc2730-wdt.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Spreadtrum SC2730 PMIC watchdog
++
++maintainers:
++  - Jason Liu <jason-liu-4980@users.noreply.github.com>
++
++description: |
++  The SC2730 watchdog is a 32-bit counter clocked at 32768 Hz. It is a
++  child of the PMIC and uses the parent ADI regmap. The reset-only driver
++  preserves an inherited running watchdog and does not support stopping it.
++
++allOf:
++  - $ref: watchdog.yaml#
++
++properties:
++  compatible:
++    const: sprd,sc2730-wdt
++
++  reg:
++    maxItems: 1
++
++  timeout-sec:
++    minimum: 1
++    maximum: 131071
++    default: 60
++
++required:
++  - compatible
++  - reg
++
++unevaluatedProperties: false

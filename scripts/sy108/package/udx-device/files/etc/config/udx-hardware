@@ -1,0 +1,2 @@
+config frequency 'clocks'
+	option enabled '0'

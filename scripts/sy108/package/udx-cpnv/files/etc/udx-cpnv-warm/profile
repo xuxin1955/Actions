@@ -1,0 +1,14 @@
+firmware_source=ubi
+storage=ubi
+enabled=1
+write_policy=3
+timeout_ms=60000
+startup_ms=120000
+# Read each device's own firmware. Encapsulated images declare their payload size.
+firmware=modem sci-payload
+firmware=v3phy dhtb
+firmware=nrphy dhtb
+firmware=nrdsp1 dhtb
+firmware=nrdsp2 dhtb
+# This raw table occupies the fixed window declared by the modem memory map.
+firmware=deltanv raw 0 1048576 0

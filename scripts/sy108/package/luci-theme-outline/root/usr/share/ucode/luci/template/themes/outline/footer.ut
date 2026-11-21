@@ -1,0 +1,22 @@
+{#
+ luci-theme-outline: footer template
+ Copyright 2025 eamonxg <eamonxiong@gmail.com>
+ Licensed to the public under the Apache License 2.0.
+-#}
+    {% if (!blank_page): %}
+      </div>{# /maincontent #}
+    </div>{# /content-card #}
+    </div>{# /main-wrapper #}
+
+    <script>
+      window.OutlineSidebar = null;
+      L.require('sidebar-outline').then(function (m) {
+        window.OutlineSidebar = m;
+      });
+      L.require('menu-outline').then(function () {
+        if (window.navigation) L.require('router-outline');
+      });
+    </script>
+    {% endif %}
+  </body>
+</html>

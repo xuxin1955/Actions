@@ -1,0 +1,26 @@
+#!/bin/sh
+# Registered before the standard 80_mount_root hook. No mounting/formatting here.
+udx_root_failure() {
+	printf '<11>UDX OpenWrt preinit: %s; waiting for the protected boot deadline\n' "$*" > /dev/kmsg
+	# No unauthenticated fallback shell and no false ready checkpoint.
+	while :; do sleep 1; done
+}
+udx_root_before_overlay() {
+	[ "$(cat /etc/udx-openwrt-root 2>/dev/null)" = 'OpenWrt production root' ] || udx_root_failure 'wrong root marker'
+	/usr/libexec/udx-verify-root preinit || udx_root_failure 'SquashFS/UBI source mismatch'
+	local stage='' path
+	for path in /sys/bus/platform/devices/*/udx_trial_stage; do
+		[ -f "$path" ] || continue
+		[ -z "$stage" ] || udx_root_failure 'ambiguous boot checkpoint'
+		stage=$path
+	done
+	[ -n "$stage" ] || udx_root_failure 'boot checkpoint missing'
+	# The ABI keeps its historical stage name; this is the direct-root preinit.
+	printf 'initramfs\n' > "$stage" || udx_root_failure 'boot checkpoint refused'
+	printf '<14>UDX OpenWrt: named SquashFS root verified; standard fstools overlay next\n' > /dev/kmsg
+}
+udx_root_after_overlay() {
+	/usr/libexec/udx-verify-root mounted || udx_root_failure 'persistent UBIFS overlay unavailable'
+}
+boot_hook_add preinit_main udx_root_before_overlay
+boot_hook_add preinit_mount_root udx_root_after_overlay

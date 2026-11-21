@@ -1,0 +1,97 @@
+{#
+ luci-theme-outline: login page
+ Copyright 2025 eamonxg <eamonxiong@gmail.com>
+ Licensed to the public under the Apache License 2.0.
+-#}
+
+{%
+	import { access } from 'fs';
+	import { cursor } from 'uci';
+
+	const boardinfo = ubus.call('system', 'board') ?? {};
+	// Same rule as header.ut: a branding slot overrides the theme's logo.
+	const branding = cursor().get_all('outline', 'branding') ?? {};
+	const brand_logo = branding.logo;
+	const logo_url = (brand_logo == 'openwrt' && access('/www/luci-static/bootstrap/logo.svg'))
+		? '/luci-static/bootstrap/logo.svg'
+		: (brand_logo && match(brand_logo, /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/) && access(`/www/luci-static/outline-brand/${brand_logo}`))
+		? `/luci-static/outline-brand/${brand_logo}?v=${match(branding.rev ?? '', /^[0-9]+$/) ? branding.rev : '0'}`
+		: `${media}/images/logo.png`;
+-%}
+{% include('header', { blank_page: true }) %}
+<main class="login-layout">
+	<div class="login-column">
+		<div class="login-brand animate-element animate-delay-100">
+			<span class="login-logo">
+				<img src="{{ logo_url }}" alt="" width="48" height="48">
+			</span>
+			<h1 class="login-hostname">{{ striptags(boardinfo?.hostname ?? 'Router') }}</h1>
+		</div>
+
+		<form method="post" class="login-form">
+			{% if (fuser): %}
+			<div class="login-error animate-element animate-delay-200" role="alert">
+				{{ _('Invalid username and/or password! Please try again.') }}
+			</div>
+			{% endif %}
+
+			<div class="login-card animate-element animate-delay-200">
+				<div class="login-field">
+					<label class="login-label" for="luci_username">{{ _('Username') }}</label>
+					<input
+						type="text"
+						class="login-input"
+						name="luci_username"
+						id="luci_username"
+						autocomplete="username"
+						{% if (duser): %}value="{{ entityencode(duser, true) }}"{% else %}value=""{% endif %}
+					>
+				</div>
+
+				<div class="login-field">
+					<label class="login-label" for="luci_password">{{ _('Password') }}</label>
+					<div class="login-password">
+						<input
+							type="password"
+							class="login-input"
+							name="luci_password"
+							id="luci_password"
+							autocomplete="current-password"
+							autofocus
+						>
+						<button type="button" class="login-pw-toggle" id="pw-toggle" aria-label="{{ _('Reveal/hide password') }}">
+							<img src="{{ media }}/icons/eye.svg" id="pw-toggle-icon" width="16" height="16" alt="">
+						</button>
+					</div>
+				</div>
+			</div>
+
+			<input type="hidden" name="luci_magic" value="{{ luci_magic }}">
+
+			<button type="submit" class="login-submit animate-element animate-delay-300">
+				{{ _('Log in') }}
+			</button>
+		</form>
+	</div>
+
+	<footer class="login-footer">
+		<p>© <a href="https://github.com/tickcount/luci-theme" target="_blank" rel="noreferrer">luci-theme</a> · Powered by <a href="https://openwrt.org/" target="_blank" rel="noreferrer">{{ version.distname }}</a> &amp; <a href="https://github.com/openwrt/luci" target="_blank" rel="noreferrer">{{ version.luciname }}</a> &amp; <a href="https://aemeath.eu/" target="_blank" rel="noreferrer">aemeath.eu</a></p>
+	</footer>
+</main>
+
+<script>
+(function () {
+	var btn = document.getElementById('pw-toggle');
+	var inp = document.getElementById('luci_password');
+	var ico = document.getElementById('pw-toggle-icon');
+	if (!btn || !inp || !ico) return;
+	var base = (document.documentElement.getAttribute('data-outline-media') || '/luci-static/outline').replace(/\/$/, '');
+	btn.addEventListener('click', function () {
+		var show = inp.type === 'password';
+		inp.type = show ? 'text' : 'password';
+		ico.src = base + (show ? '/icons/eye-off.svg' : '/icons/eye.svg');
+	});
+})();
+</script>
+
+{% include('footer', { blank_page: true }) %}

@@ -311,7 +311,7 @@ jobs:
         tag: ${{ steps.tag.outputs.release_tag }}
         name: ${{ steps.tag.outputs.release_name }}
         bodyFile: release.txt
-        artifacts: firmware/**/*
+        artifacts: firmware/*/*
         artifactErrorsFailBuild: false
         allowUpdates: true
         draft: false

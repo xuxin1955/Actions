@@ -1,0 +1,25 @@
+#!/bin/sh
+# The factory volume is unchanged. Only the CM4 image prefix is needed.
+sy108_pmsys_prepare() {
+	local volume= path
+	for path in /sys/class/ubi/ubi0_*; do
+		[ "$(cat "$path/name" 2>/dev/null)" = nr_pmsys ] || continue
+		volume=$path
+		break
+	done
+	[ -n "$volume" ] || return 1
+	[ "$(cat "$volume/corrupted")" = 0 ] || return 1
+	[ "$(cat "$volume/upd_marker")" = 0 ] || return 1
+	[ "$(cat "$volume/data_bytes")" -ge 53248 ] || return 1
+	mkdir -p /tmp/sy108-firmware || return 1
+	dd if="/dev/${volume##*/}" of=/tmp/sy108-firmware/udx710-pmsys.bin bs=4096 count=13 2>/dev/null || return 1
+	[ "$(wc -c < /tmp/sy108-firmware/udx710-pmsys.bin)" -eq 53248 ] || return 1
+	/sbin/modprobe udx710-pmsys
+}
+sy108_pmsys_boot() {
+	sy108_pmsys_prepare || {
+		printf '<3>SY108: PM_SYS firmware preparation or module load failed\n' > /dev/kmsg
+		return 1
+	}
+}
+boot_hook_add preinit_main sy108_pmsys_boot

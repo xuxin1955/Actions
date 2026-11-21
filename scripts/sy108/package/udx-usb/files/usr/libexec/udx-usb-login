@@ -1,0 +1,6 @@
+#!/bin/sh
+. /usr/lib/udx-usb/gadget.sh
+reason=$(g_console_reason) || { g_error "console disabled: $reason"; exit 1; }
+# No -f and no shell fallback. Root is the explicit maintenance account;
+# login must authenticate its nonempty password before starting a session.
+exec /bin/login root

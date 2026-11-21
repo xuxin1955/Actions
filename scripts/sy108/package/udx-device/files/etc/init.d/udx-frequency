@@ -1,0 +1,12 @@
+#!/bin/sh /etc/rc.common
+START=86
+USE_PROCD=1
+start_service() {
+	/usr/libexec/rpcd/udx apply-frequency
+}
+reload_service() {
+	start_service
+}
+service_triggers() {
+	procd_add_reload_trigger udx-hardware
+}

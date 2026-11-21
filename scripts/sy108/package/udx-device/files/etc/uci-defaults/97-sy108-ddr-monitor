@@ -1,0 +1,6 @@
+#!/bin/sh
+# DDR now follows firmware policy; retain the CPU clock configuration.
+uci -q delete udx-hardware.clocks.ddr_governor
+uci -q delete udx-hardware.clocks.ddr_frequency_hz
+uci -q commit udx-hardware
+exit 0

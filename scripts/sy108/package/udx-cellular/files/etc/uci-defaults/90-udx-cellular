@@ -1,0 +1,23 @@
+#!/bin/sh
+# Configure the cellular WAN and migrate its retired device name.
+kind=$(uci -q get network.wan)
+if [ -z "$kind" ]; then
+	uci set network.wan=interface
+	uci set network.wan.device=wwan0
+	uci set network.wan.proto=udx
+	uci set network.wan.metric=50
+	uci commit network
+else
+	device=$(uci -q get network.wan.device)
+	case "$device" in
+		sipa_eth0) uci set network.wan.device=wwan0 ;;
+		wwan0) ;;
+		*) exit 0 ;;
+	esac
+	case "$(uci -q get network.wan.proto)" in
+		''|none) uci set network.wan.proto=udx ;;
+		*) [ "$device" = sipa_eth0 ] || exit 0 ;;
+	esac
+	uci commit network
+fi
+exit 0

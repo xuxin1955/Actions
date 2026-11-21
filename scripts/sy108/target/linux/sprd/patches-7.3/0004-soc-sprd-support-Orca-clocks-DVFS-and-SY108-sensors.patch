@@ -1,0 +1,4976 @@
+From 4fa46ee00103f55af35d6941669f64d029238a8a Mon Sep 17 00:00:00 2001
+From: jason-liu-4980 <38558962+jason-liu-4980@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 21:30:56 +0800
+Subject: [PATCH 4/7] soc: sprd: support Orca clocks, DVFS and SY108 sensors
+
+Add Orca clocks, firmware-mediated CPU frequency scaling, PM_SYS DDR votes through SIPC, thermal aggregation and the SY108 MCU ADC driver. Retain firmware arbitration of DDR frequency and expose board sensor readings through the standard kernel interfaces.
+---
+ .../bindings/clock/sprd,orca-clk.yaml         |   90 ++
+ .../bindings/cpufreq/sprd,orca-cpufreq.yaml   |   41 +
+ .../thermal/sprd,orca-aggregate-thermal.yaml  |   60 +
+ .../bindings/thermal/sprd,orca-thermal.yaml   |  125 ++
+ drivers/clk/sprd/Kconfig                      |    9 +
+ drivers/clk/sprd/Makefile                     |    3 +
+ drivers/clk/sprd/composite.c                  |    2 +
+ drivers/clk/sprd/div.c                        |   28 +-
+ drivers/clk/sprd/mux.c                        |   30 +-
+ drivers/clk/sprd/mux.h                        |   12 +
+ drivers/clk/sprd/orca-clk.c                   | 1364 +++++++++++++++++
+ drivers/clk/sprd/pll.c                        |  255 ++-
+ drivers/clk/sprd/pll.h                        |   51 +
+ drivers/cpufreq/Kconfig.arm                   |   10 +
+ drivers/cpufreq/Makefile                      |    1 +
+ drivers/cpufreq/sprd-orca-sip-cpufreq.c       |  356 +++++
+ drivers/devfreq/Kconfig                       |   13 +
+ drivers/devfreq/Makefile                      |    1 +
+ drivers/devfreq/sprd-orca-ddr.c               |  425 +++++
+ drivers/iio/adc/Kconfig                       |    7 +
+ drivers/iio/adc/Makefile                      |    1 +
+ drivers/iio/adc/sy108-mcu.c                   |  564 +++++++
+ drivers/thermal/Kconfig                       |    9 +
+ drivers/thermal/Makefile                      |    2 +
+ drivers/thermal/sprd_orca_aggregate.c         |  228 +++
+ drivers/thermal/sprd_thermal.c                |  402 +++--
+ include/dt-bindings/clock/sprd,orca-clk.h     |  310 ++++
+ 27 files changed, 4131 insertions(+), 268 deletions(-)
+ create mode 100644 Documentation/devicetree/bindings/clock/sprd,orca-clk.yaml
+ create mode 100644 Documentation/devicetree/bindings/cpufreq/sprd,orca-cpufreq.yaml
+ create mode 100644 Documentation/devicetree/bindings/thermal/sprd,orca-aggregate-thermal.yaml
+ create mode 100644 Documentation/devicetree/bindings/thermal/sprd,orca-thermal.yaml
+ create mode 100644 drivers/clk/sprd/orca-clk.c
+ create mode 100644 drivers/cpufreq/sprd-orca-sip-cpufreq.c
+ create mode 100644 drivers/devfreq/sprd-orca-ddr.c
+ create mode 100644 drivers/iio/adc/sy108-mcu.c
+ create mode 100644 drivers/thermal/sprd_orca_aggregate.c
+ create mode 100644 include/dt-bindings/clock/sprd,orca-clk.h
+
+diff --git a/Documentation/devicetree/bindings/clock/sprd,orca-clk.yaml b/Documentation/devicetree/bindings/clock/sprd,orca-clk.yaml
+new file mode 100644
+index 000000000..76a371763
+--- /dev/null
++++ b/Documentation/devicetree/bindings/clock/sprd,orca-clk.yaml
+@@ -0,0 +1,90 @@
++# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/clock/sprd,orca-clk.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Spreadtrum Orca clock controllers
++
++maintainers:
++  - Orson Zhai <orsonzhai@gmail.com>
++  - Baolin Wang <baolin.wang7@gmail.com>
++  - Chunyan Zhang <zhang.lyra@gmail.com>
++
++description: |
++  Clock controllers for the nine public Orca providers and the SP-AHB
++  provider on Spreadtrum Orca (UDX710). The SP-AHB provider exposes clock
++  ID 0, the SP UART0 gate. IDs are defined in
++  dt-bindings/clock/sprd,orca-clk.h.
++
++  The SP-AHB controller has a 0x3000-byte register window. Its UART gate
++  uses bit 9 at offset 0, with set and clear aliases at offsets 0x1000
++  and 0x2000. Preserve unused-clock state because firmware may also use
++  this domain. Registering this provider does not establish UART interrupt
++  ownership or implement the pmsys notification protocol.
++
++  The current port retains global CCF parent-name lookup. The supplied board
++  uses roots named ext-26m, ext-32k and rco-100m. The clocks property records
++  the BSP connection but is not a generic replacement for those name-based
++  dependencies. An arbitrary differently named clock phandle is not enough.
++  clk-12m remains unresolved for two AON USB reference mux inputs. See the
++  source guards for controls that are registered but not safe to program.
++
++properties:
++  compatible:
++    enum:
++      - sprd,orca-pmu-gate
++      - sprd,orca-g3-pll
++      - sprd,orca-apcpu-clk
++      - sprd,orca-apahb-gate
++      - sprd,orca-ap-clk
++      - sprd,orca-apapb-gate
++      - sprd,orca-ipa-gate
++      - sprd,orca-spahb-gate
++      - sprd,orca-aon-clk
++      - sprd,orca-aon-gate
++
++  reg:
++    maxItems: 1
++
++  sprd,syscon:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: Syscon that owns the controller registers.
++
++  clocks:
++    maxItems: 1
++    description: Board 26 MHz reference; current driver retains CCF name lookup.
++
++  '#clock-cells':
++    const: 1
++
++required:
++  - compatible
++  - clocks
++  - '#clock-cells'
++
++oneOf:
++  - required: [reg]
++  - required: [sprd,syscon]
++
++allOf:
++  - if:
++      properties:
++        compatible:
++          const: sprd,orca-spahb-gate
++    then:
++      required: [reg]
++      properties:
++        sprd,syscon: false
++
++additionalProperties: false
++
++examples:
++  - |
++    clock-controller@21100000 {
++        compatible = "sprd,orca-ap-clk";
++        reg = <0x21100000 0x1000>;
++        clocks = <&ext_26m>;
++        #clock-cells = <1>;
++    };
++...
+diff --git a/Documentation/devicetree/bindings/cpufreq/sprd,orca-cpufreq.yaml b/Documentation/devicetree/bindings/cpufreq/sprd,orca-cpufreq.yaml
+new file mode 100644
+index 000000000..9b4846be6
+--- /dev/null
++++ b/Documentation/devicetree/bindings/cpufreq/sprd,orca-cpufreq.yaml
+@@ -0,0 +1,41 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/cpufreq/sprd,orca-cpufreq.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Spreadtrum Orca secure-firmware CPU DVFS interface
++
++maintainers:
++  - Orson Zhai <orsonzhai@gmail.com>
++  - Baolin Wang <baolin.wang7@gmail.com>
++
++description: |
++  The Orca AP CPU frequency driver obtains its CPU OPP frequency/voltage pairs
++  through the secure SIP DVFS service (SMC32 fast calls 0x82000200..207).
++  This is not the public BSP sprd,orca-cpudvfs MMIO interface. No reg or static
++  operating-points property is required on this node. The secure firmware
++  retained from the stock boot chain owns regulator and clock sequencing.
++
++  Each CPU references its cluster parameter node with the legacy
++  cpufreq-data-v1 phandle. The existing supported cluster0 parameter node
++  provides voltage-step in microvolts, tuning-latency-us, and boost-duration
++  equal to zero. The supplied board uses 750000, 200, and 0 respectively.
++  These are firmware request parameters, not a CPU voltage OPP table.
++  The driver obtains all actual frequency/voltage pairs from firmware.
++
++properties:
++  compatible:
++    const: sprd,orca-cpufreq
++
++required:
++  - compatible
++
++additionalProperties: false
++
++examples:
++  - |
++    cpufreq {
++        compatible = "sprd,orca-cpufreq";
++    };
++...
+diff --git a/Documentation/devicetree/bindings/thermal/sprd,orca-aggregate-thermal.yaml b/Documentation/devicetree/bindings/thermal/sprd,orca-aggregate-thermal.yaml
+new file mode 100644
+index 000000000..1d2f33942
+--- /dev/null
++++ b/Documentation/devicetree/bindings/thermal/sprd,orca-aggregate-thermal.yaml
+@@ -0,0 +1,60 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/thermal/sprd,orca-aggregate-thermal.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Spreadtrum Orca cluster and SoC aggregate temperature sensors
++
++maintainers:
++  - Orson Zhai <orsonzhai@gmail.com>
++  - Baolin Wang <baolin.wang7@gmail.com>
++
++description: |
++  Legacy Orca board descriptions name the input thermal zones. If any input
++  reaches 30000 millicelsius the output is the maximum input; otherwise the
++  output is their arithmetic mean truncated towards zero. Cluster aggregates
++  may consume only sprd,orca-thermal sensors and SoC aggregates may consume
++  only sprd,cluster0-thermal providers. This enforces an acyclic dependency.
++
++  Sensor IDs are specified by the consuming thermal-zone's thermal-sensors
++  argument, not guessed from a unit address. The existing board uses ID15
++  for cluster0 and ID17 for SoC. Legacy PID fields may remain for reference;
++  this temperature provider does not implement a power/energy model or
++  implicitly select the power_allocator governor.
++
++properties:
++  compatible:
++    enum:
++      - sprd,cluster0-thermal
++      - sprd,soc-thermal
++  "#thermal-sensor-cells":
++    const: 1
++  sensor-names:
++    $ref: /schemas/types.yaml#/definitions/string-array
++    minItems: 1
++    maxItems: 16
++    uniqueItems: true
++    description: Names of enabled child nodes below /thermal-zones.
++  k-po:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    deprecated: true
++  k-pu:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    deprecated: true
++  k-i:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    deprecated: true
++  k-d:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    deprecated: true
++  cutoff:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    deprecated: true
++
++required:
++  - compatible
++  - "#thermal-sensor-cells"
++  - sensor-names
++additionalProperties: false
++...
+diff --git a/Documentation/devicetree/bindings/thermal/sprd,orca-thermal.yaml b/Documentation/devicetree/bindings/thermal/sprd,orca-thermal.yaml
+new file mode 100644
+index 000000000..04f4789c9
+--- /dev/null
++++ b/Documentation/devicetree/bindings/thermal/sprd,orca-thermal.yaml
+@@ -0,0 +1,125 @@
++# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/thermal/sprd,orca-thermal.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Unisoc Orca thermal sensor controller
++
++maintainers:
++  - Orson Zhai <orsonzhai@gmail.com>
++  - Baolin Wang <baolin.wang7@gmail.com>
++  - Chunyan Zhang <zhang.lyra@gmail.com>
++
++$ref: thermal-sensor.yaml#
++
++properties:
++  compatible:
++    const: sprd,orca-thermal
++
++  reg:
++    maxItems: 1
++
++  clocks:
++    minItems: 1
++    maxItems: 2
++    description:
++      Bus enable gate followed optionally by the controller functional mux.
++      On Orca the THM0/1/2 muxes select ext-32k or ext-26m divided by 104.
++      Supplying the mux establishes clock ownership without changing its
++      boot-selected parent or rate. Legacy gate-only descriptions are accepted;
++      neither description by itself establishes the sampling period in seconds.
++
++  clock-names:
++    minItems: 1
++    items:
++      - const: enable
++      - const: functional
++
++  nvmem-cells:
++    maxItems: 2
++    description:
++      One-bit sign and seven-bit ratio calibration values. Cells must provide
++      little-endian, zero-extended values. An Orca-compatible NVMEM provider
++      must interpret offsets as bytes, not fuse block numbers.
++
++  nvmem-cell-names:
++    items:
++      - const: thm_sign_cal
++      - const: thm_ratio_cal
++
++  "#thermal-sensor-cells":
++    const: 1
++
++  "#address-cells":
++    const: 1
++
++  "#size-cells":
++    const: 0
++
++patternProperties:
++  "^([a-z0-9]+-)?sensor@[0-7]$":
++    type: object
++    description:
++      Represent one thermal sensor.
++
++    properties:
++      reg:
++        description: Specify the sensor id.
++        maxItems: 1
++
++      nvmem-cells:
++        maxItems: 1
++        description:
++          Eight-bit delta calibration, in 250 millicelsius steps around 128.
++          The controller uses a nominal slope of 262 millicelsius per raw
++          code and an offset of 66400 millicelsius.
++
++      nvmem-cell-names:
++        const: sen_delta_cal
++
++    required:
++      - reg
++      - nvmem-cells
++      - nvmem-cell-names
++
++    additionalProperties: false
++
++required:
++  - compatible
++  - reg
++  - clocks
++  - clock-names
++  - nvmem-cells
++  - nvmem-cell-names
++  - "#address-cells"
++  - "#size-cells"
++
++unevaluatedProperties: false
++
++examples:
++  - |
++    thermal@63410000 {
++        compatible = "sprd,orca-thermal";
++        reg = <0x63410000 0x10000>;
++        clock-names = "enable";
++        clocks = <&aonapb_gate 52>;
++        #thermal-sensor-cells = <1>;
++        nvmem-cells = <&thm0_sign>, <&thm0_ratio>;
++        nvmem-cell-names = "thm_sign_cal", "thm_ratio_cal";
++        #address-cells = <1>;
++        #size-cells = <0>;
++
++        prometheus-sensor@0 {
++            reg = <0>;
++            nvmem-cells = <&thm0_sen0>;
++            nvmem-cell-names = "sen_delta_cal";
++        };
++
++        ank-sensor@1 {
++            reg = <1>;
++            nvmem-cells = <&thm0_sen1>;
++            nvmem-cell-names = "sen_delta_cal";
++        };
++    };
++...
+diff --git a/drivers/clk/sprd/Kconfig b/drivers/clk/sprd/Kconfig
+index 2f19c8d58..75d0189f4 100644
+--- a/drivers/clk/sprd/Kconfig
++++ b/drivers/clk/sprd/Kconfig
+@@ -9,6 +9,15 @@ if SPRD_COMMON_CLK
+ 
+ # SoC Drivers
+ 
++config SPRD_ORCA_CLK
++	tristate "Support for the Spreadtrum Orca clocks"
++	depends on (ARM64 && ARCH_SPRD) || COMPILE_TEST
++	help
++	  Support for the clock controllers on Spreadtrum Orca (UDX710),
++	  including the nine public clock domains, SP-AHB gate and Orca PLL
++	  programming.
++
++
+ config SPRD_SC9860_CLK
+ 	tristate "Support for the Spreadtrum SC9860 clocks"
+ 	depends on (ARM64 && ARCH_SPRD) || COMPILE_TEST
+diff --git a/drivers/clk/sprd/Makefile b/drivers/clk/sprd/Makefile
+index f25b2c390..3d2dd9727 100644
+--- a/drivers/clk/sprd/Makefile
++++ b/drivers/clk/sprd/Makefile
+@@ -12,3 +12,6 @@ clk-sprd-y	+= pll.o
+ obj-$(CONFIG_SPRD_SC9860_CLK)	+= sc9860-clk.o
+ obj-$(CONFIG_SPRD_SC9863A_CLK)	+= sc9863a-clk.o
+ obj-$(CONFIG_SPRD_UMS512_CLK)	+= ums512-clk.o
++
++obj-$(CONFIG_SPRD_ORCA_CLK)	+= sprd-orca-clk.o
++sprd-orca-clk-y := orca-clk.o
+diff --git a/drivers/clk/sprd/composite.c b/drivers/clk/sprd/composite.c
+index ad6b6383e..eba73b9d4 100644
+--- a/drivers/clk/sprd/composite.c
++++ b/drivers/clk/sprd/composite.c
+@@ -30,6 +30,8 @@ static int sprd_comp_set_rate(struct clk_hw *hw, unsigned long rate,
+ {
+ 	struct sprd_comp *cc = hw_to_sprd_comp(hw);
+ 
++	if (cc->mux.read_only)
++		return -EOPNOTSUPP;
+ 	return sprd_div_helper_set_rate(&cc->common, &cc->div,
+ 				       rate, parent_rate);
+ }
+diff --git a/drivers/clk/sprd/div.c b/drivers/clk/sprd/div.c
+index cd57163a7..f993fc978 100644
+--- a/drivers/clk/sprd/div.c
++++ b/drivers/clk/sprd/div.c
+@@ -24,7 +24,8 @@ unsigned long sprd_div_helper_recalc_rate(struct sprd_clk_common *common,
+ 	unsigned long val;
+ 	unsigned int reg;
+ 
+-	regmap_read(common->regmap, common->reg + div->offset, &reg);
++	if (regmap_read(common->regmap, common->reg + div->offset, &reg))
++		return 0;
+ 	val = reg >> div->shift;
+ 	val &= (1 << div->width) - 1;
+ 
+@@ -46,20 +47,17 @@ int sprd_div_helper_set_rate(const struct sprd_clk_common *common,
+ 			     unsigned long rate,
+ 			     unsigned long parent_rate)
+ {
+-	unsigned long val;
+-	unsigned int reg;
+-
+-	val = divider_get_val(rate, parent_rate, NULL,
+-			      div->width, 0);
+-
+-	regmap_read(common->regmap, common->reg + div->offset, &reg);
+-	reg &= ~GENMASK(div->width + div->shift - 1, div->shift);
+-
+-	regmap_write(common->regmap, common->reg + div->offset,
+-			  reg | (val << div->shift));
+-
+-	return 0;
+-
++	int val;
++
++	if (!rate || !parent_rate)
++		return -EINVAL;
++	val = divider_get_val(rate, parent_rate, NULL, div->width, 0);
++	if (val < 0)
++		return val;
++	return regmap_update_bits(common->regmap, common->reg + div->offset,
++				  GENMASK(div->width + div->shift - 1,
++					  div->shift),
++				  val << div->shift);
+ }
+ EXPORT_SYMBOL_GPL(sprd_div_helper_set_rate);
+ 
+diff --git a/drivers/clk/sprd/mux.c b/drivers/clk/sprd/mux.c
+index 624041b60..57b59f517 100644
+--- a/drivers/clk/sprd/mux.c
++++ b/drivers/clk/sprd/mux.c
+@@ -19,12 +19,14 @@ u8 sprd_mux_helper_get_parent(const struct sprd_clk_common *common,
+ 	int num_parents;
+ 	int i;
+ 
+-	regmap_read(common->regmap, common->reg, &reg);
++	if (regmap_read(common->regmap, common->reg, &reg))
++		return (u8)-1;
+ 	parent = reg >> mux->shift;
+ 	parent &= (1 << mux->width) - 1;
+ 
+ 	if (!mux->table)
+-		return parent;
++		return parent < clk_hw_get_num_parents(&common->hw) ? parent :
++								      (u8)-1;
+ 
+ 	num_parents = clk_hw_get_num_parents(&common->hw);
+ 
+@@ -47,17 +49,19 @@ int sprd_mux_helper_set_parent(const struct sprd_clk_common *common,
+ 			       const struct sprd_mux_ssel *mux,
+ 			       u8 index)
+ {
+-	unsigned int reg;
+-
+-	if (mux->table)
+-		index = mux->table[index];
+-
+-	regmap_read(common->regmap, common->reg, &reg);
+-	reg &= ~GENMASK(mux->width + mux->shift - 1, mux->shift);
+-	regmap_write(common->regmap, common->reg,
+-			  reg | (index << mux->shift));
+-
+-	return 0;
++	unsigned int select;
++
++	if (mux->read_only)
++		return -EOPNOTSUPP;
++	if (index >= clk_hw_get_num_parents(&common->hw))
++		return -EINVAL;
++	select = mux->table ? mux->table[index] : index;
++	if (select >= BIT(mux->width))
++		return -EINVAL;
++	return regmap_update_bits(common->regmap, common->reg,
++				  GENMASK(mux->width + mux->shift - 1,
++					  mux->shift),
++				  select << mux->shift);
+ }
+ EXPORT_SYMBOL_GPL(sprd_mux_helper_set_parent);
+ 
+diff --git a/drivers/clk/sprd/mux.h b/drivers/clk/sprd/mux.h
+index f3cc31dae..cd48313f9 100644
+--- a/drivers/clk/sprd/mux.h
++++ b/drivers/clk/sprd/mux.h
+@@ -14,6 +14,7 @@
+  * struct sprd_mux_ssel - Mux clock's source select bits in its register
+  * @shift: Bit offset of the divider in its register
+  * @width: Width of the divider field in its register
++ * @read_only: The source selection must not be changed without a proven contract
+  * @table: For some mux clocks, not all sources are used on some special
+  *	   chips, this matches the value of mux clock's register and the
+  *	   sources which are used for this mux clock
+@@ -22,6 +23,7 @@ struct sprd_mux_ssel {
+ 	u8		shift;
+ 	u8		width;
+ 	const u8	*table;
++	bool read_only;
+ };
+ 
+ struct sprd_mux {
+@@ -70,6 +72,16 @@ struct sprd_mux {
+ 	SPRD_MUX_CLK_DATA_TABLE(_struct, _name, _parents, NULL,		\
+ 				_reg, _shift, _width, _flags)
+ 
++/* Keep readback while refusing writes for unresolved shared/parent controls. */
++#define SPRD_MUX_CLK_READ_ONLY(_struct, _name, _parents, _reg, _shift, _width,  \
++			       _flags)                                          \
++	struct sprd_mux _struct = {                                             \
++		.mux = { .shift = _shift, .width = _width, .read_only = true }, \
++		.common = { .reg = _reg,                                        \
++			    .hw.init = CLK_HW_INIT_PARENTS(                     \
++				    _name, _parents, &sprd_mux_ops, _flags) }   \
++	}
++
+ static inline struct sprd_mux *hw_to_sprd_mux(const struct clk_hw *hw)
+ {
+ 	struct sprd_clk_common *common = hw_to_sprd_clk_common(hw);
+diff --git a/drivers/clk/sprd/orca-clk.c b/drivers/clk/sprd/orca-clk.c
+new file mode 100644
+index 000000000..4e835c4eb
+--- /dev/null
++++ b/drivers/clk/sprd/orca-clk.c
+@@ -0,0 +1,1364 @@
++// SPDX-License-Identifier: GPL-2.0
++//
++// Spreadtrum Orca clock driver (mainline research port)
++//
++// Copyright (C) 2018 Spreadtrum, Inc.
++// Author: Xiaolong Zhang <xiaolong.zhang@unisoc.com>
++
++#include <linux/clk-provider.h>
++#include <linux/err.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/of_device.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++
++#include <dt-bindings/clock/sprd,orca-clk.h>
++/* Public BSP clock providers and the SP-AHB UART gate. */
++
++#include "common.h"
++#include "composite.h"
++#include "div.h"
++#include "gate.h"
++#include "mux.h"
++#include "pll.h"
++
++/* pmu gates clock */
++static SPRD_PLL_SC_GATE_CLK(mpll0_gate, "mpll0-gate", "ext-26m", 0x190, 0x1000,
++			    BIT(0), CLK_IGNORE_UNUSED, 0, 240);
++static SPRD_PLL_SC_GATE_CLK(mpll1_gate, "mpll1-gate", "ext-26m", 0x194, 0x1000,
++			    BIT(0), CLK_IGNORE_UNUSED, 0, 240);
++
++static struct sprd_clk_common *orca_pmu_gate_clks[] = {
++	/* address base is 0x64010000 */
++	&mpll0_gate.common,
++	&mpll1_gate.common,
++};
++
++static struct clk_hw_onecell_data orca_pmu_gate_hws = {
++	.hws	= {
++		[CLK_MPLL0_GATE]  = &mpll0_gate.common.hw,
++		[CLK_MPLL1_GATE]  = &mpll1_gate.common.hw,
++	},
++	.num = CLK_PMU_GATE_NUM,
++};
++
++static struct sprd_clk_desc orca_pmu_gate_desc = {
++	.clk_clks = orca_pmu_gate_clks,
++	.num_clk_clks = ARRAY_SIZE(orca_pmu_gate_clks),
++	.hw_clks = &orca_pmu_gate_hws,
++};
++
++/* pll clock at g3 */
++static CLK_FIXED_FACTOR(v3rpll, "v3rpll", "ext-26m", 1, 15, 0);
++static CLK_FIXED_FACTOR(v3rpll_195m, "v3rpll-195m", "v3rpll", 2, 1, 0);
++
++static struct sprd_pll_freq_table v3pll_ftable[7] = {
++	{ .ibias = 2, .max_freq = 900000000ULL },
++	{ .ibias = 3, .max_freq = 1100000000ULL },
++	{ .ibias = 4, .max_freq = 1300000000ULL },
++	{ .ibias = 5, .max_freq = 1500000000ULL },
++	{ .ibias = 6, .max_freq = 1600000000ULL },
++	{ .ibias = SPRD_PLL_IBIAS_INVALID, .max_freq = SPRD_PLL_FREQ_INVALID },
++};
++
++static struct clk_bit_field f_v3pll[PLL_FACT_MAX] = {
++	{ .shift = 0, .width = 0 }, /* lock_done	*/
++	{ .shift = 0, .width = 1 }, /* div_s	*/
++	{ .shift = 1, .width = 1 }, /* mod_en	*/
++	{ .shift = 2, .width = 1 }, /* sdm_en	*/
++	{ .shift = 0, .width = 0 }, /* refin	*/
++	{ .shift = 3, .width = 3 }, /* icp		*/
++	{ .shift = 8, .width = 11 }, /* n		*/
++	{ .shift = 55, .width = 7 }, /* nint		*/
++	{ .shift = 32, .width = 23 }, /* kint		*/
++	{ .shift = 0, .width = 0 }, /* prediv	*/
++	{ .shift = 0, .width = 0 }, /* postdiv	*/
++};
++static SPRD_PLL_WITH_FTABLE_1K(v3pll, "v3pll", "ext-26m", 0x14, 2, v3pll_ftable,
++			       f_v3pll, 240);
++static CLK_FIXED_FACTOR(v3pll_768m, "v3pll-768m", "v3pll", 2, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_384m, "v3pll-384m", "v3pll", 4, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_192m, "v3pll-192m", "v3pll", 8, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_96m, "v3pll-96m", "v3pll", 16, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_48m, "v3pll-48m", "v3pll", 32, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_24m, "v3pll-24m", "v3pll", 64, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_12m, "v3pll-12m", "v3pll", 128, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_512m, "v3pll-512m", "v3pll", 3, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_256m, "v3pll-256m", "v3pll", 6, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_128m, "v3pll-128m", "v3pll", 12, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_64m, "v3pll-64m", "v3pll", 24, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_307m2, "v3pll-307m2", "v3pll", 5, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_219m4, "v3pll-219m4", "v3pll", 7, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_170m6, "v3pll-170m6", "v3pll", 9, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_153m6, "v3pll-153m6", "v3pll", 10, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_76m8, "v3pll-76m8", "v3pll", 20, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_51m2, "v3pll-51m2", "v3pll", 30, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_38m4, "v3pll-38m4", "v3pll", 40, 1, 0);
++static CLK_FIXED_FACTOR(v3pll_19m2, "v3pll-19m2", "v3pll", 80, 1, 0);
++
++static struct sprd_pll_freq_table mpll_ftable[7] = {
++	{ .ibias = 1, .max_freq = 1400000000ULL },
++	{ .ibias = 2, .max_freq = 1600000000ULL },
++	{ .ibias = 3, .max_freq = 1800000000ULL },
++	{ .ibias = 4, .max_freq = 2000000000ULL },
++	{ .ibias = 5, .max_freq = 2200000000ULL },
++	{ .ibias = 6, .max_freq = 2500000000ULL },
++	{ .ibias = SPRD_PLL_IBIAS_INVALID, .max_freq = SPRD_PLL_FREQ_INVALID },
++};
++
++static struct clk_bit_field f_mpll[PLL_FACT_MAX] = {
++	{ .shift = 0, .width = 0 }, /* lock_done	*/
++	{ .shift = 0, .width = 0 }, /* div_s	*/
++	{ .shift = 1, .width = 0 }, /* mod_en	*/
++	{ .shift = 2, .width = 0 }, /* sdm_en	*/
++	{ .shift = 0, .width = 0 }, /* refin	*/
++	{ .shift = 3, .width = 3 }, /* icp		*/
++	{ .shift = 8, .width = 11 }, /* n		*/
++	{ .shift = 0, .width = 0 }, /* nint		*/
++	{ .shift = 0, .width = 0 }, /* kint		*/
++	{ .shift = 0, .width = 0 }, /* prediv	*/
++	{ .shift = 46, .width = 0 }, /* postdiv	*/
++};
++static SPRD_PLL_WITH_FTABLE_K_FVCO(mpll0, "mpll0", "mpll0-gate", 0x9c, 2,
++				   mpll_ftable, f_mpll, 240, 1000, 1000, 1,
++				   1200000000ULL);
++static SPRD_PLL_WITH_FTABLE_K_FVCO(mpll1, "mpll1", "mpll1-gate", 0xb0, 2,
++				   mpll_ftable, f_mpll, 240, 1000, 1000, 1,
++				   1200000000ULL);
++
++static struct sprd_clk_common *orca_g3_pll_clks[] = {
++	/* address base is 0x634b0000 */
++	&v3pll.common,
++	&mpll0.common,
++	&mpll1.common,
++};
++
++static struct clk_hw_onecell_data orca_g3_pll_hws = {
++	.hws	= {
++		[CLK_V3RPLL] = &v3rpll.hw,
++		[CLK_V3RPLL_195M] = &v3rpll_195m.hw,
++		[CLK_V3PLL] = &v3pll.common.hw,
++		[CLK_TWPLL_768M] = &v3pll_768m.hw,
++		[CLK_TWPLL_384M] = &v3pll_384m.hw,
++		[CLK_TWPLL_192M] = &v3pll_192m.hw,
++		[CLK_TWPLL_96M] = &v3pll_96m.hw,
++		[CLK_TWPLL_48M] = &v3pll_48m.hw,
++		[CLK_TWPLL_24M] = &v3pll_24m.hw,
++		[CLK_TWPLL_12M] = &v3pll_12m.hw,
++		[CLK_TWPLL_512M] = &v3pll_512m.hw,
++		[CLK_TWPLL_256M] = &v3pll_256m.hw,
++		[CLK_TWPLL_128M] = &v3pll_128m.hw,
++		[CLK_TWPLL_64M] = &v3pll_64m.hw,
++		[CLK_TWPLL_307M2] = &v3pll_307m2.hw,
++		[CLK_TWPLL_219M4] = &v3pll_219m4.hw,
++		[CLK_TWPLL_170M6] = &v3pll_170m6.hw,
++		[CLK_TWPLL_153M6] = &v3pll_153m6.hw,
++		[CLK_TWPLL_76M8] = &v3pll_76m8.hw,
++		[CLK_TWPLL_51M2] = &v3pll_51m2.hw,
++		[CLK_TWPLL_38M4] = &v3pll_38m4.hw,
++		[CLK_TWPLL_19M2] = &v3pll_19m2.hw,
++		[CLK_MPLL0] = &mpll0.common.hw,
++		[CLK_MPLL1] = &mpll1.common.hw,
++	},
++	.num	= CLK_ANLG_PHY_G3_NUM,
++};
++
++static struct sprd_clk_desc orca_g3_pll_desc = {
++	.clk_clks = orca_g3_pll_clks,
++	.num_clk_clks = ARRAY_SIZE(orca_g3_pll_clks),
++	.hw_clks = &orca_g3_pll_hws,
++};
++
++/* apcpu clocks */
++static const char *const core_parents[] = { "ext-26m", "v3pll-512m",
++					    "v3pll-768m", "mpll0" };
++static SPRD_COMP_CLK(core0_clk, "core0-clk", core_parents, 0x20, 0, 2, 8, 3, 0);
++static SPRD_COMP_CLK(core1_clk, "core1-clk", core_parents, 0x24, 0, 2, 8, 3, 0);
++
++static const char *const scu_parents[] = { "ext-26m", "v3pll-512m",
++					   "v3pll-768m", "mpll1" };
++static SPRD_COMP_CLK(scu_clk, "scu-clk", scu_parents, 0x28, 0, 2, 8, 3, 0);
++static SPRD_DIV_CLK(ace_clk, "ace-clk", "scu-clk", 0x2c, 8, 3, 0);
++
++static const char *const gic_parents[] = { "ext-26m", "v3pll-153m6",
++					   "v3pll-384m", "v3pll-512m" };
++static SPRD_COMP_CLK(gic_clk, "gic-clk", gic_parents, 0x38, 0, 2, 8, 3, 0);
++static SPRD_COMP_CLK(periph_clk, "periph-clk", gic_parents, 0x3c, 0, 2, 8, 3,
++		     0);
++
++static struct sprd_clk_common *orca_apcpu_clk_clks[] = {
++	/* address base is 0x63970000 */
++	&core0_clk.common, &core1_clk.common, &scu_clk.common,
++	&ace_clk.common,   &gic_clk.common,   &periph_clk.common,
++};
++
++static struct clk_hw_onecell_data orca_apcpu_clk_hws = {
++	.hws	= {
++		[CLK_CORE0_CLK] = &core0_clk.common.hw,
++		[CLK_CORE1_CLK] = &core1_clk.common.hw,
++		[CLK_SCU_CLK] = &scu_clk.common.hw,
++		[CLK_ACE_CLK] = &ace_clk.common.hw,
++		[CLK_GIC_CLK] = &gic_clk.common.hw,
++		[CLK_PERIPH_CLK] = &periph_clk.common.hw,
++	},
++	.num	= CLK_APCPU_CLK_NUM,
++};
++
++static struct sprd_clk_desc orca_apcpu_clk_desc = {
++	.clk_clks = orca_apcpu_clk_clks,
++	.num_clk_clks = ARRAY_SIZE(orca_apcpu_clk_clks),
++	.hw_clks = &orca_apcpu_clk_hws,
++};
++
++/* ap ahb gates */
++static SPRD_SC_GATE_CLK(apahb_ckg_eb, "apahb-ckg-eb", "ext-26m", 0x0, 0x1000,
++			BIT(0), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(nandc_eb, "nandc-eb", "ext-26m", 0x0, 0x1000, BIT(1),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(nandc_ecc_eb, "nandc-ecc-eb", "ext-26m", 0x0, 0x1000,
++			BIT(2), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(nandc_26m_eb, "nandc-26m-eb", "ext-26m", 0x0, 0x1000,
++			BIT(3), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(dma_eb, "dma-eb", "ext-26m", 0x0, 0x1000, BIT(4),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(dma_eb2, "dma-eb2", "ext-26m", 0x0, 0x1000, BIT(5),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(usb0_eb, "usb0-eb", "ext-26m", 0x0, 0x1000, BIT(6),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(usb0_suspend_eb, "usb0-suspend-eb", "ext-26m", 0x0,
++			0x1000, BIT(7), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(usb0_ref_eb, "usb0-ref-eb", "ext-26m", 0x0, 0x1000,
++			BIT(8), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sdio_mst_eb, "sdio-mst-eb", "ext-26m", 0x0, 0x1000,
++			BIT(9), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sdio_mst_32k_eb, "sdio-mst-32k-eb", "ext-26m", 0x0,
++			0x1000, BIT(10), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(emmc_eb, "emmc-eb", "ext-26m", 0x0, 0x1000, BIT(11),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(emmc_32k_eb, "emmc-32k-eb", "ext-26m", 0x0, 0x1000,
++			BIT(12), CLK_IGNORE_UNUSED, 0);
++
++static struct sprd_clk_common *orca_apahb_gate[] = {
++	/* address base is 0x21000000 */
++	&apahb_ckg_eb.common, &nandc_eb.common,	       &nandc_ecc_eb.common,
++	&nandc_26m_eb.common, &dma_eb.common,	       &dma_eb2.common,
++	&usb0_eb.common,      &usb0_suspend_eb.common, &usb0_ref_eb.common,
++	&sdio_mst_eb.common,  &sdio_mst_32k_eb.common, &emmc_eb.common,
++	&emmc_32k_eb.common,
++};
++
++static struct clk_hw_onecell_data orca_apahb_gate_hws = {
++	.hws	= {
++		[CLK_APAHB_CKG_EB] = &apahb_ckg_eb.common.hw,
++		[CLK_NANDC_EB] = &nandc_eb.common.hw,
++		[CLK_NANDC_ECC_EB] = &nandc_ecc_eb.common.hw,
++		[CLK_NANDC_26M_EB] = &nandc_26m_eb.common.hw,
++		[CLK_DMA_EB] = &dma_eb.common.hw,
++		[CLK_DMA_EB2] = &dma_eb2.common.hw,
++		[CLK_USB0_EB] = &usb0_eb.common.hw,
++		[CLK_USB0_SUSPEND_EB] = &usb0_suspend_eb.common.hw,
++		[CLK_USB0_REF_EB] = &usb0_ref_eb.common.hw,
++		[CLK_SDIO_MST_EB] = &sdio_mst_eb.common.hw,
++		[CLK_SDIO_MST_32K_EB] = &sdio_mst_32k_eb.common.hw,
++		[CLK_EMMC_EB] = &emmc_eb.common.hw,
++		[CLK_EMMC_32K_EB] = &emmc_32k_eb.common.hw,
++	},
++	.num	= CLK_AP_AHB_GATE_NUM,
++};
++
++static const struct sprd_clk_desc orca_apahb_gate_desc = {
++	.clk_clks = orca_apahb_gate,
++	.num_clk_clks = ARRAY_SIZE(orca_apahb_gate),
++	.hw_clks = &orca_apahb_gate_hws,
++};
++
++/* ap clocks */
++#define ORCA_MUX_FLAG (CLK_GET_RATE_NOCACHE | CLK_SET_RATE_NO_REPARENT)
++
++static const char *const ap_axi_parents[] = { "ext-26m",    "v3pll-64m",
++					      "v3pll-96m",  "v3pll-128m",
++					      "v3pll-256m", "v3rpll" };
++static SPRD_MUX_CLK(ap_axi_clk, "ap-axi-clk", ap_axi_parents, 0x20, 0, 3,
++		    ORCA_MUX_FLAG);
++
++static const char *const peri_apb_parents[] = { "ext-26m", "v3pll-64m",
++						"v3pll-96m", "v3pll-128m" };
++static SPRD_MUX_CLK(peri_apb_clk, "peri-apb-clk", peri_apb_parents, 0x24, 0, 2,
++		    ORCA_MUX_FLAG);
++
++static const char *const nandc_ecc_parents[] = { "ext-26m", "v3pll-256m",
++						 "v3pll-307m2" };
++static SPRD_COMP_CLK(nandc_ecc_clk, "nandc-ecc-clk", nandc_ecc_parents, 0x28, 0,
++		     2, 8, 3, 0);
++
++static const char *const usb_ref_parents[] = { "ext-32k", "v3pll-24m" };
++static SPRD_MUX_CLK(usb0_ref_clk, "usb0-ref-clk", usb_ref_parents, 0x3c, 0, 1,
++		    ORCA_MUX_FLAG);
++static SPRD_MUX_CLK(usb1_ref_clk, "usb1-ref-clk", usb_ref_parents, 0x40, 0, 1,
++		    ORCA_MUX_FLAG);
++
++static SPRD_GATE_CLK(pcie_aux_clk, "pcie-aux-clk", "ext-26m", 0x44, BIT(0),
++		     CLK_IGNORE_UNUSED, 0);
++
++static const char *const ap_uart_parents[] = { "ext-26m", "v3pll-48m",
++					       "v3pll-51m2", "v3pll-96m" };
++static SPRD_COMP_CLK(ap_uart0_clk, "ap-uart0-clk", ap_uart_parents, 0x48, 0, 2,
++		     8, 3, 0);
++
++static const char *const ap_i2c_parents[] = { "ext-26m", "v3pll-48m",
++					      "v3pll-51m2", "v3pll-153m6" };
++static SPRD_COMP_CLK(ap_i2c0_clk, "ap-i2c0-clk", ap_i2c_parents, 0x4c, 0, 2, 8,
++		     3, 0);
++static SPRD_COMP_CLK(ap_i2c1_clk, "ap-i2c1-clk", ap_i2c_parents, 0x50, 0, 2, 8,
++		     3, 0);
++static SPRD_COMP_CLK(ap_i2c2_clk, "ap-i2c2-clk", ap_i2c_parents, 0x54, 0, 2, 8,
++		     3, 0);
++static SPRD_COMP_CLK(ap_i2c3_clk, "ap-i2c3-clk", ap_i2c_parents, 0x58, 0, 2, 8,
++		     3, 0);
++static SPRD_COMP_CLK(ap_i2c4_clk, "ap-i2c4-clk", ap_i2c_parents, 0x5c, 0, 2, 8,
++		     3, 0);
++
++static const char *const ap_sim_parents[] = { "ext-26m", "v3pll-51m2",
++					      "v3pll-64m", "v3pll-96m",
++					      "v3pll-128m" };
++static SPRD_COMP_CLK(ap_sim_clk, "ap-sim-clk", ap_sim_parents, 0x64, 0, 3, 8, 3,
++		     0);
++
++static const char *const pwm_parents[] = { "ext-32k", "ext-26m", "rco-4m",
++					   "rco-25m", "v3pll-48m" };
++static SPRD_MUX_CLK(pwm0_clk, "pwm0-clk", pwm_parents, 0x68, 0, 3,
++		    ORCA_MUX_FLAG);
++static SPRD_MUX_CLK(pwm1_clk, "pwm1-clk", pwm_parents, 0x6c, 0, 3,
++		    ORCA_MUX_FLAG);
++static SPRD_MUX_CLK(pwm2_clk, "pwm2-clk", pwm_parents, 0x70, 0, 3,
++		    ORCA_MUX_FLAG);
++static SPRD_MUX_CLK(pwm3_clk, "pwm3-clk", pwm_parents, 0x74, 0, 3,
++		    ORCA_MUX_FLAG);
++
++static SPRD_GATE_CLK(usb0_pipe_clk, "usb0-pipe-clk", "ext-26m", 0x78, BIT(16),
++		     CLK_IGNORE_UNUSED, 0);
++
++static SPRD_GATE_CLK(usb0_utmi_clk, "usb0-utmi-clk", "ext-26m", 0x7c, BIT(16),
++		     CLK_IGNORE_UNUSED, 0);
++
++static SPRD_GATE_CLK(usb1_pipe_clk, "usb1-pipe-clk", "ext-26m", 0x80, BIT(16),
++		     CLK_IGNORE_UNUSED, 0);
++
++static SPRD_GATE_CLK(usb1_utmi_clk, "usb1-utmi-clk", "ext-26m", 0x84, BIT(16),
++		     CLK_IGNORE_UNUSED, 0);
++
++static SPRD_GATE_CLK(pcie_pipe_clk, "pcie-pipe-clk", "ext-26m", 0x88, BIT(16),
++		     CLK_IGNORE_UNUSED, 0);
++
++static struct sprd_clk_common *orca_ap_clks[] = {
++	/* address base is 0x21100000 */
++	&ap_axi_clk.common,    &peri_apb_clk.common,  &nandc_ecc_clk.common,
++	&usb0_ref_clk.common,  &usb1_ref_clk.common,  &pcie_aux_clk.common,
++	&ap_uart0_clk.common,  &ap_i2c0_clk.common,   &ap_i2c1_clk.common,
++	&ap_i2c2_clk.common,   &ap_i2c3_clk.common,   &ap_i2c4_clk.common,
++	&ap_sim_clk.common,    &pwm0_clk.common,      &pwm1_clk.common,
++	&pwm2_clk.common,      &pwm3_clk.common,      &usb0_pipe_clk.common,
++	&usb0_utmi_clk.common, &usb1_pipe_clk.common, &usb1_utmi_clk.common,
++	&pcie_pipe_clk.common,
++};
++
++static struct clk_hw_onecell_data orca_ap_clk_hws = {
++	.hws	= {
++		[CLK_AP_AXI] = &ap_axi_clk.common.hw,
++		[CLK_PERI_APB] = &peri_apb_clk.common.hw,
++		[CLK_NANDC_ECC] = &nandc_ecc_clk.common.hw,
++		[CLK_USB0_REF] = &usb0_ref_clk.common.hw,
++		[CLK_USB1_REF] = &usb1_ref_clk.common.hw,
++		[CLK_PCIE_AUX] = &pcie_aux_clk.common.hw,
++		[CLK_AP_UART0] = &ap_uart0_clk.common.hw,
++		[CLK_AP_I2C0] = &ap_i2c0_clk.common.hw,
++		[CLK_AP_I2C1] = &ap_i2c1_clk.common.hw,
++		[CLK_AP_I2C2] = &ap_i2c2_clk.common.hw,
++		[CLK_AP_I2C3] = &ap_i2c3_clk.common.hw,
++		[CLK_AP_I2C4] = &ap_i2c4_clk.common.hw,
++		[CLK_AP_SIM] = &ap_sim_clk.common.hw,
++		[CLK_PWM0] = &pwm0_clk.common.hw,
++		[CLK_PWM1] = &pwm1_clk.common.hw,
++		[CLK_PWM2] = &pwm2_clk.common.hw,
++		[CLK_PWM3] = &pwm3_clk.common.hw,
++		[CLK_USB0_PIPE] = &usb0_pipe_clk.common.hw,
++		[CLK_USB0_UTMI] = &usb0_utmi_clk.common.hw,
++		[CLK_USB1_PIPE] = &usb1_pipe_clk.common.hw,
++		[CLK_USB1_UTMI] = &usb1_utmi_clk.common.hw,
++		[CLK_PCIE_PIPE] = &pcie_pipe_clk.common.hw,
++	},
++	.num	= CLK_AP_CLK_NUM,
++};
++
++static const struct sprd_clk_desc orca_ap_clk_desc = {
++	.clk_clks = orca_ap_clks,
++	.num_clk_clks = ARRAY_SIZE(orca_ap_clks),
++	.hw_clks = &orca_ap_clk_hws,
++};
++
++/* ap apb gates */
++static SPRD_SC_GATE_CLK(apapb_reg_eb, "apapb-reg-eb", "ext-26m", 0x0, 0x1000,
++			BIT(0), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_uart0_eb, "ap-uart0-eb", "ext-26m", 0x0, 0x1000,
++			BIT(1), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_i2c0_eb, "ap-i2c0-eb", "ext-26m", 0x0, 0x1000,
++			BIT(2), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_i2c1_eb, "ap-i2c1-eb", "ext-26m", 0x0, 0x1000,
++			BIT(3), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_i2c2_eb, "ap-i2c2-eb", "ext-26m", 0x0, 0x1000,
++			BIT(4), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_i2c3_eb2, "ap-i2c3-eb2", "ext-26m", 0x0, 0x1000,
++			BIT(5), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_i2c4_eb, "ap-i2c4-eb", "ext-26m", 0x0, 0x1000,
++			BIT(6), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_apb_spi0_eb, "ap-apb-spi0-eb", "ext-26m", 0x0,
++			0x1000, BIT(7), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(spi0_lf_in_eb, "spi0-lf-in-eb", "ext-26m", 0x0, 0x1000,
++			BIT(8), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_apb_spi1_eb, "ap-apb-spi1-eb", "ext-26m", 0x0,
++			0x1000, BIT(9), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(spi1_lf_in_eb, "spi1-lf-in-eb", "ext-26m", 0x0, 0x1000,
++			BIT(10), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_apb_spi2_eb, "ap-apb-spi2-eb", "ext-26m", 0x0,
++			0x1000, BIT(11), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(spi2_lf_in_eb, "spi2-lf-in-eb", "ext-26m", 0x0, 0x1000,
++			BIT(12), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(pwm0_eb, "pwm0-eb", "ext-26m", 0x0, 0x1000, BIT(13),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(pwm1_eb, "pwm1-eb", "ext-26m", 0x0, 0x1000, BIT(14),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(pwm2_eb, "pwm2-eb", "ext-26m", 0x0, 0x1000, BIT(15),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(pwm3_eb, "pwm3-eb", "ext-26m", 0x0, 0x1000, BIT(16),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sim0_eb, "sim0-eb", "ext-26m", 0x0, 0x1000, BIT(17),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sim0_32k_eb, "sim0-32k-eb", "ext-26m", 0x0, 0x1000,
++			BIT(18), CLK_IGNORE_UNUSED, 0);
++
++static struct sprd_clk_common *orca_apapb_gate[] = {
++	/* address base is 0x24000000 */
++	&apapb_reg_eb.common,	&ap_uart0_eb.common,	&ap_i2c0_eb.common,
++	&ap_i2c1_eb.common,	&ap_i2c2_eb.common,	&ap_i2c3_eb2.common,
++	&ap_i2c4_eb.common,	&ap_apb_spi0_eb.common, &spi0_lf_in_eb.common,
++	&ap_apb_spi1_eb.common, &spi1_lf_in_eb.common,	&ap_apb_spi2_eb.common,
++	&spi2_lf_in_eb.common,	&pwm0_eb.common,	&pwm1_eb.common,
++	&pwm2_eb.common,	&pwm3_eb.common,	&sim0_eb.common,
++	&sim0_32k_eb.common,
++};
++
++static struct clk_hw_onecell_data orca_apapb_gate_hws = {
++	.hws	= {
++		[CLK_APAPB_REG_EB] = &apapb_reg_eb.common.hw,
++		[CLK_AP_UART0_EB] = &ap_uart0_eb.common.hw,
++		[CLK_AP_I2C0_EB] = &ap_i2c0_eb.common.hw,
++		[CLK_AP_I2C1_EB] = &ap_i2c1_eb.common.hw,
++		[CLK_AP_I2C2_EB] = &ap_i2c2_eb.common.hw,
++		[CLK_AP_I2C3_EB] = &ap_i2c3_eb2.common.hw,
++		[CLK_AP_I2C4_EB] = &ap_i2c4_eb.common.hw,
++		[CLK_AP_APB_SPI0_EB] = &ap_apb_spi0_eb.common.hw,
++		[CLK_SPI0_LF_IN_EB] = &spi0_lf_in_eb.common.hw,
++		[CLK_AP_APB_SPI1_EB] = &ap_apb_spi1_eb.common.hw,
++		[CLK_SPI1_IF_IN_EB] = &spi1_lf_in_eb.common.hw,
++		[CLK_AP_APB_SPI2_EB] = &ap_apb_spi2_eb.common.hw,
++		[CLK_SPI2_IF_IN_EB] = &spi2_lf_in_eb.common.hw,
++		[CLK_PWM0_EB] = &pwm0_eb.common.hw,
++		[CLK_PWM1_EB] = &pwm1_eb.common.hw,
++		[CLK_PWM2_EB] = &pwm2_eb.common.hw,
++		[CLK_PWM3_EB] = &pwm3_eb.common.hw,
++		[CLK_SIM0_EB] = &sim0_eb.common.hw,
++		[CLK_SIM0_32K_EB] = &sim0_32k_eb.common.hw,
++	},
++	.num	= CLK_AP_APB_GATE_NUM,
++};
++
++static const struct sprd_clk_desc orca_apapb_gate_desc = {
++	.clk_clks = orca_apapb_gate,
++	.num_clk_clks = ARRAY_SIZE(orca_apapb_gate),
++	.hw_clks = &orca_apapb_gate_hws,
++};
++
++/* ap ipa gate */
++static SPRD_SC_GATE_CLK(ipa_usb1_eb, "ipa-usb1-eb", "ext-26m", 0x0, 0x1000,
++			BIT(0), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(usb1_suspend_eb, "usb1-suspend-eb", "ext-26m", 0x0,
++			0x1000, BIT(1), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ipa_usb1_ref_eb, "ipa-usb1-ref-eb", "ext-26m", 0x0,
++			0x1000, BIT(2), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sdio_slv_eb, "sdio-slv-eb", "ext-26m", 0x0, 0x1000,
++			BIT(3), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sd_slv_frun_eb, "sd-slv-frun-eb", "ext-26m", 0x0,
++			0x1000, BIT(4), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(pcie_eb, "pcie-eb", "ext-26m", 0x0, 0x1000, BIT(5),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(pcie_aux_eb, "pcie-aux-eb", "ext-26m", 0x0, 0x1000,
++			BIT(6), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ipa_eb, "ipa-eb", "ext-26m", 0x0, 0x1000, BIT(7),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(usb_pam_eb, "usb-pam-eb", "ext-26m", 0x0, 0x1000,
++			BIT(8), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(pcie_sel, "pcie-sel", "ext-26m", 0x0, 0x1000, BIT(9),
++			CLK_IGNORE_UNUSED, 0);
++
++static struct sprd_clk_common *orca_ipa_gate_clks[] = {
++	/* address base is 0x29000000 */
++	&ipa_usb1_eb.common, &usb1_suspend_eb.common, &ipa_usb1_ref_eb.common,
++	&sdio_slv_eb.common, &sd_slv_frun_eb.common,  &pcie_eb.common,
++	&pcie_aux_eb.common, &ipa_eb.common,	      &usb_pam_eb.common,
++	&pcie_sel.common,
++};
++
++static struct clk_hw_onecell_data orca_ipa_gate_clk_hws = {
++	.hws	= {
++		[CLK_IPA_USB1_EB] = &ipa_usb1_eb.common.hw,
++		[CLK_USB1_SUSPEND_EB] = &usb1_suspend_eb.common.hw,
++		[CLK_IPA_USB1_REF_EB] = &ipa_usb1_ref_eb.common.hw,
++		[CLK_SDIO_SLV_EB] = &sdio_slv_eb.common.hw,
++		[CLK_SD_SLV_FRUN_EB] = &sd_slv_frun_eb.common.hw,
++		[CLK_PCIE_EB] = &pcie_eb.common.hw,
++		[CLK_PCIE_AUX_EB] = &pcie_aux_eb.common.hw,
++		[CLK_IPA_EB] = &ipa_eb.common.hw,
++		[CLK_USB_PAM_EB] = &usb_pam_eb.common.hw,
++		[CLK_PCIE_SEL] = &pcie_sel.common.hw,
++	},
++	.num	= CLK_IPA_GATE_NUM,
++};
++
++static struct sprd_clk_desc orca_ipa_gate_desc = {
++	.clk_clks = orca_ipa_gate_clks,
++	.num_clk_clks = ARRAY_SIZE(orca_ipa_gate_clks),
++	.hw_clks = &orca_ipa_gate_clk_hws,
++};
++
++/* aon clocks */
++static CLK_FIXED_FACTOR(clk_13m, "clk-13m", "ext-26m", 2, 1, 0);
++static CLK_FIXED_FACTOR(clk_6m5, "clk-6m5", "ext-26m", 4, 1, 0);
++static CLK_FIXED_FACTOR(clk_4m, "clk-4m", "ext-26m", 6, 1, 0);
++static CLK_FIXED_FACTOR(clk_2m, "clk-2m", "ext-26m", 13, 1, 0);
++static CLK_FIXED_FACTOR(clk_1m, "clk-1m", "ext-26m", 26, 1, 0);
++static CLK_FIXED_FACTOR(clk_250k, "clk-250k", "ext-26m", 104, 1, 0);
++
++static CLK_FIXED_FACTOR(rco_25m, "rco-25m", "rco-100m", 4, 1, 0);
++static CLK_FIXED_FACTOR(rco_20m, "rco-20m", "rco-100m", 4, 1, 0);
++static CLK_FIXED_FACTOR(rco_4m, "rco-4m", "rco-100m", 25, 1, 0);
++static CLK_FIXED_FACTOR(rco_2m, "rco-2m", "rco-100m", 50, 1, 0);
++
++static const char *const aon_apb_parents[] = { "rco-4m",   "clk-4m",
++					       "clk-13m",  "rco-25m",
++					       "ext-26m",  "v3pll-96m",
++					       "rco-100m", "v3pll-128m" };
++static SPRD_COMP_CLK(aon_apb_clk, "aon-apb-clk", aon_apb_parents, 0x220, 0, 3,
++		     8, 2, 0);
++
++static const char *const adi_parents[] = { "rco-4m", "ext-26m", "rco-25m",
++					   "v3pll-38m4", "v3pll-51m2" };
++static SPRD_MUX_CLK(adi_clk, "adi-clk", adi_parents, 0x228, 0, 3,
++		    ORCA_MUX_FLAG);
++
++static const char *const aon_uart_parents[] = { "rco-4m",    "ext-26m",
++						"v3pll-48m", "v3pll-51m2",
++						"v3pll-96m", "rco-100m",
++						"v3pll-128m" };
++static SPRD_MUX_CLK(aon_uart0_clk, "aon-uart0-clk", aon_uart_parents, 0x22c, 0,
++		    3, ORCA_MUX_FLAG);
++
++static const char *const aon_i2c_parents[] = { "rco-4m",    "ext-26m",
++					       "v3pll-48m", "v3pll-51m2",
++					       "rco-100m",  "v3pll-153m6" };
++static SPRD_MUX_CLK(aon_i2c_clk, "aon-i2c-clk", aon_i2c_parents, 0x230, 0, 3,
++		    ORCA_MUX_FLAG);
++
++static const char *const efuse_parents[] = { "rco-25m", "ext-26m" };
++static SPRD_MUX_CLK(efuse_clk, "efuse-clk", efuse_parents, 0x234, 0, 1,
++		    ORCA_MUX_FLAG);
++
++static const char *const tmr_parents[] = { "rco-4m", "rco-25m", "ext-26m" };
++static SPRD_MUX_CLK(tmr_clk, "tmr-clk", tmr_parents, 0x238, 0, 2,
++		    ORCA_MUX_FLAG);
++
++static const char *const thm_parents[] = { "ext-32k", "clk-250k" };
++static SPRD_MUX_CLK(thm0_clk, "thm0-clk", thm_parents, 0x23c, 0, 1,
++		    ORCA_MUX_FLAG);
++static SPRD_MUX_CLK(thm1_clk, "thm1-clk", thm_parents, 0x240, 0, 1,
++		    ORCA_MUX_FLAG);
++static SPRD_MUX_CLK(thm2_clk, "thm2-clk", thm_parents, 0x244, 0, 1,
++		    ORCA_MUX_FLAG);
++
++static const char *const pmu_parents[] = { "ext-32k", "rco-4m", "clk-4m" };
++static SPRD_MUX_CLK(pmu_clk, "pmu-clk", pmu_parents, 0x250, 0, 2,
++		    ORCA_MUX_FLAG);
++
++static const char *const apcpu_pmu_parents[] = { "ext-26m", "v3pll-96m",
++						 "rco-100m", "v3pll-128m" };
++static SPRD_MUX_CLK_READ_ONLY(apcpu_pmu_clk, "apcpu-pmu-clk", apcpu_pmu_parents,
++			      0x254, 0, 2, ORCA_MUX_FLAG);
++
++static const char *const aux_parents[] = { "ext-32k", "ext-26m" };
++static SPRD_COMP_CLK(aux0_clk, "aux0-clk", aux_parents, 0x260, 0, 1, 8, 4, 0);
++static SPRD_COMP_CLK(aux1_clk, "aux1-clk", aux_parents, 0x264, 0, 1, 8, 4, 0);
++static SPRD_COMP_CLK(aux2_clk, "aux2-clk", aux_parents, 0x268, 0, 1, 8, 4, 0);
++static SPRD_COMP_CLK(probe_clk, "probe-clk", aux_parents, 0x26c, 0, 1, 8, 4, 0);
++
++static const char *const apcpu_dap_parents[] = { "ext-26m",    "rco-4m",
++						 "v3pll-76m8", "rco-100m",
++						 "v3pll-128m", "v3pll-153m6" };
++static SPRD_MUX_CLK_READ_ONLY(apcpu_dap_clk, "apcpu-dap-clk", apcpu_dap_parents,
++			      0x27c, 0, 3, ORCA_MUX_FLAG);
++
++static SPRD_GATE_CLK(apcpu_dap_mtck, "apcpu-dap-mtck", "ext-26m", 0x280,
++		     BIT(16), CLK_IGNORE_UNUSED, 0);
++
++static const char *const debug_ts_parents[] = { "ext-26m", "v3pll-76m8",
++						"v3pll-128m", "v3pll-192m" };
++static SPRD_MUX_CLK(debug_ts_clk, "debug-ts-clk", debug_ts_parents, 0x288, 0, 2,
++		    ORCA_MUX_FLAG);
++
++static SPRD_GATE_CLK(dsi0_test_clk, "dsi0-test-clk", "ext-26m", 0x28c, BIT(16),
++		     CLK_IGNORE_UNUSED, 0);
++
++static SPRD_GATE_CLK(dsi1_test_clk, "dsi1-test-clk", "ext-26m", 0x290, BIT(16),
++		     CLK_IGNORE_UNUSED, 0);
++
++static SPRD_GATE_CLK(dsi2_test_clk, "dsi2-test-clk", "ext-26m", 0x294, BIT(16),
++		     CLK_IGNORE_UNUSED, 0);
++
++static const char *const djtag_tck_parents[] = { "rco-4m", "ext-26m" };
++static SPRD_MUX_CLK(djtag_tck_clk, "djtag-tck-clk", djtag_tck_parents, 0x2a4, 0,
++		    1, ORCA_MUX_FLAG);
++
++static SPRD_GATE_CLK(djtag_tck_hw, "djtag-tck-hw", "ext-26m", 0x2a8, BIT(16),
++		     CLK_IGNORE_UNUSED, 0);
++
++static const char *const debounce_parents[] = { "ext-32k", "rco-4m", "rco-25m",
++						"ext-26m" };
++static SPRD_MUX_CLK(debounce_clk, "debounce-clk", debounce_parents, 0x2b0, 0, 2,
++		    ORCA_MUX_FLAG);
++
++static const char *const scc_parents[] = { "ext-26m", "v3pll-48m", "v3pll-51m2",
++					   "v3pll-96m" };
++static SPRD_MUX_CLK(scc_clk, "scc-clk", scc_parents, 0x2b8, 0, 2,
++		    ORCA_MUX_FLAG);
++
++static const char *const top_dvfs_parents[] = { "ext-26m", "v3pll-96m",
++						"rco-100m", "v3pll-128m" };
++static SPRD_MUX_CLK(top_dvfs_clk, "top-dvfs-clk", top_dvfs_parents, 0x2bc, 0, 2,
++		    ORCA_MUX_FLAG);
++
++static const char *const sdio_2x_parents[] = { "clk-1m", "ext-26m",
++					       "v3pll-307m2", "v3rpll" };
++static SPRD_COMP_CLK(sdio2_2x_clk, "sdio2-2x-clk", sdio_2x_parents, 0x2c4, 0, 2,
++		     16, 11, 0);
++static SPRD_DIV_CLK(sdio2_1x_clk, "sdio2-1x-clk", "sdio2-2x-clk", 0x2c8, 8, 1,
++		    0);
++
++static const char *const cssys_parents[] = { "rco-25m",	    "ext-26m",
++					     "rco-100m",    "v3pll-256m",
++					     "v3pll-307m2", "v3pll-384m" };
++static SPRD_COMP_CLK(cssys_clk, "cssys-clk", cssys_parents, 0x2cc, 0, 3, 8, 2,
++		     0);
++static SPRD_DIV_CLK(cssys_apb_clk, "cssys-apb-clk", "cssys-clk", 0x2d0, 8, 2,
++		    0);
++
++static const char *const apcpu_axi_parents[] = { "ext-26m", "v3pll-76m8",
++						 "v3pll-128m", "v3pll-256m" };
++static SPRD_MUX_CLK(apcpu_axi_clk, "apcpu-axi-clk", apcpu_axi_parents, 0x2d4, 0,
++		    2, ORCA_MUX_FLAG);
++
++static SPRD_COMP_CLK(sdio1_2x_clk, "sdio1-2x-clk", sdio_2x_parents, 0x2d8, 0, 2,
++		     16, 11, 0);
++static SPRD_DIV_CLK(sdio1_1x_clk, "sdio1-1x-clk", "sdio1-2x-clk", 0x2dc, 8, 1,
++		    0);
++
++static SPRD_GATE_CLK(sdio0_slv_clk, "sdio0-slv-clk", "ext-26m", 0x2e0, BIT(16),
++		     CLK_IGNORE_UNUSED, 0);
++
++static SPRD_COMP_CLK(emmc_2x_clk, "emmc-2x-clk", sdio_2x_parents, 0x2e4, 0, 2,
++		     16, 11, 0);
++static SPRD_DIV_CLK(emmc_1x_clk, "emmc-1x-clk", "emmc-2x-clk", 0x2e8, 8, 1, 0);
++
++static const char *const nandc_2x_parents[] = { "ext-26m",     "v3pll-153m6",
++						"v3pll-170m6", "v3rpll-195m",
++						"v3pll-256m",  "v3pll-307m2",
++						"v3rpll" };
++/* Orca CGM_NANDC_2X_CFG at 0x631702ec: SEL[2:0], DIV[11:8].
++ * The public Linux BSP's 2-bit selector / 11-bit divider disagree with
++ * chipram's arch-orca/chip_orca/aon_clk_core.h register definitions.
++ */
++static SPRD_COMP_CLK(nandc_2x_clk, "nandc-2x-clk", nandc_2x_parents, 0x2ec, 0,
++		     3, 8, 4, 0);
++static SPRD_DIV_CLK(nandc_1x_clk, "nandc-1x-clk", "nandc-2x-clk", 0x2f0, 8, 1,
++		    0);
++
++static const char *const ap_spi_parents[] = { "ext-26m", "v3pll-128m",
++					      "v3pll-153m6", "v3pll-192m" };
++static SPRD_COMP_CLK(ap_spi0_clk, "ap-spi0-clk", ap_spi_parents, 0x2f4, 0, 2, 8,
++		     3, 0);
++static SPRD_COMP_CLK(ap_spi1_clk, "ap-spi1-clk", ap_spi_parents, 0x2f8, 0, 2, 8,
++		     3, 0);
++static SPRD_COMP_CLK(ap_spi2_clk, "ap-spi2-clk", ap_spi_parents, 0x2fc, 0, 2, 8,
++		     3, 0);
++
++/* The PLL provider exports the 12 MHz tap as v3pll-12m. The BSP's
++ * clk-12m spelling has no provider and leaves both OTG muxes orphaned.
++ */
++static const char *const otg2_ref_parents[] = { "v3pll-12m", "ext-26m" };
++static SPRD_MUX_CLK(otg2a_ref_clk, "otg2a-ref-clk", otg2_ref_parents, 0x300, 0,
++		    1, ORCA_MUX_FLAG);
++
++static const char *const usb3_ref_parents[] = { "ext-32k", "clk-1m" };
++static SPRD_MUX_CLK_READ_ONLY(u3a_suspend_ref, "u3a-suspend-ref",
++			      usb3_ref_parents, 0x308, 0, 1, ORCA_MUX_FLAG);
++
++static SPRD_MUX_CLK(otg2b_ref_clk, "otg2b-ref-clk", otg2_ref_parents, 0x30c, 0,
++		    1, ORCA_MUX_FLAG);
++
++/* Orca CGM_USB3B_SUSPEND_CFG is 0x63170200 + 0x114, distinct from A. */
++static SPRD_MUX_CLK_READ_ONLY(u3b_suspend_ref, "u3b-suspend-ref",
++			      usb3_ref_parents, 0x314, 0, 1, ORCA_MUX_FLAG);
++
++static const char *const analog_io_parents[] = { "ext-26m", "v3pll-48m" };
++static SPRD_COMP_CLK(analog_io_clk, "analog-io-clk", analog_io_parents, 0x328,
++		     0, 1, 8, 2, 0);
++
++static const char *const dmc_ref_parents[] = { "clk-6m5", "clk-13m",
++					       "ext-26m" };
++static SPRD_MUX_CLK(dmc_ref_clk, "dmc-ref-clk", dmc_ref_parents, 0x32c, 0, 2,
++		    ORCA_MUX_FLAG);
++
++static const char *const emc_parents[] = { "ext-26m", "v3pll-384m",
++					   "v3pll-512m", "v3pll-768m",
++					   "v3pll" };
++static SPRD_MUX_CLK(emc_clk, "emc-clk", emc_parents, 0x330, 0, 3,
++		    ORCA_MUX_FLAG);
++
++static const char *const sc_cc_parents[] = { "ext-26m", "rco-25m",
++					     "v3pll-96m" };
++static SPRD_MUX_CLK(sc_cc_clk, "sc-cc-clk", sc_cc_parents, 0x398, 0, 2,
++		    ORCA_MUX_FLAG);
++
++static const char *const pmu_26m_parents[] = { "rco-20m", "ext-26m" };
++static SPRD_MUX_CLK_READ_ONLY(pmu_26m_clk, "pmu-26m-clk", pmu_26m_parents,
++			      0x39c, 0, 1, ORCA_MUX_FLAG);
++
++static struct sprd_clk_common *orca_aon_clks[] = {
++	/* address base is 0x63170000 */
++	&aon_apb_clk.common,	 &adi_clk.common,
++	&aon_uart0_clk.common,	 &aon_i2c_clk.common,
++	&efuse_clk.common,	 &tmr_clk.common,
++	&thm0_clk.common,	 &thm1_clk.common,
++	&thm2_clk.common,	 &pmu_clk.common,
++	&apcpu_pmu_clk.common,	 &aux0_clk.common,
++	&aux1_clk.common,	 &aux2_clk.common,
++	&probe_clk.common,	 &apcpu_dap_clk.common,
++	&apcpu_dap_mtck.common,	 &debug_ts_clk.common,
++	&dsi0_test_clk.common,	 &dsi1_test_clk.common,
++	&dsi2_test_clk.common,	 &djtag_tck_clk.common,
++	&djtag_tck_hw.common,	 &debounce_clk.common,
++	&scc_clk.common,	 &top_dvfs_clk.common,
++	&sdio2_2x_clk.common,	 &sdio2_1x_clk.common,
++	&cssys_clk.common,	 &cssys_apb_clk.common,
++	&apcpu_axi_clk.common,	 &sdio1_2x_clk.common,
++	&sdio1_1x_clk.common,	 &sdio0_slv_clk.common,
++	&emmc_2x_clk.common,	 &emmc_1x_clk.common,
++	&nandc_2x_clk.common,	 &nandc_1x_clk.common,
++	&ap_spi0_clk.common,	 &ap_spi1_clk.common,
++	&ap_spi2_clk.common,	 &otg2a_ref_clk.common,
++	&u3a_suspend_ref.common, &otg2b_ref_clk.common,
++	&u3b_suspend_ref.common, &analog_io_clk.common,
++	&dmc_ref_clk.common,	 &emc_clk.common,
++	&sc_cc_clk.common,	 &pmu_26m_clk.common,
++};
++
++static struct clk_hw_onecell_data orca_aon_clk_hws = {
++	.hws	= {
++		[CLK_13M]  = &clk_13m.hw,
++		[CLK_6M5]  = &clk_6m5.hw,
++		[CLK_4M]   = &clk_4m.hw,
++		[CLK_2M]   = &clk_2m.hw,
++		[CLK_1M]   = &clk_1m.hw,
++		[CLK_250K] = &clk_250k.hw,
++		[CLK_RCO25M] = &rco_25m.hw,
++		[CLK_RCO20M] = &rco_20m.hw,
++		[CLK_RCO4M] = &rco_4m.hw,
++		[CLK_RCO2M] = &rco_2m.hw,
++		[CLK_AON_APB] = &aon_apb_clk.common.hw,
++		[CLK_ADI] = &adi_clk.common.hw,
++		[CLK_AON_UART0] = &aon_uart0_clk.common.hw,
++		[CLK_AON_I2C] = &aon_i2c_clk.common.hw,
++		[CLK_EFUSE] = &efuse_clk.common.hw,
++		[CLK_TMR] = &tmr_clk.common.hw,
++		[CLK_THM0] = &thm0_clk.common.hw,
++		[CLK_THM1] = &thm1_clk.common.hw,
++		[CLK_THM2] = &thm2_clk.common.hw,
++		[CLK_PMU] = &pmu_clk.common.hw,
++		[CLK_APCPU_PMU] = &apcpu_pmu_clk.common.hw,
++		[CLK_AUX0] = &aux0_clk.common.hw,
++		[CLK_AUX1] = &aux1_clk.common.hw,
++		[CLK_AUX2] = &aux2_clk.common.hw,
++		[CLK_PROBE] = &probe_clk.common.hw,
++		[CLK_APCPU_DAP] = &apcpu_dap_clk.common.hw,
++		[CLK_APCPU_DAP_MTCK] = &apcpu_dap_mtck.common.hw,
++		[CLK_DEBUG_TS] = &debug_ts_clk.common.hw,
++		[CLK_DSI0_TEST] = &dsi0_test_clk.common.hw,
++		[CLK_DSI1_TEST] = &dsi1_test_clk.common.hw,
++		[CLK_DSI2_TEST] = &dsi2_test_clk.common.hw,
++		[CLK_DJTAG_TCK] = &djtag_tck_clk.common.hw,
++		[CLK_DJTAG_TCK_HW] = &djtag_tck_hw.common.hw,
++		[CLK_DEBOUNCE] = &debounce_clk.common.hw,
++		[CLK_SCC] = &scc_clk.common.hw,
++		[CLK_TOP_DVFS] = &top_dvfs_clk.common.hw,
++		[CLK_SDIO2_2X] = &sdio2_2x_clk.common.hw,
++		[CLK_SDIO2_1X] = &sdio2_1x_clk.common.hw,
++		[CLK_CSSYS] = &cssys_clk.common.hw,
++		[CLK_CSSYS_APB] = &cssys_apb_clk.common.hw,
++		[CLK_APCPU_AXI] = &apcpu_axi_clk.common.hw,
++		[CLK_SDIO1_2X] = &sdio1_2x_clk.common.hw,
++		[CLK_SDIO1_1X] = &sdio1_1x_clk.common.hw,
++		[CLK_SDIO0_SLV] = &sdio0_slv_clk.common.hw,
++		[CLK_EMMC_2X] = &emmc_2x_clk.common.hw,
++		[CLK_EMMC_1X] = &emmc_1x_clk.common.hw,
++		[CLK_NANDC_2X] = &nandc_2x_clk.common.hw,
++		[CLK_NANDC_1X] = &nandc_1x_clk.common.hw,
++		[CLK_AP_SPI0] = &ap_spi0_clk.common.hw,
++		[CLK_AP_SPI1] = &ap_spi1_clk.common.hw,
++		[CLK_AP_SPI2] = &ap_spi2_clk.common.hw,
++		[CLK_OTG2A_REF] = &otg2a_ref_clk.common.hw,
++		[CLK_U3A_SUSPEND_REF] = &u3a_suspend_ref.common.hw,
++		[CLK_OTG2B_REF] = &otg2b_ref_clk.common.hw,
++		[CLK_U3B_SUSPEND_REF] = &u3b_suspend_ref.common.hw,
++		[CLK_ANALOG_IO] = &analog_io_clk.common.hw,
++		[CLK_DMC_REF] = &dmc_ref_clk.common.hw,
++		[CLK_EMC] = &emc_clk.common.hw,
++		[CLK_SC_CC] = &sc_cc_clk.common.hw,
++		[CLK_PMU_26M] = &pmu_26m_clk.common.hw,
++	},
++	.num	= CLK_AON_CLK_NUM,
++};
++
++static const struct sprd_clk_desc orca_aon_clk_desc = {
++	.clk_clks = orca_aon_clks,
++	.num_clk_clks = ARRAY_SIZE(orca_aon_clks),
++	.hw_clks = &orca_aon_clk_hws,
++};
++
++/* aon gates */
++static SPRD_SC_GATE_CLK(rc100_cal_eb, "rc100-cal-eb", "ext-26m", 0x0, 0x1000,
++			BIT(0), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(aon_spi_eb, "aon-spi-eb", "ext-26m", 0x0, 0x1000,
++			BIT(1), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(djtag_tck_eb, "djtag-tck-eb", "ext-26m", 0x0, 0x1000,
++			BIT(2), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(djtag_eb, "djtag-eb", "ext-26m", 0x0, 0x1000, BIT(3),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(aux0_eb, "aux0-eb", "ext-26m", 0x0, 0x1000, BIT(4),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(aux1_eb, "aux1-eb", "ext-26m", 0x0, 0x1000, BIT(5),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(aux2_eb, "aux2-eb", "ext-26m", 0x0, 0x1000, BIT(6),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(probe_eb, "probe-eb", "ext-26m", 0x0, 0x1000, BIT(7),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(bsm_tmr_eb, "bsm-tmr-eb", "ext-26m", 0x0, 0x1000,
++			BIT(8), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(aon_apb_bm_eb, "aon-apb-bm-eb", "ext-26m", 0x0, 0x1000,
++			BIT(9), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(pmu_apb_bm_eb, "pmu-apb-bm-eb", "ext-26m", 0x0, 0x1000,
++			BIT(11), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(apcpu_cssys_eb, "apcpu-cssys-eb", "ext-26m", 0x0,
++			0x1000, BIT(12), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(debug_filter_eb, "debug-filter-eb", "ext-26m", 0x0,
++			0x1000, BIT(13), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(apcpu_dap_eb, "apcpu-dap-eb", "ext-26m", 0x0, 0x1000,
++			BIT(14), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(cssys_eb, "cssys-eb", "ext-26m", 0x0, 0x1000, BIT(15),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(cssys_apb_eb, "cssys-apb-eb", "ext-26m", 0x0, 0x1000,
++			BIT(16), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(cssys_pub_eb, "cssys-pub-eb", "ext-26m", 0x0, 0x1000,
++			BIT(17), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sd0_cfg_eb, "sd0-cfg-eb", "ext-26m", 0x0, 0x1000,
++			BIT(19), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sd0_ref_eb, "sd0-ref-eb", "ext-26m", 0x0, 0x1000,
++			BIT(20), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sd1_cfg_eb, "sd1-cfg-eb", "ext-26m", 0x0, 0x1000,
++			BIT(21), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sd1_ref_eb, "sd1-ref-eb", "ext-26m", 0x0, 0x1000,
++			BIT(22), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sd2_cfg_eb, "sd2-cfg-eb", "ext-26m", 0x0, 0x1000,
++			BIT(23), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sd2_ref_eb, "sd2-ref-eb", "ext-26m", 0x0, 0x1000,
++			BIT(24), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(serdes0_eb, "serdes0-eb", "ext-26m", 0x0, 0x1000,
++			BIT(25), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(serdes1_eb, "serdes1-eb", "ext-26m", 0x0, 0x1000,
++			BIT(26), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(serdes2_eb, "serdes2-eb", "ext-26m", 0x0, 0x1000,
++			BIT(27), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(rtm_eb, "rtm-eb", "ext-26m", 0x0, 0x1000, BIT(28),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(rtm_atb_eb, "rtm-atb-eb", "ext-26m", 0x0, 0x1000,
++			BIT(29), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(aon_nr_spi_eb, "aon-nr-spi-eb", "ext-26m", 0x0, 0x1000,
++			BIT(30), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(aon_bm_s5_eb, "aon-bm-s5-eb", "ext-26m", 0x0, 0x1000,
++			BIT(31), CLK_IGNORE_UNUSED, 0);
++
++static SPRD_SC_GATE_CLK(efuse_eb, "efuse-eb", "ext-26m", 0x4, 0x1000, BIT(0),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(gpio_eb, "gpio-eb", "ext-26m", 0x4, 0x1000, BIT(1),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(mbox_eb, "mbox-eb", "ext-26m", 0x4, 0x1000, BIT(2),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(kpd_eb, "kpd-eb", "ext-26m", 0x4, 0x1000, BIT(3),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(aon_syst_eb, "aon-syst-eb", "ext-26m", 0x4, 0x1000,
++			BIT(4), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_syst_eb, "ap-syst-eb", "ext-26m", 0x4, 0x1000,
++			BIT(5), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(aon_tmr_eb, "aon-tmr-eb", "ext-26m", 0x4, 0x1000,
++			BIT(6), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(dvfs_top_eb, "dvfs-top-eb", "ext-26m", 0x4, 0x1000,
++			BIT(7), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(apcpu_clk_eb, "apcpu-clk-rf-eb", "ext-26m", 0x4, 0x1000,
++			BIT(8), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(splk_eb, "splk-eb", "ext-26m", 0x4, 0x1000, BIT(10),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(pin_eb, "pin-eb", "ext-26m", 0x4, 0x1000, BIT(11),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ana_eb, "ana-eb", "ext-26m", 0x4, 0x1000, BIT(12),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(aon_ckg_eb, "aon-ckg-eb", "ext-26m", 0x4, 0x1000,
++			BIT(13), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(djtag_ctrl_eb, "djtag-ctrl-eb", "ext-26m", 0x4, 0x1000,
++			BIT(16), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(apcpu_ts0_eb, "apcpu-ts0-eb", "ext-26m", 0x4, 0x1000,
++			BIT(17), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(nic400_aon_eb, "nic400-aon-eb", "ext-26m", 0x4, 0x1000,
++			BIT(19), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(scc_eb, "scc-eb", "ext-26m", 0x4, 0x1000, BIT(20),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_spi0_eb, "ap-spi0-eb", "ext-26m", 0x4, 0x1000,
++			BIT(23), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_spi1_eb, "ap-spi1-eb", "ext-26m", 0x4, 0x1000,
++			BIT(24), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_spi2_eb, "ap-spi2-eb", "ext-26m", 0x4, 0x1000,
++			BIT(25), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(aon_bm_s3_eb, "aon-bm-s3-eb", "ext-26m", 0x4, 0x1000,
++			BIT(30), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sc_cc_eb, "sc-cc-eb", "ext-26m", 0x4, 0x1000, BIT(31),
++			CLK_IGNORE_UNUSED, 0);
++
++static SPRD_SC_GATE_CLK(thm0_eb, "thm0-eb", "ext-26m", 0x8, 0x1000, BIT(0),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(thm1_eb, "thm1-eb", "ext-26m", 0x8, 0x1000, BIT(1),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_sim_eb, "ap-sim-eb", "ext-26m", 0x8, 0x1000, BIT(2),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(aon_i2c_eb, "aon-i2c-eb", "ext-26m", 0x8, 0x1000,
++			BIT(6), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(pmu_eb, "pmu-eb", "ext-26m", 0x8, 0x1000, BIT(7),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(adi_eb, "adi-eb", "ext-26m", 0x8, 0x1000, BIT(8),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(eic_eb, "eic-eb", "ext-26m", 0x8, 0x1000, BIT(9),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_intc0_eb, "ap-intc0-eb", "ext-26m", 0x8, 0x1000,
++			BIT(10), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_intc1_eb, "ap-intc1-eb", "ext-26m", 0x8, 0x1000,
++			BIT(11), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_intc2_eb, "ap-intc2-eb", "ext-26m", 0x8, 0x1000,
++			BIT(12), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_intc3_eb, "ap-intc3-eb", "ext-26m", 0x8, 0x1000,
++			BIT(13), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_intc4_eb, "ap-intc4-eb", "ext-26m", 0x8, 0x1000,
++			BIT(14), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_intc5_eb, "ap-intc5-eb", "ext-26m", 0x8, 0x1000,
++			BIT(15), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(audcp_intc_eb, "audcp-intc-eb", "ext-26m", 0x8, 0x1000,
++			BIT(16), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_tmr0_eb, "ap-tmr0-eb", "ext-26m", 0x8, 0x1000,
++			BIT(25), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_tmr1_eb, "ap-tmr1-eb", "ext-26m", 0x8, 0x1000,
++			BIT(26), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_tmr2_eb, "ap-tmr2-eb", "ext-26m", 0x8, 0x1000,
++			BIT(27), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_wdg_eb, "ap-wdg-eb", "ext-26m", 0x8, 0x1000, BIT(28),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(apcpu_wdg_eb, "apcpu-wdg-eb", "ext-26m", 0x8, 0x1000,
++			BIT(29), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(thm2_eb, "thm2-eb", "ext-26m", 0x8, 0x1000, BIT(30),
++			CLK_IGNORE_UNUSED, 0);
++
++static SPRD_SC_GATE_CLK(arch_rtc_eb, "arch-rtc-eb", "ext-26m", 0xc, 0x1000,
++			BIT(0), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(kpd_rtc_eb, "kpd-rtc-eb", "ext-26m", 0xc, 0x1000,
++			BIT(1), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(aon_syst_rtc_eb, "aon-syst-rtc-eb", "ext-26m", 0xc,
++			0x1000, BIT(2), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_syst_rtc_eb, "ap-syst-rtc-eb", "ext-26m", 0xc,
++			0x1000, BIT(3), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(aon_tmr_rtc_eb, "aon-tmr-rtc-eb", "ext-26m", 0xc,
++			0x1000, BIT(4), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(eic_rtc_eb, "eic-rtc-eb", "ext-26m", 0xc, 0x1000,
++			BIT(5), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(eic_rtcdv5_eb, "eic-rtcdv5-eb", "ext-26m", 0xc, 0x1000,
++			BIT(6), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_wdg_rtc_eb, "ap-wdg-rtc-eb", "ext-26m", 0xc, 0x1000,
++			BIT(7), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ac_wdg_rtc_eb, "ac-wdg-rtc-eb", "ext-26m", 0xc, 0x1000,
++			BIT(8), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_tmr0_rtc_eb, "ap-tmr0-rtc-eb", "ext-26m", 0xc,
++			0x1000, BIT(9), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_tmr1_rtc_eb, "ap-tmr1-rtc-eb", "ext-26m", 0xc,
++			0x1000, BIT(10), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(ap_tmr2_rtc_eb, "ap-tmr2-rtc-eb", "ext-26m", 0xc,
++			0x1000, BIT(11), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(dcxo_lc_rtc_eb, "dcxo-lc-rtc-eb", "ext-26m", 0xc,
++			0x1000, BIT(12), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(bb_cal_rtc_eb, "bb-cal-rtc-eb", "ext-26m", 0xc, 0x1000,
++			BIT(13), CLK_IGNORE_UNUSED, 0);
++
++static SPRD_SC_GATE_CLK(dsi0_test_eb, "dsi0-test-eb", "ext-26m", 0x20, 0x1000,
++			BIT(6), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(dsi1_test_eb, "dsi1-test-eb", "ext-26m", 0x20, 0x1000,
++			BIT(7), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(dsi2_test_eb, "dsi2-test-eb", "ext-26m", 0x20, 0x1000,
++			BIT(8), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(dmc_ref_en, "dmc-ref-eb", "ext-26m", 0x20, 0x1000,
++			BIT(11), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(tsen_en, "tsen-en", "ext-26m", 0x20, 0x1000, BIT(13),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(tmr_en, "tmr-en", "ext-26m", 0x20, 0x1000, BIT(14),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(rc100_ref_en, "rc100-ref-en", "ext-26m", 0x20, 0x1000,
++			BIT(15), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(rc100_fdk_en, "rc100-fdk-en", "ext-26m", 0x20, 0x1000,
++			BIT(16), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(debounce_en, "debounce-en", "ext-26m", 0x20, 0x1000,
++			BIT(17), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(det_32k_eb, "det-32k-eb", "ext-26m", 0x20, 0x1000,
++			BIT(18), CLK_IGNORE_UNUSED, 0);
++
++static SPRD_SC_GATE_CLK(cssys_en, "cssys-en", "ext-26m", 0x24, 0x1000, BIT(0),
++			CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sdio0_2x_en, "sdio0-2x-en", "ext-26m", 0x24, 0x1000,
++			BIT(2), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sdio0_1x_en, "sdio0-1x-en", "ext-26m", 0x24, 0x1000,
++			BIT(3), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sdio1_2x_en, "sdio1-2x-en", "ext-26m", 0x24, 0x1000,
++			BIT(4), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sdio1_1x_en, "sdio1-1x-en", "ext-26m", 0x24, 0x1000,
++			BIT(5), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sdio2_2x_en, "sdio2-2x-en", "ext-26m", 0x24, 0x1000,
++			BIT(6), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(sdio2_1x_en, "sdio2-1x-en", "ext-26m", 0x24, 0x1000,
++			BIT(7), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(emmc_1x_en, "emmc-1x-en", "ext-26m", 0x24, 0x1000,
++			BIT(8), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(emmc_2x_en, "emmc-2x-en", "ext-26m", 0x24, 0x1000,
++			BIT(9), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(nandc_1x_en, "nandc-1x-en", "ext-26m", 0x24, 0x1000,
++			BIT(10), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(nandc_2x_en, "nandc-2x-en", "ext-26m", 0x24, 0x1000,
++			BIT(11), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(all_pll_test_eb, "all-pll-test-eb", "ext-26m", 0x24,
++			0x1000, BIT(14), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(aapc_test_eb, "aapc-test-eb", "ext-26m", 0x24, 0x1000,
++			BIT(16), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(debug_ts_eb, "debug-ts-eb", "ext-26m", 0x24, 0x1000,
++			BIT(18), CLK_IGNORE_UNUSED, 0);
++
++static SPRD_SC_GATE_CLK(u2_0_ref_en, "u2-0-ref-en", "ext-26m", 0x564, 0x1000,
++			BIT(0), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(u2_1_ref_en, "u2-1-ref-en", "ext-26m", 0x564, 0x1000,
++			BIT(1), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(u3_0_ref_en, "u3-0-ref-en", "ext-26m", 0x564, 0x1000,
++			BIT(2), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(u3_0_suspend_en, "u3-0-suspend-en", "ext-26m", 0x564,
++			0x1000, BIT(3), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(u3_1_ref_en, "u3-1-ref-en", "ext-26m", 0x564, 0x1000,
++			BIT(4), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(u3_1_suspend_en, "u3-1-suspend-en", "ext-26m", 0x564,
++			0x1000, BIT(5), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(dsi0_ref_en, "dsi0-ref-en", "ext-26m", 0x564, 0x1000,
++			BIT(6), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(dsi1_ref_en, "dsi1-ref-en", "ext-26m", 0x564, 0x1000,
++			BIT(7), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(dsi2_ref_en, "dsi2-ref-en", "ext-26m", 0x564, 0x1000,
++			BIT(8), CLK_IGNORE_UNUSED, 0);
++static SPRD_SC_GATE_CLK(pcie_ref_en, "pcie-ref-en", "ext-26m", 0x564, 0x1000,
++			BIT(9), CLK_IGNORE_UNUSED, 0);
++
++static struct sprd_clk_common *orca_aon_gate[] = {
++	/* address base is 0x64020000 */
++	&rc100_cal_eb.common,	 &aon_spi_eb.common,
++	&djtag_tck_eb.common,	 &djtag_eb.common,
++	&aux0_eb.common,	 &aux1_eb.common,
++	&aux2_eb.common,	 &probe_eb.common,
++	&bsm_tmr_eb.common,	 &aon_apb_bm_eb.common,
++	&pmu_apb_bm_eb.common,	 &apcpu_cssys_eb.common,
++	&debug_filter_eb.common, &apcpu_dap_eb.common,
++	&cssys_eb.common,	 &cssys_apb_eb.common,
++	&cssys_pub_eb.common,	 &sd0_cfg_eb.common,
++	&sd0_ref_eb.common,	 &sd1_cfg_eb.common,
++	&sd1_ref_eb.common,	 &sd2_cfg_eb.common,
++	&sd2_ref_eb.common,	 &serdes0_eb.common,
++	&serdes1_eb.common,	 &serdes2_eb.common,
++	&rtm_eb.common,		 &rtm_atb_eb.common,
++	&aon_nr_spi_eb.common,	 &aon_bm_s5_eb.common,
++	&efuse_eb.common,	 &gpio_eb.common,
++	&mbox_eb.common,	 &kpd_eb.common,
++	&aon_syst_eb.common,	 &ap_syst_eb.common,
++	&aon_tmr_eb.common,	 &dvfs_top_eb.common,
++	&apcpu_clk_eb.common,	 &splk_eb.common,
++	&pin_eb.common,		 &ana_eb.common,
++	&aon_ckg_eb.common,	 &djtag_ctrl_eb.common,
++	&apcpu_ts0_eb.common,	 &nic400_aon_eb.common,
++	&scc_eb.common,		 &ap_spi0_eb.common,
++	&ap_spi1_eb.common,	 &ap_spi2_eb.common,
++	&aon_bm_s3_eb.common,	 &sc_cc_eb.common,
++	&thm0_eb.common,	 &thm1_eb.common,
++	&ap_sim_eb.common,	 &aon_i2c_eb.common,
++	&pmu_eb.common,		 &adi_eb.common,
++	&eic_eb.common,		 &ap_intc0_eb.common,
++	&ap_intc1_eb.common,	 &ap_intc2_eb.common,
++	&ap_intc3_eb.common,	 &ap_intc4_eb.common,
++	&ap_intc5_eb.common,	 &audcp_intc_eb.common,
++	&ap_tmr0_eb.common,	 &ap_tmr1_eb.common,
++	&ap_tmr2_eb.common,	 &ap_wdg_eb.common,
++	&apcpu_wdg_eb.common,	 &thm2_eb.common,
++	&arch_rtc_eb.common,	 &kpd_rtc_eb.common,
++	&aon_syst_rtc_eb.common, &ap_syst_rtc_eb.common,
++	&aon_tmr_rtc_eb.common,	 &eic_rtc_eb.common,
++	&eic_rtcdv5_eb.common,	 &ap_wdg_rtc_eb.common,
++	&ac_wdg_rtc_eb.common,	 &ap_tmr0_rtc_eb.common,
++	&ap_tmr1_rtc_eb.common,	 &ap_tmr2_rtc_eb.common,
++	&dcxo_lc_rtc_eb.common,	 &bb_cal_rtc_eb.common,
++	&dsi0_test_eb.common,	 &dsi1_test_eb.common,
++	&dsi2_test_eb.common,	 &dmc_ref_en.common,
++	&tsen_en.common,	 &tmr_en.common,
++	&rc100_ref_en.common,	 &rc100_fdk_en.common,
++	&debounce_en.common,	 &det_32k_eb.common,
++	&cssys_en.common,	 &sdio0_2x_en.common,
++	&sdio0_1x_en.common,	 &sdio1_2x_en.common,
++	&sdio1_1x_en.common,	 &sdio2_2x_en.common,
++	&sdio2_1x_en.common,	 &emmc_1x_en.common,
++	&emmc_2x_en.common,	 &nandc_1x_en.common,
++	&nandc_2x_en.common,	 &all_pll_test_eb.common,
++	&aapc_test_eb.common,	 &debug_ts_eb.common,
++	&u2_0_ref_en.common,	 &u2_1_ref_en.common,
++	&u3_0_ref_en.common,	 &u3_0_suspend_en.common,
++	&u3_1_ref_en.common,	 &u3_1_suspend_en.common,
++	&dsi0_ref_en.common,	 &dsi1_ref_en.common,
++	&dsi2_ref_en.common,	 &pcie_ref_en.common,
++};
++
++static struct clk_hw_onecell_data orca_aon_gate_hws = {
++	.hws	= {
++		[CLK_RC100_CAL_EB] = &rc100_cal_eb.common.hw,
++		[CLK_AON_SPI_EB] = &aon_spi_eb.common.hw,
++		[CLK_DJTAG_TCK_EB] = &djtag_tck_eb.common.hw,
++		[CLK_DJTAG_EB] = &djtag_eb.common.hw,
++		[CLK_AUX0_EB] = &aux0_eb.common.hw,
++		[CLK_AUX1_EB] = &aux1_eb.common.hw,
++		[CLK_AUX2_EB] = &aux2_eb.common.hw,
++		[CLK_PROBE_EB] = &probe_eb.common.hw,
++		[CLK_BSM_TMR_EB] = &bsm_tmr_eb.common.hw,
++		[CLK_AON_APB_BM_EB] = &aon_apb_bm_eb.common.hw,
++		[CLK_PMU_APB_BM_EB] = &pmu_apb_bm_eb.common.hw,
++		[CLK_APCPU_CSSYS_EB] = &apcpu_cssys_eb.common.hw,
++		[CLK_DEBUG_FILTER_EB] = &debug_filter_eb.common.hw,
++		[CLK_APCPU_DAP_EB] = &apcpu_dap_eb.common.hw,
++		[CLK_CSSYS_EB] = &cssys_eb.common.hw,
++		[CLK_CSSYS_APB_EB] = &cssys_apb_eb.common.hw,
++		[CLK_CSSYS_PUB_EB] = &cssys_pub_eb.common.hw,
++		[CLK_SD0_CFG_EB] = &sd0_cfg_eb.common.hw,
++		[CLK_SD0_REF_EB] = &sd0_ref_eb.common.hw,
++		[CLK_SD1_CFG_EB] = &sd1_cfg_eb.common.hw,
++		[CLK_SD1_REF_EB] = &sd1_ref_eb.common.hw,
++		[CLK_SD2_CFG_EB] = &sd2_cfg_eb.common.hw,
++		[CLK_SD2_REF_EB] = &sd2_ref_eb.common.hw,
++		[CLK_SERDES0_EB] = &serdes0_eb.common.hw,
++		[CLK_SERDES1_EB] = &serdes1_eb.common.hw,
++		[CLK_SERDES2_EB] = &serdes2_eb.common.hw,
++		[CLK_RTM_EB] = &rtm_eb.common.hw,
++		[CLK_RTM_ATB_EB] = &rtm_atb_eb.common.hw,
++		[CLK_AON_NR_SPI_EB] = &aon_nr_spi_eb.common.hw,
++		[CLK_AON_BM_S5_EB] = &aon_bm_s5_eb.common.hw,
++		[CLK_EFUSE_EB] = &efuse_eb.common.hw,
++		[CLK_GPIO_EB] = &gpio_eb.common.hw,
++		[CLK_MBOX_EB] = &mbox_eb.common.hw,
++		[CLK_KPD_EB] = &kpd_eb.common.hw,
++		[CLK_AON_SYST_EB] = &aon_syst_eb.common.hw,
++		[CLK_AP_SYST_EB] = &ap_syst_eb.common.hw,
++		[CLK_AON_TMR_EB] = &aon_tmr_eb.common.hw,
++		[CLK_DVFS_TOP_EB] = &dvfs_top_eb.common.hw,
++		[CLK_APCPU_CLK_EB] = &apcpu_clk_eb.common.hw,
++		[CLK_SPLK_EB] = &splk_eb.common.hw,
++		[CLK_PIN_EB] = &pin_eb.common.hw,
++		[CLK_ANA_EB] = &ana_eb.common.hw,
++		[CLK_AON_CKG_EB] = &aon_ckg_eb.common.hw,
++		[CLK_DJTAG_CTRL_EB] = &djtag_ctrl_eb.common.hw,
++		[CLK_APCPU_TS0_EB] = &apcpu_ts0_eb.common.hw,
++		[CLK_NIC400_AON_EB] = &nic400_aon_eb.common.hw,
++		[CLK_SCC_EB] = &scc_eb.common.hw,
++		[CLK_AP_SPI0_EB] = &ap_spi0_eb.common.hw,
++		[CLK_AP_SPI1_EB] = &ap_spi1_eb.common.hw,
++		[CLK_AP_SPI2_EB] = &ap_spi2_eb.common.hw,
++		[CLK_AON_BM_S3_EB] = &aon_bm_s3_eb.common.hw,
++		[CLK_SC_CC_EB] = &sc_cc_eb.common.hw,
++		[CLK_THM0_EB] = &thm0_eb.common.hw,
++		[CLK_THM1_EB] = &thm1_eb.common.hw,
++		[CLK_AP_SIM_EB] = &ap_sim_eb.common.hw,
++		[CLK_AON_I2C_EB] = &aon_i2c_eb.common.hw,
++		[CLK_PMU_EB] = &pmu_eb.common.hw,
++		[CLK_ADI_EB] = &adi_eb.common.hw,
++		[CLK_EIC_EB] = &eic_eb.common.hw,
++		[CLK_AP_INTC0_EB] = &ap_intc0_eb.common.hw,
++		[CLK_AP_INTC1_EB] = &ap_intc1_eb.common.hw,
++		[CLK_AP_INTC2_EB] = &ap_intc2_eb.common.hw,
++		[CLK_AP_INTC3_EB] = &ap_intc3_eb.common.hw,
++		[CLK_AP_INTC4_EB] = &ap_intc4_eb.common.hw,
++		[CLK_AP_INTC5_EB] = &ap_intc5_eb.common.hw,
++		[CLK_AUDCP_INTC_EB] = &audcp_intc_eb.common.hw,
++		[CLK_AP_TMR0_EB] = &ap_tmr0_eb.common.hw,
++		[CLK_AP_TMR1_EB] = &ap_tmr1_eb.common.hw,
++		[CLK_AP_TMR2_EB] = &ap_tmr2_eb.common.hw,
++		[CLK_AP_WDG_EB] = &ap_wdg_eb.common.hw,
++		[CLK_APCPU_WDG_EB] = &apcpu_wdg_eb.common.hw,
++		[CLK_THM2_EB] = &thm2_eb.common.hw,
++		[CLK_ARCH_RTC_EB] = &arch_rtc_eb.common.hw,
++		[CLK_KPD_RTC_EB] = &kpd_rtc_eb.common.hw,
++		[CLK_AON_SYST_RTC_EB] = &aon_syst_rtc_eb.common.hw,
++		[CLK_AP_SYST_RTC_EB] = &ap_syst_rtc_eb.common.hw,
++		[CLK_AON_TMR_RTC_EB] = &aon_tmr_rtc_eb.common.hw,
++		[CLK_EIC_RTC_EB] = &eic_rtc_eb.common.hw,
++		[CLK_EIC_RTCDV5_EB] = &eic_rtcdv5_eb.common.hw,
++		[CLK_AP_WDG_RTC_EB] = &ap_wdg_rtc_eb.common.hw,
++		[CLK_AC_WDG_RTC_EB] = &ac_wdg_rtc_eb.common.hw,
++		[CLK_AP_TMR0_RTC_EB] = &ap_tmr0_rtc_eb.common.hw,
++		[CLK_AP_TMR1_RTC_EB] = &ap_tmr1_rtc_eb.common.hw,
++		[CLK_AP_TMR2_RTC_EB] = &ap_tmr2_rtc_eb.common.hw,
++		[CLK_DCXO_LC_RTC_EB] = &dcxo_lc_rtc_eb.common.hw,
++		[CLK_BB_CAL_RTC_EB] = &bb_cal_rtc_eb.common.hw,
++		[CLK_DSI0_TEST_EB] = &dsi0_test_eb.common.hw,
++		[CLK_DSI1_TEST_EB] = &dsi1_test_eb.common.hw,
++		[CLK_DSI2_TEST_EB] = &dsi2_test_eb.common.hw,
++		[CLK_DMC_REF_EN] = &dmc_ref_en.common.hw,
++		[CLK_TSEN_EN] = &tsen_en.common.hw,
++		[CLK_TMR_EN] = &tmr_en.common.hw,
++		[CLK_RC100_REF_EN] = &rc100_ref_en.common.hw,
++		[CLK_RC100_FDK_EN] = &rc100_fdk_en.common.hw,
++		[CLK_DEBOUNCE_EN] = &debounce_en.common.hw,
++		[CLK_DET_32K_EB] = &det_32k_eb.common.hw,
++		[CLK_CSSYS_EN] = &cssys_en.common.hw,
++		[CLK_SDIO0_2X_EN] = &sdio0_2x_en.common.hw,
++		[CLK_SDIO0_1X_EN] = &sdio0_1x_en.common.hw,
++		[CLK_SDIO1_2X_EN] = &sdio1_2x_en.common.hw,
++		[CLK_SDIO1_1X_EN] = &sdio1_1x_en.common.hw,
++		[CLK_SDIO2_2X_EN] = &sdio2_2x_en.common.hw,
++		[CLK_SDIO2_1X_EN] = &sdio2_1x_en.common.hw,
++		[CLK_EMMC_1X_EN] = &emmc_1x_en.common.hw,
++		[CLK_EMMC_2X_EN] = &emmc_2x_en.common.hw,
++		[CLK_NANDC_1X_EN] = &nandc_1x_en.common.hw,
++		[CLK_NANDC_2X_EN] = &nandc_2x_en.common.hw,
++		[CLK_ALL_PLL_TEST_EB] = &all_pll_test_eb.common.hw,
++		[CLK_AAPC_TEST_EB] = &aapc_test_eb.common.hw,
++		[CLK_DEBUG_TS_EB] = &debug_ts_eb.common.hw,
++		[CLK_U2_0_REF_EN] = &u2_0_ref_en.common.hw,
++		[CLK_U2_1_REF_EN] = &u2_1_ref_en.common.hw,
++		[CLK_U3_0_REF_EN] = &u3_0_ref_en.common.hw,
++		[CLK_U3_0_SUSPEND_EN] = &u3_0_suspend_en.common.hw,
++		[CLK_U3_1_REF_EN] = &u3_1_ref_en.common.hw,
++		[CLK_U3_1_SUSPEND_EN] = &u3_1_suspend_en.common.hw,
++		[CLK_DSI0_REF_EN] = &dsi0_ref_en.common.hw,
++		[CLK_DSI1_REF_EN] = &dsi1_ref_en.common.hw,
++		[CLK_DSI2_REF_EN] = &dsi2_ref_en.common.hw,
++		[CLK_PCIE_REF_EN] = &pcie_ref_en.common.hw,
++	},
++	.num	= CLK_AON_GATE_NUM,
++};
++
++static const struct sprd_clk_desc orca_aon_gate_desc = {
++	.clk_clks = orca_aon_gate,
++	.num_clk_clks = ARRAY_SIZE(orca_aon_gate),
++	.hw_clks = &orca_aon_gate_hws,
++};
++
++/* SP-AHB: the single UART gate occupies firmware clock ID 0. */
++static SPRD_SC_GATE_CLK(sp_uart0_eb, "sp-uart0-eb", "ext-26m", 0x0, 0x1000,
++			BIT(9), CLK_IGNORE_UNUSED, 0);
++
++static struct sprd_clk_common *orca_spahb_gate_clks[] = {
++	&sp_uart0_eb.common,
++};
++
++static struct clk_hw_onecell_data orca_spahb_gate_hws = {
++	.hws = {
++		[CLK_SP_UART0_EB] = &sp_uart0_eb.common.hw,
++	},
++	.num = CLK_SPAHB_GATE_NUM,
++};
++
++static const struct sprd_clk_desc orca_spahb_gate_desc = {
++	.clk_clks = orca_spahb_gate_clks,
++	.num_clk_clks = ARRAY_SIZE(orca_spahb_gate_clks),
++	.hw_clks = &orca_spahb_gate_hws,
++};
++
++static const struct of_device_id sprd_orca_clk_ids[] = {
++	{ .compatible = "sprd,orca-apahb-gate", /* 0x21000000 */
++	  .data = &orca_apahb_gate_desc },
++	{ .compatible = "sprd,orca-ap-clk", /* 0x21100000 */
++	  .data = &orca_ap_clk_desc },
++	{ .compatible = "sprd,orca-apapb-gate", /* 0x24000000 */
++	  .data = &orca_apapb_gate_desc },
++	{ .compatible = "sprd,orca-ipa-gate", /* 0x29000000 */
++	  .data = &orca_ipa_gate_desc },
++	{ .compatible = "sprd,orca-spahb-gate", /* 0x62010000 */
++	  .data = &orca_spahb_gate_desc },
++	{ .compatible = "sprd,orca-aon-clk", /* 0x63170000 */
++	  .data = &orca_aon_clk_desc },
++	{ .compatible = "sprd,orca-g3-pll", /* 0x634b0000 */
++	  .data = &orca_g3_pll_desc },
++	{ .compatible = "sprd,orca-apcpu-clk", /* 0x63970000 */
++	  .data = &orca_apcpu_clk_desc },
++	{ .compatible = "sprd,orca-pmu-gate", /* 0x64010000 */
++	  .data = &orca_pmu_gate_desc },
++	{ .compatible = "sprd,orca-aon-gate", /* 0x64020000 */
++	  .data = &orca_aon_gate_desc },
++	{}
++};
++MODULE_DEVICE_TABLE(of, sprd_orca_clk_ids);
++
++static int orca_clk_probe(struct platform_device *pdev)
++{
++	const struct sprd_clk_desc *desc;
++	int ret;
++
++	desc = device_get_match_data(&pdev->dev);
++	if (!desc) {
++		pr_err("%s: Cannot find matching driver data!\n", __func__);
++		return -EINVAL;
++	}
++
++	ret = sprd_clk_regmap_init(pdev, desc);
++	if (ret)
++		return ret;
++
++	return sprd_clk_probe(&pdev->dev, desc->hw_clks);
++}
++
++static struct platform_driver orca_clk_driver = {
++	.probe	= orca_clk_probe,
++	.driver	= {
++		.name	= "orca-clk",
++		.of_match_table	= sprd_orca_clk_ids,
++	},
++};
++module_platform_driver(orca_clk_driver);
++
++MODULE_DESCRIPTION("Spreadtrum Orca Clock Driver");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:orca-clk");
+diff --git a/drivers/clk/sprd/pll.c b/drivers/clk/sprd/pll.c
+index 4aec30777..eb3692ddb 100644
+--- a/drivers/clk/sprd/pll.c
++++ b/drivers/clk/sprd/pll.c
+@@ -35,63 +35,64 @@
+ #define pinternal_val(pll, cfg, member)	\
+ 	(pinternal(pll, cfg, member) >> pshift(pll, member))
+ 
+-static inline unsigned int
+-sprd_pll_read(const struct sprd_pll *pll, u8 index)
++static int sprd_pll_read(const struct sprd_pll *pll, u8 index, u32 *val)
+ {
+ 	const struct sprd_clk_common *common = &pll->common;
+-	unsigned int val = 0;
+-
+ 	if (WARN_ON(index >= pll->regs_num))
+-		return 0;
+-
+-	regmap_read(common->regmap, common->reg + index * 4, &val);
+-
+-	return val;
++		return -EINVAL;
++	return regmap_read(common->regmap, common->reg + index * 4, val);
+ }
+ 
+-static inline void
+-sprd_pll_write(const struct sprd_pll *pll, u8 index,
+-				  u32 msk, u32 val)
++static int sprd_pll_write(const struct sprd_pll *pll, u8 index, u32 mask,
++			  u32 val)
+ {
+ 	const struct sprd_clk_common *common = &pll->common;
+-	unsigned int offset, reg;
+-	int ret = 0;
+-
++	u32 reg;
++	int ret;
+ 	if (WARN_ON(index >= pll->regs_num))
+-		return;
+-
+-	offset = common->reg + index * 4;
+-	ret = regmap_read(common->regmap, offset, &reg);
+-	if (!ret)
+-		regmap_write(common->regmap, offset, (reg & ~msk) | val);
++		return -EINVAL;
++	ret = regmap_read(common->regmap, common->reg + index * 4, &reg);
++	if (ret)
++		return ret;
++	return regmap_write(common->regmap, common->reg + index * 4,
++			    (reg & ~mask) | val);
+ }
+ 
+-static unsigned long pll_get_refin(const struct sprd_pll *pll)
++static int pll_get_refin(const struct sprd_pll *pll, u64 *refin)
+ {
+-	u32 shift, mask, index, refin_id = 3;
+-	const unsigned long refin[4] = { 2, 4, 13, 26 };
+-
++	u32 shift, mask, index, reg, refin_id = 3;
++	const unsigned long inputs[4] = { 2, 4, 13, 26 };
++	int ret;
+ 	if (pwidth(pll, PLL_REFIN)) {
+ 		index = pindex(pll, PLL_REFIN);
+ 		shift = pshift(pll, PLL_REFIN);
+ 		mask = pmask(pll, PLL_REFIN);
+-		refin_id = (sprd_pll_read(pll, index) & mask) >> shift;
++		ret = sprd_pll_read(pll, index, &reg);
++		if (ret)
++			return ret;
++		refin_id = (reg & mask) >> shift;
+ 		if (refin_id > 3)
+ 			refin_id = 3;
+ 	}
+-
+-	return refin[refin_id];
++	*refin = inputs[refin_id];
++	return 0;
+ }
+ 
+-static u32 pll_get_ibias(u64 rate, const u64 *table)
++static u32 pll_get_ibias(u64 rate, const struct sprd_pll *pll)
+ {
+-	u32 i, num = table[0];
++	u32 i, num;
+ 
+-	/* table[0] indicates the number of items in this table */
++	if (pll->rate_mode == SPRD_PLL_RATE_INTEGER_FRACTIONAL) {
++		for (i = 0; pll->ftable[i].ibias < SPRD_PLL_IBIAS_INVALID; i++)
++			if (rate <= pll->ftable[i].max_freq)
++				break;
++		return pll->ftable[i].ibias;
++	}
++	/* Preserve the legacy implicit index-to-bias table contract. */
++	num = pll->itable[0];
+ 	for (i = 0; i < num; i++)
+-		if (rate <= table[i + 1])
++		if (rate <= pll->itable[i + 1])
+ 			break;
+-
+ 	return i == num ? num - 1 : i;
+ }
+ 
+@@ -108,10 +109,17 @@ static unsigned long _sprd_pll_recalc_rate(const struct sprd_pll *pll,
+ 	if (!cfg)
+ 		return parent_rate;
+ 
+-	for (i = 0; i < regs_num; i++)
+-		cfg[i] = sprd_pll_read(pll, i);
++	for (i = 0; i < regs_num; i++) {
++		if (sprd_pll_read(pll, i, &cfg[i])) {
++			kfree(cfg);
++			return parent_rate; /* error fallback, not a measured PLL rate */
++		}
++	}
+ 
+-	refin = pll_get_refin(pll);
++	if (pll_get_refin(pll, &refin)) {
++		kfree(cfg);
++		return parent_rate;
++	}
+ 
+ 	if (pinternal(pll, cfg, PLL_PREDIV))
+ 		refin = refin * 2;
+@@ -122,7 +130,10 @@ static unsigned long _sprd_pll_recalc_rate(const struct sprd_pll *pll,
+ 		refin = refin / 2;
+ 
+ 	if (!pinternal(pll, cfg, PLL_DIV_S)) {
+-		rate = refin * pinternal_val(pll, cfg, PLL_N) * CLK_PLL_10M;
++		rate = refin * pinternal_val(pll, cfg, PLL_N) *
++		       (pll->rate_mode == SPRD_PLL_RATE_INTEGER_FRACTIONAL ?
++				CLK_PLL_1M :
++				CLK_PLL_10M);
+ 	} else {
+ 		nint = pinternal_val(pll, cfg, PLL_NINT);
+ 		if (pinternal(pll, cfg, PLL_SDM_EN))
+@@ -141,9 +152,6 @@ static unsigned long _sprd_pll_recalc_rate(const struct sprd_pll *pll,
+ 	return rate;
+ }
+ 
+-#define SPRD_PLL_WRITE_CHECK(pll, i, mask, val)		\
+-	(((sprd_pll_read(pll, i) & mask) == val) ? 0 : (-EFAULT))
+-
+ static int _sprd_pll_set_rate(const struct sprd_pll *pll,
+ 			      unsigned long rate,
+ 			      unsigned long parent_rate)
+@@ -152,25 +160,36 @@ static int _sprd_pll_set_rate(const struct sprd_pll *pll,
+ 	int ret = 0;
+ 	u32 mask, shift, width, ibias_val, index;
+ 	u32 regs_num = pll->regs_num, i = 0;
+-	unsigned long kint, nint;
++	unsigned long kint = 0, nint;
+ 	u64 tmp, refin, fvco = rate;
+ 
+-	cfg = kzalloc_objs(*cfg, regs_num);
++	if (!rate)
++		return -EINVAL;
++	cfg = kcalloc(regs_num, sizeof(*cfg), GFP_KERNEL);
+ 	if (!cfg)
+ 		return -ENOMEM;
+ 
+-	refin = pll_get_refin(pll);
++	ret = pll_get_refin(pll, &refin);
++	if (ret)
++		goto out;
+ 
+ 	mask = pmask(pll, PLL_PREDIV);
+ 	index = pindex(pll, PLL_PREDIV);
+ 	width = pwidth(pll, PLL_PREDIV);
+-	if (width && (sprd_pll_read(pll, index) & mask))
+-		refin = refin * 2;
++	if (width) {
++		u32 reg;
++
++		ret = sprd_pll_read(pll, index, &reg);
++		if (ret)
++			goto out;
++		if (reg & mask)
++			refin = refin * 2;
++	}
+ 
+ 	mask = pmask(pll, PLL_POSTDIV);
+ 	index = pindex(pll, PLL_POSTDIV);
+ 	width = pwidth(pll, PLL_POSTDIV);
+-	cfg[index].msk = mask;
++	cfg[index].msk |= mask;
+ 	if (width && ((pll->fflag == 1 && fvco <= pll->fvco) ||
+ 		      (pll->fflag == 0 && fvco > pll->fvco)))
+ 		cfg[index].val |= mask;
+@@ -178,52 +197,130 @@ static int _sprd_pll_set_rate(const struct sprd_pll *pll,
+ 	if (width && fvco <= pll->fvco)
+ 		fvco = fvco * 2;
+ 
+-	mask = pmask(pll, PLL_DIV_S);
+-	index = pindex(pll, PLL_DIV_S);
+-	cfg[index].val |= mask;
+-	cfg[index].msk |= mask;
++	if (pll->rate_mode == SPRD_PLL_RATE_INTEGER_FRACTIONAL) {
++		/* A sentinel or an integer-only PLL must never silently program garbage. */
++		ibias_val = pll_get_ibias(fvco, pll);
++		if (ibias_val == SPRD_PLL_IBIAS_INVALID ||
++		    (!pwidth(pll, PLL_DIV_S) && fvco % (refin * CLK_PLL_1M))) {
++			kfree(cfg);
++			return -EINVAL;
++		}
+ 
+-	mask = pmask(pll, PLL_SDM_EN);
+-	index = pindex(pll, PLL_SDM_EN);
+-	cfg[index].val |= mask;
+-	cfg[index].msk |= mask;
++		mask = pmask(pll, PLL_IBIAS);
++		index = pindex(pll, PLL_IBIAS);
++		shift = pshift(pll, PLL_IBIAS);
++		cfg[index].val |= ibias_val << shift & mask;
++		cfg[index].msk |= mask;
++
++		tmp = do_div(fvco, refin * CLK_PLL_1M);
++		nint = fvco;
++		if (tmp == 0) {
++			mask = pmask(pll, PLL_N);
++			index = pindex(pll, PLL_N);
++			shift = pshift(pll, PLL_N);
++			cfg[index].val |= (nint << shift) & mask;
++			cfg[index].msk |= mask;
++
++			mask = pmask(pll, PLL_DIV_S);
++			index = pindex(pll, PLL_DIV_S);
++			cfg[index].val &= ~mask;
++			cfg[index].msk |= mask;
++
++			mask = pmask(pll, PLL_SDM_EN);
++			index = pindex(pll, PLL_SDM_EN);
++			cfg[index].val &= ~mask;
++			cfg[index].msk |= mask;
++		} else {
++			mask = pmask(pll, PLL_DIV_S);
++			index = pindex(pll, PLL_DIV_S);
++			cfg[index].val |= mask;
++			cfg[index].msk |= mask;
++
++			mask = pmask(pll, PLL_SDM_EN);
++			index = pindex(pll, PLL_SDM_EN);
++			cfg[index].val |= mask;
++			cfg[index].msk |= mask;
++
++			mask = pmask(pll, PLL_NINT);
++			index = pindex(pll, PLL_NINT);
++			shift = pshift(pll, PLL_NINT);
++			cfg[index].val |= (nint << shift) & mask;
++			cfg[index].msk |= mask;
++
++			mask = pmask(pll, PLL_KINT);
++			index = pindex(pll, PLL_KINT);
++			width = pwidth(pll, PLL_KINT);
++			shift = pshift(pll, PLL_KINT);
++			do_div(tmp, 10000);
++			tmp = tmp * ((mask >> shift) + 1);
++			kint = DIV_ROUND_CLOSEST_ULL(tmp, refin * 100);
++			cfg[index].val |= (kint << shift) & mask;
++			cfg[index].msk |= mask;
++		}
+ 
+-	nint = do_div(fvco, refin * CLK_PLL_1M);
+-	mask = pmask(pll, PLL_NINT);
+-	index = pindex(pll, PLL_NINT);
+-	shift = pshift(pll, PLL_NINT);
+-	cfg[index].val |= (nint << shift) & mask;
+-	cfg[index].msk |= mask;
++		/* Reject nonzero requests quantized to an all-zero BSP N/NINT/KINT code. */
++		if (!nint && !kint) {
++			ret = -EINVAL;
++			goto out;
++		}
++	} else {
++		mask = pmask(pll, PLL_DIV_S);
++		index = pindex(pll, PLL_DIV_S);
++		cfg[index].val |= mask;
++		cfg[index].msk |= mask;
+ 
+-	mask = pmask(pll, PLL_KINT);
+-	index = pindex(pll, PLL_KINT);
+-	width = pwidth(pll, PLL_KINT);
+-	shift = pshift(pll, PLL_KINT);
+-	tmp = fvco - refin * nint * CLK_PLL_1M;
+-	tmp = do_div(tmp, 10000) * ((mask >> shift) + 1);
+-	kint = DIV_ROUND_CLOSEST_ULL(tmp, refin * 100);
+-	cfg[index].val |= (kint << shift) & mask;
+-	cfg[index].msk |= mask;
++		mask = pmask(pll, PLL_SDM_EN);
++		index = pindex(pll, PLL_SDM_EN);
++		cfg[index].val |= mask;
++		cfg[index].msk |= mask;
+ 
+-	ibias_val = pll_get_ibias(fvco, pll->itable);
++		nint = do_div(fvco, refin * CLK_PLL_1M);
++		mask = pmask(pll, PLL_NINT);
++		index = pindex(pll, PLL_NINT);
++		shift = pshift(pll, PLL_NINT);
++		cfg[index].val |= (nint << shift) & mask;
++		cfg[index].msk |= mask;
+ 
+-	mask = pmask(pll, PLL_IBIAS);
+-	index = pindex(pll, PLL_IBIAS);
+-	shift = pshift(pll, PLL_IBIAS);
+-	cfg[index].val |= ibias_val << shift & mask;
+-	cfg[index].msk |= mask;
++		mask = pmask(pll, PLL_KINT);
++		index = pindex(pll, PLL_KINT);
++		width = pwidth(pll, PLL_KINT);
++		shift = pshift(pll, PLL_KINT);
++		tmp = fvco - refin * nint * CLK_PLL_1M;
++		tmp = do_div(tmp, 10000) * ((mask >> shift) + 1);
++		kint = DIV_ROUND_CLOSEST_ULL(tmp, refin * 100);
++		cfg[index].val |= (kint << shift) & mask;
++		cfg[index].msk |= mask;
++
++		ibias_val = pll_get_ibias(fvco, pll);
++
++		mask = pmask(pll, PLL_IBIAS);
++		index = pindex(pll, PLL_IBIAS);
++		shift = pshift(pll, PLL_IBIAS);
++		cfg[index].val |= ibias_val << shift & mask;
++		cfg[index].msk |= mask;
++	}
+ 
+ 	for (i = 0; i < regs_num; i++) {
+-		if (cfg[i].msk) {
+-			sprd_pll_write(pll, i, cfg[i].msk, cfg[i].val);
+-			ret |= SPRD_PLL_WRITE_CHECK(pll, i, cfg[i].msk,
+-						   cfg[i].val);
++		u32 actual;
++
++		if (!cfg[i].msk)
++			continue;
++		ret = sprd_pll_write(pll, i, cfg[i].msk, cfg[i].val);
++		if (ret)
++			goto out;
++		ret = sprd_pll_read(pll, i, &actual);
++		if (ret)
++			goto out;
++		if ((actual & cfg[i].msk) != cfg[i].val) {
++			ret = -EFAULT;
++			goto out;
+ 		}
+ 	}
+ 
+ 	if (!ret)
+ 		udelay(pll->udelay);
+ 
++out:
+ 	kfree(cfg);
+ 	return ret;
+ }
+diff --git a/drivers/clk/sprd/pll.h b/drivers/clk/sprd/pll.h
+index 6558f50d0..023dc8599 100644
+--- a/drivers/clk/sprd/pll.h
++++ b/drivers/clk/sprd/pll.h
+@@ -10,6 +10,20 @@
+ 
+ #include "common.h"
+ 
++/* Legacy PLLs use implicit bias indices and a 10 MHz integer multiplier. */
++enum sprd_pll_rate_mode {
++	SPRD_PLL_RATE_LEGACY,
++	SPRD_PLL_RATE_INTEGER_FRACTIONAL,
++};
++
++#define SPRD_PLL_IBIAS_INVALID 0xff
++#define SPRD_PLL_FREQ_INVALID 0xffffffff
++
++struct sprd_pll_freq_table {
++	u32 ibias;
++	u64 max_freq;
++};
++
+ struct reg_cfg {
+ 	u32 val;
+ 	u32 msk;
+@@ -51,6 +65,8 @@ enum {
+ struct sprd_pll {
+ 	u32 regs_num;
+ 	const u64 *itable;
++	const struct sprd_pll_freq_table *ftable;
++	enum sprd_pll_rate_mode rate_mode;
+ 	const struct clk_bit_field *factors;
+ 	u16 udelay;
+ 	u16 k1;
+@@ -115,6 +131,41 @@ struct sprd_pll {
+ 			    _itable, _factors, _udelay, _k1, _k2,	\
+ 			    _fflag, _fvco, CLK_HW_INIT_HW)
+ 
++#define SPRD_PLL_WITH_FTABLE_K_FVCO(_struct, _name, _parent, _reg, _regs_num, \
++				    _ftable, _factors, _udelay, _k1, _k2,     \
++				    _fflag, _fvco)                            \
++	struct sprd_pll _struct = {					\
++		.rate_mode	= SPRD_PLL_RATE_INTEGER_FRACTIONAL,	\
++		.regs_num	= _regs_num,				\
++		.ftable		= _ftable,				\
++		.factors	= _factors,				\
++		.udelay		= _udelay,				\
++		.k1		= _k1,					\
++		.k2		= _k2,					\
++		.fflag		= _fflag,				\
++		.fvco		= _fvco,				\
++		.common		= {					\
++			.regmap		= NULL,				\
++			.reg		= _reg,				\
++			.hw.init	= CLK_HW_INIT(_name,		\
++						      _parent,		\
++						      &sprd_pll_ops,	\
++						      0),		\
++		},							\
++	}
++
++#define SPRD_PLL_WITH_FTABLE_K(_struct, _name, _parent, _reg, _regs_num,      \
++			       _ftable, _factors, _udelay, _k1, _k2)          \
++	SPRD_PLL_WITH_FTABLE_K_FVCO(_struct, _name, _parent, _reg, _regs_num, \
++				    _ftable, _factors, _udelay, _k1, _k2, 0,  \
++				    0)
++
++#define SPRD_PLL_WITH_FTABLE_1K(_struct, _name, _parent, _reg, _regs_num,      \
++				_ftable, _factors, _udelay)                    \
++	SPRD_PLL_WITH_FTABLE_K_FVCO(_struct, _name, _parent, _reg, _regs_num,  \
++				    _ftable, _factors, _udelay, 1000, 1000, 0, \
++				    0)
++
+ static inline struct sprd_pll *hw_to_sprd_pll(struct clk_hw *hw)
+ {
+ 	struct sprd_clk_common *common = hw_to_sprd_clk_common(hw);
+diff --git a/drivers/cpufreq/Kconfig.arm b/drivers/cpufreq/Kconfig.arm
+index a441668f9..d83237b40 100644
+--- a/drivers/cpufreq/Kconfig.arm
++++ b/drivers/cpufreq/Kconfig.arm
+@@ -273,3 +273,13 @@ config ARM_PXA2xx_CPUFREQ
+ 	  This add the CPUFreq driver support for Intel PXA2xx SOCs.
+ 
+ 	  If in doubt, say N.
++
++config ARM_SPRD_ORCA_SIP_CPUFREQ
++	tristate "Spreadtrum Orca secure-firmware CPU frequency scaling"
++	depends on ARM64 && OF && HAVE_ARM_SMCCC
++	depends on ARCH_SPRD || COMPILE_TEST
++	select PM_OPP
++	help
++	  Support CPU frequency scaling on Spreadtrum Orca (UDX710) via the
++	  secure SIP DVFS service for OPP discovery and index-based
++	  clock/voltage transitions.
+diff --git a/drivers/cpufreq/Makefile b/drivers/cpufreq/Makefile
+index 6c7a39b7f..028845239 100644
+--- a/drivers/cpufreq/Makefile
++++ b/drivers/cpufreq/Makefile
+@@ -104,3 +104,4 @@ obj-$(CONFIG_LOONGSON3_CPUFREQ)		+= loongson3_cpufreq.o
+ obj-$(CONFIG_SH_CPU_FREQ)		+= sh-cpufreq.o
+ obj-$(CONFIG_SPARC_US2E_CPUFREQ)	+= sparc-us2e-cpufreq.o
+ obj-$(CONFIG_SPARC_US3_CPUFREQ)		+= sparc-us3-cpufreq.o
++obj-$(CONFIG_ARM_SPRD_ORCA_SIP_CPUFREQ) += sprd-orca-sip-cpufreq.o
+diff --git a/drivers/cpufreq/sprd-orca-sip-cpufreq.c b/drivers/cpufreq/sprd-orca-sip-cpufreq.c
+new file mode 100644
+index 000000000..071804533
+--- /dev/null
++++ b/drivers/cpufreq/sprd-orca-sip-cpufreq.c
+@@ -0,0 +1,356 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Orca secure-firmware CPU DVFS client.
++ * ABI reconstructed from the supplied AP Linux Image's SIP wrappers and
++ * sprd-cpufreq caller, not from an invented register or voltage table.
++ */
++#include <linux/arm-smccc.h>
++#include <linux/cpu.h>
++#include <linux/cpufreq.h>
++#include <linux/delay.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/pm_opp.h>
++#include <linux/slab.h>
++#include <linux/topology.h>
++
++#define ORCA_DVFS_REV 0x82000200
++#define ORCA_DVFS_ENABLE 0x82000202
++#define ORCA_DVFS_TABLE_UPDATE 0x82000203
++#define ORCA_DVFS_CONFIG 0x82000204
++#define ORCA_DVFS_SET_INDEX 0x82000205
++#define ORCA_DVFS_GET_FREQ 0x82000206
++#define ORCA_DVFS_GET_PAIR 0x82000207
++/* Allocation/latency defensive bounds, not claimed silicon frequency limits. */
++#define ORCA_MAX_OPPS 256
++#define ORCA_MAX_LATENCY_US 10000
++
++struct orca_dvfs {
++	struct device *dev;
++	struct mutex lock;
++};
++struct orca_policy {
++	struct orca_dvfs *dvfs;
++	struct device *cpu_dev;
++	struct cpufreq_frequency_table *table;
++	unsigned int count, added, cluster, latency_us;
++};
++static DEFINE_MUTEX(orca_registration_lock);
++static struct orca_dvfs *orca_dvfs_instance;
++
++/* Caller serializes all calls. Only a0 == 0 is success in the stock ABI. */
++static int orca_smc(u32 fid, u32 cluster, u32 index, u32 voltage_step,
++		    struct arm_smccc_res *res)
++{
++	/* CONFIG's voltage step is x4, NOT x2. All other unused arguments zero. */
++	arm_smccc_smc(fid, cluster, index, 0, voltage_step, 0, 0, 0, res);
++	if (!res->a0)
++		return 0;
++	if ((s32)res->a0 == SMCCC_RET_NOT_SUPPORTED)
++		return -EOPNOTSUPP;
++	return -EIO;
++}
++
++static int orca_read_frequency(struct orca_policy *p, unsigned long *hz)
++{
++	struct arm_smccc_res res;
++	int ret = orca_smc(ORCA_DVFS_GET_FREQ, p->cluster, 0, 0, &res);
++
++	if (ret)
++		return ret;
++	if (!res.a1 || res.a1 > U32_MAX || res.a1 % 1000)
++		return -ERANGE;
++	*hz = res.a1;
++	return 0;
++}
++
++static unsigned int orca_get(unsigned int cpu)
++{
++	struct cpufreq_policy *policy = cpufreq_cpu_get_raw(cpu);
++	struct orca_policy *p;
++	unsigned long hz;
++	int ret;
++
++	if (!policy || !policy->driver_data)
++		return 0;
++	p = policy->driver_data;
++	mutex_lock(&p->dvfs->lock);
++	ret = orca_read_frequency(p, &hz);
++	mutex_unlock(&p->dvfs->lock);
++	return ret ? 0 : hz / 1000;
++}
++
++static int orca_set_index(struct orca_policy *p, unsigned int index)
++{
++	struct arm_smccc_res res;
++	int ret = orca_smc(ORCA_DVFS_SET_INDEX, p->cluster, index, 0, &res);
++
++	if (!ret && p->latency_us)
++		udelay(p->latency_us);
++	return ret;
++}
++
++static int orca_target(struct cpufreq_policy *policy, unsigned int index)
++{
++	struct orca_policy *p = policy->driver_data;
++	int ret;
++
++	if (index >= p->count)
++		return -EINVAL;
++	mutex_lock(&p->dvfs->lock);
++	ret = orca_set_index(p, policy->freq_table[index].driver_data);
++	mutex_unlock(&p->dvfs->lock);
++	return ret;
++}
++
++static void orca_free_opps(struct orca_policy *p)
++{
++	while (p->added) {
++		p->added--;
++		dev_pm_opp_remove(p->cpu_dev,
++				  (unsigned long)p->table[p->added].frequency *
++					  1000);
++	}
++	kfree(p->table);
++	kfree(p);
++}
++
++static int orca_init_policy(struct cpufreq_policy *policy)
++{
++	struct orca_dvfs *d = cpufreq_get_driver_data();
++	struct device_node *np, *other;
++	struct arm_smccc_res res;
++	struct orca_policy *p;
++	struct device *cpu_dev;
++	unsigned long hz;
++	u32 step, boost;
++	const char *stage = "CPU topology and DT";
++	int cpu, cluster, ret;
++	unsigned int i, j, firmware_count;
++
++	cpu_dev = get_cpu_device(policy->cpu);
++	if (!cpu_dev)
++		return -ENODEV;
++	cluster = topology_physical_package_id(policy->cpu);
++	/* Supplied Orca DT has one cluster0. Other domain encodings are unproven. */
++	if (cluster != 0)
++		return dev_err_probe(d->dev, -EOPNOTSUPP,
++				     "CPU%u has unsupported package %d\n",
++				     policy->cpu, cluster);
++	np = of_parse_phandle(cpu_dev->of_node, "cpufreq-data-v1", 0);
++	if (!np)
++		return dev_err_probe(d->dev, -EINVAL,
++				     "CPU%u lacks cpufreq-data-v1\n",
++				     policy->cpu);
++	p = kzalloc_obj(*p, GFP_KERNEL);
++	if (!p) {
++		of_node_put(np);
++		return -ENOMEM;
++	}
++	p->dvfs = d;
++	p->cpu_dev = cpu_dev;
++	p->cluster = cluster;
++	ret = of_property_read_u32(np, "voltage-step", &step);
++	if (ret || !step) {
++		ret = -EINVAL;
++		goto put;
++	}
++	ret = of_property_read_u32(np, "tuning-latency-us", &p->latency_us);
++	if (ret || p->latency_us > ORCA_MAX_LATENCY_US) {
++		ret = -EINVAL;
++		goto put;
++	}
++	ret = of_property_read_u32(np, "boost-duration", &boost);
++	if (ret || boost) {
++		/* No false-success boot/boost target suppression in this driver. */
++		ret = -EOPNOTSUPP;
++		goto put;
++	}
++	cpumask_clear(policy->cpus);
++	for_each_possible_cpu(cpu) {
++		struct device *dev = get_cpu_device(cpu);
++
++		if (topology_physical_package_id(cpu) != cluster)
++			continue;
++		if (!dev) {
++			ret = -EPROBE_DEFER;
++			goto put;
++		}
++		other = of_parse_phandle(dev->of_node, "cpufreq-data-v1", 0);
++		if (other != np) {
++			of_node_put(other);
++			ret = -EINVAL;
++			goto put;
++		}
++		of_node_put(other);
++		cpumask_set_cpu(cpu, policy->cpus);
++	}
++	of_node_put(np);
++	np = NULL;
++	mutex_lock(&d->lock);
++	stage = "CONFIG";
++	ret = orca_smc(ORCA_DVFS_CONFIG, cluster, 0, step, &res);
++	if (ret)
++		goto unlock;
++	stage = "TABLE_UPDATE";
++	ret = orca_smc(ORCA_DVFS_TABLE_UPDATE, cluster, 0, 0, &res);
++	if (ret)
++		goto unlock;
++	if (!res.a1 || res.a1 > ORCA_MAX_OPPS) {
++		ret = -ERANGE;
++		goto unlock;
++	}
++	firmware_count = res.a1;
++	p->table = kcalloc(firmware_count + 1, sizeof(*p->table), GFP_KERNEL);
++	if (!p->table) {
++		ret = -ENOMEM;
++		goto unlock;
++	}
++	for (i = 0; i < firmware_count; i++) {
++		stage = "GET_PAIR / OPP registration";
++		ret = orca_smc(ORCA_DVFS_GET_PAIR, cluster, i, 0, &res);
++		if (ret)
++			goto unlock;
++		if (!res.a1 || res.a1 > U32_MAX || res.a1 % 1000 || !res.a2 ||
++		    res.a2 > U32_MAX) {
++			ret = -ERANGE;
++			goto unlock;
++		}
++		/* Firmware pads its table with repeated maximum-frequency rows.
++		 * Linux needs unique OPPs, but SET_INDEX still takes the original
++		 * firmware row number. Keep the first row for each frequency.
++		 */
++		for (j = 0; j < p->count; j++)
++			if (p->table[j].frequency == res.a1 / 1000)
++				break;
++		if (j < p->count)
++			continue;
++		p->table[p->count].frequency = res.a1 / 1000;
++		p->table[p->count].driver_data = i;
++		ret = dev_pm_opp_add(cpu_dev, res.a1, res.a2);
++		if (ret)
++			goto unlock;
++		p->added++;
++		p->count++;
++	}
++	p->table[p->count].frequency = CPUFREQ_TABLE_END;
++	stage = "GET_FREQ / initial OPP";
++	ret = orca_read_frequency(p, &hz);
++	if (ret)
++		goto unlock;
++	for (i = 0; i < p->count; i++)
++		if ((unsigned long)p->table[i].frequency * 1000 == hz)
++			break;
++	if (i == p->count) {
++		ret = -ERANGE;
++		goto unlock;
++	}
++	stage = "ENABLE";
++	ret = orca_smc(ORCA_DVFS_ENABLE, cluster, 0, 0, &res);
++	if (ret)
++		goto unlock;
++	policy->driver_data = p;
++	policy->freq_table = p->table;
++	policy->cur = hz / 1000;
++	policy->cpuinfo.transition_latency = p->latency_us * 1000;
++	policy->transition_delay_us = p->latency_us;
++	dev_info(d->dev,
++		 "CPU%u: %u OPPs from %u firmware rows, current %lu Hz\n",
++		 policy->cpu, p->count, firmware_count, hz);
++	mutex_unlock(&d->lock);
++	return 0;
++unlock:
++	mutex_unlock(&d->lock);
++put:
++	dev_err(d->dev, "CPU%u policy initialization failed at %s: %d\n",
++		policy->cpu, stage, ret);
++	of_node_put(np);
++	orca_free_opps(p);
++	return ret;
++}
++
++static void orca_exit_policy(struct cpufreq_policy *policy)
++{
++	struct orca_policy *p = policy->driver_data;
++
++	policy->driver_data = NULL;
++	policy->freq_table = NULL;
++	orca_free_opps(p);
++	/* No undocumented disable command or direct regulator write. */
++}
++
++static struct cpufreq_driver orca_cpufreq_driver = {
++	.name = "sprd-orca-sip",
++	.flags = CPUFREQ_HAVE_GOVERNOR_PER_POLICY | CPUFREQ_IS_COOLING_DEV,
++	.init = orca_init_policy,
++	.verify = cpufreq_generic_frequency_table_verify,
++	.target_index = orca_target,
++	.get = orca_get,
++	.exit = orca_exit_policy,
++};
++
++static int orca_cpufreq_probe(struct platform_device *pdev)
++{
++	struct arm_smccc_res rev;
++	struct orca_dvfs *d;
++	int ret;
++
++	d = devm_kzalloc(&pdev->dev, sizeof(*d), GFP_KERNEL);
++	if (!d)
++		return -ENOMEM;
++	d->dev = &pdev->dev;
++	mutex_init(&d->lock);
++	mutex_lock(&orca_registration_lock);
++	if (orca_dvfs_instance) {
++		ret = -EBUSY;
++		goto out;
++	}
++	/* Revision has major/minor in a0/a1, unlike status-bearing operations. */
++	arm_smccc_smc(ORCA_DVFS_REV, 0, 0, 0, 0, 0, 0, 0, &rev);
++	if ((s32)rev.a0 < 0 || rev.a0 > U32_MAX || rev.a1 > U32_MAX) {
++		ret = -EOPNOTSUPP;
++		goto out;
++	}
++	dev_info(&pdev->dev, "Orca SIP DVFS ABI %lu.%lu\n", rev.a0, rev.a1);
++	orca_cpufreq_driver.driver_data = d;
++	ret = cpufreq_register_driver(&orca_cpufreq_driver);
++	if (!ret) {
++		orca_dvfs_instance = d;
++		platform_set_drvdata(pdev, d);
++	} else {
++		orca_cpufreq_driver.driver_data = NULL;
++		dev_err(&pdev->dev,
++			"CPU frequency driver registration failed: %d\n", ret);
++	}
++out:
++	mutex_unlock(&orca_registration_lock);
++	return ret;
++}
++
++static void orca_cpufreq_remove(struct platform_device *pdev)
++{
++	mutex_lock(&orca_registration_lock);
++	cpufreq_unregister_driver(&orca_cpufreq_driver);
++	orca_cpufreq_driver.driver_data = NULL;
++	orca_dvfs_instance = NULL;
++	mutex_unlock(&orca_registration_lock);
++}
++
++static const struct of_device_id orca_cpufreq_match[] = {
++	{ .compatible = "sprd,orca-cpufreq" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, orca_cpufreq_match);
++static struct platform_driver orca_cpufreq_platform_driver = {
++	.probe = orca_cpufreq_probe,
++	.remove = orca_cpufreq_remove,
++	.driver = {
++		.name = "sprd-orca-sip-cpufreq",
++		.of_match_table = orca_cpufreq_match,
++	},
++};
++module_platform_driver(orca_cpufreq_platform_driver);
++MODULE_DESCRIPTION("Orca firmware-backed CPU frequency scaling");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/devfreq/Kconfig b/drivers/devfreq/Kconfig
+index c999c4a1e..4dd8e825a 100644
+--- a/drivers/devfreq/Kconfig
++++ b/drivers/devfreq/Kconfig
+@@ -75,6 +75,19 @@ config DEVFREQ_GOV_PASSIVE
+ 
+ comment "DEVFREQ Drivers"
+ 
++config ARM_SPRD_ORCA_DDR_DEVFREQ
++	tristate "Spreadtrum Orca PM_SYS DDR frequency scaling"
++	depends on ARM64 && OF && SPRD_SIPC_V2
++	depends on DEVFREQ_GOV_USERSPACE = y
++	help
++	  Query the retained PM_SYS firmware's DDR frequency table and expose
++	  its real current frequency through devfreq. Explicit frequency
++	  requests become AP votes, arbitrated with CP demand by firmware.
++	  Firmware automatic scaling is preserved; no AP polling governor
++	  or direct memory-controller clock/voltage programming is used.
++	  The userspace governor must be built in: PM_SYS only acknowledges
++	  the first OPEN on its DDR channel during each firmware boot.
++
+ config ARM_EXYNOS_BUS_DEVFREQ
+ 	tristate "ARM Exynos Generic Memory Bus DEVFREQ Driver"
+ 	depends on ARCH_EXYNOS || COMPILE_TEST
+diff --git a/drivers/devfreq/Makefile b/drivers/devfreq/Makefile
+index 404179d79..7a160760d 100644
+--- a/drivers/devfreq/Makefile
++++ b/drivers/devfreq/Makefile
+@@ -8,6 +8,7 @@ obj-$(CONFIG_DEVFREQ_GOV_USERSPACE)	+= governor_userspace.o
+ obj-$(CONFIG_DEVFREQ_GOV_PASSIVE)	+= governor_passive.o
+ 
+ # DEVFREQ Drivers
++obj-$(CONFIG_ARM_SPRD_ORCA_DDR_DEVFREQ)	+= sprd-orca-ddr.o
+ obj-$(CONFIG_ARM_EXYNOS_BUS_DEVFREQ)	+= exynos-bus.o
+ obj-$(CONFIG_ARM_HISI_UNCORE_DEVFREQ)	+= hisi_uncore_freq.o
+ obj-$(CONFIG_ARM_IMX_BUS_DEVFREQ)	+= imx-bus.o
+diff --git a/drivers/devfreq/sprd-orca-ddr.c b/drivers/devfreq/sprd-orca-ddr.c
+new file mode 100644
+index 000000000..2baa3b47e
+--- /dev/null
++++ b/drivers/devfreq/sprd-orca-ddr.c
+@@ -0,0 +1,425 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Orca DDR frequency votes through the retained PM_SYS firmware.
++ * The wire protocol is from sprd/sprd_dfs_auto_drv.c in the public BSP.
++ * Firmware owns DDR transitions and arbitrates AP/CP demand; an AP vote is
++ * not a command to change the EMC mux or program an invented voltage table.
++ */
++#include <linux/devfreq.h>
++#include <linux/jiffies.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/pm_opp.h>
++#include <linux/sipc.h>
++#include <linux/sort.h>
++
++#define ORCA_DFS_VOTE 0x0000
++#define ORCA_DFS_ENABLE 0x0300
++#define ORCA_DFS_DISABLE 0x0305
++#define ORCA_DFS_AUTO_ENABLE 0x0310
++#define ORCA_DFS_AUTO_DISABLE 0x0315
++#define ORCA_DFS_GET_FREQ 0x0500
++#define ORCA_DFS_GET_AP 0x0502
++#define ORCA_DFS_GET_CP 0x0503
++#define ORCA_DFS_GET_TABLE 0x0505
++#define ORCA_DFS_GET_STATUS 0x050a
++#define ORCA_DFS_GET_AUTO 0x050b
++#define ORCA_DFS_QUERY_OK 0x0500
++#define ORCA_DFS_ENABLE_OK 0x0300
++#define ORCA_DFS_VOTE_OK 0x0000
++#define ORCA_DFS_VOTE_UNCHANGED 0x0003
++#define ORCA_DFS_MAX_FREQS 32
++#define ORCA_MHZ 1000000UL
++
++struct orca_ddr {
++	struct device *dev;
++	struct mutex lock;
++	struct devfreq_dev_profile profile;
++	struct devfreq *devfreq;
++	bool connected;
++	bool voted;
++	u32 previous_ap_mhz;
++	unsigned int added_opps;
++};
++
++/* Serialize the whole request/reply exchange, including sysfs readers. */
++static int orca_dfs_request(struct orca_ddr *d, u16 command, u32 value,
++			    u32 *result)
++{
++	struct smsg message;
++	bool switch_command = command == ORCA_DFS_ENABLE ||
++			      command == ORCA_DFS_DISABLE ||
++			      command == ORCA_DFS_AUTO_ENABLE ||
++			      command == ORCA_DFS_AUTO_DISABLE;
++	u16 success = switch_command	       ? ORCA_DFS_ENABLE_OK :
++		      command == ORCA_DFS_VOTE ? ORCA_DFS_VOTE_OK :
++						 ORCA_DFS_QUERY_OK;
++	int ret;
++
++	lockdep_assert_held(&d->lock);
++	smsg_set(&message, SMSG_CH_PM_CTRL, SMSG_TYPE_DFS, command, value);
++	ret = smsg_send(SIPC_ID_PM_SYS, &message, msecs_to_jiffies(100));
++	if (ret)
++		return ret;
++	ret = smsg_recv(SIPC_ID_PM_SYS, &message,
++			msecs_to_jiffies(switch_command ? 2000 : 500));
++	if (ret)
++		return ret;
++	if (message.channel != SMSG_CH_PM_CTRL ||
++	    message.type != SMSG_TYPE_DFS_RSP)
++		return -EPROTO;
++	if (message.flag != success &&
++	    !(command == ORCA_DFS_VOTE &&
++	      message.flag == ORCA_DFS_VOTE_UNCHANGED)) {
++		dev_err(d->dev,
++			"DDR command %#x rejected: status %#x, value %u\n",
++			command, message.flag, message.value);
++		return message.flag == 2 ? -EBUSY : -EIO;
++	}
++	*result = message.value;
++	return 0;
++}
++
++static int orca_ddr_read_hz(struct orca_ddr *d, u16 command, unsigned long *hz)
++{
++	u32 mhz;
++	int ret = orca_dfs_request(d, command, 0, &mhz);
++
++	if (!ret) {
++		if (mhz > ULONG_MAX / ORCA_MHZ)
++			return -ERANGE;
++		*hz = (unsigned long)mhz * ORCA_MHZ;
++	}
++	return ret;
++}
++
++static int orca_ddr_get_freq(struct device *dev, unsigned long *hz)
++{
++	struct orca_ddr *d = dev_get_drvdata(dev);
++	int ret;
++
++	mutex_lock(&d->lock);
++	ret = orca_ddr_read_hz(d, ORCA_DFS_GET_FREQ, hz);
++	mutex_unlock(&d->lock);
++	return ret;
++}
++
++static int orca_ddr_target(struct device *dev, unsigned long *hz, u32 flags)
++{
++	struct orca_ddr *d = dev_get_drvdata(dev);
++	unsigned long *table = d->profile.freq_table;
++	unsigned int i, chosen = 0;
++	u32 status;
++	int ret;
++
++	/* devfreq table is sorted ascending. Match the standard LUB convention. */
++	if (flags & DEVFREQ_FLAG_LEAST_UPPER_BOUND) {
++		for (i = 0; i < d->profile.max_state && table[i] <= *hz; i++)
++			chosen = i;
++	} else {
++		chosen = d->profile.max_state - 1;
++		for (i = 0; i < d->profile.max_state; i++)
++			if (table[i] >= *hz) {
++				chosen = i;
++				break;
++			}
++	}
++	mutex_lock(&d->lock);
++	ret = orca_dfs_request(d, ORCA_DFS_GET_STATUS, 0, &status);
++	if (!ret && !status)
++		ret = orca_dfs_request(d, ORCA_DFS_ENABLE, 0, &status);
++	if (!ret) {
++		ret = orca_dfs_request(d, ORCA_DFS_VOTE,
++				       table[chosen] / ORCA_MHZ, &status);
++		if (!ret)
++			d->voted = true;
++	}
++	if (!ret)
++		ret = orca_ddr_read_hz(d, ORCA_DFS_GET_FREQ, hz);
++	mutex_unlock(&d->lock);
++	return ret;
++}
++
++static ssize_t orca_ddr_query_show(struct device *dev, u16 command,
++				   bool frequency, char *buf)
++{
++	struct orca_ddr *d = dev_get_drvdata(dev);
++	unsigned long hz = 0;
++	u32 value = 0;
++	int ret;
++
++	mutex_lock(&d->lock);
++	if (frequency)
++		ret = orca_ddr_read_hz(d, command, &hz);
++	else
++		ret = orca_dfs_request(d, command, 0, &value);
++	mutex_unlock(&d->lock);
++	return ret ? ret : sysfs_emit(buf, "%lu\n", frequency ? hz : value);
++}
++#define ORCA_DDR_ATTR(_name, _command, _frequency)                            \
++	static ssize_t _name##_show(struct device *dev,                       \
++				    struct device_attribute *attr, char *buf) \
++	{                                                                     \
++		return orca_ddr_query_show(dev, _command, _frequency, buf);   \
++	}                                                                     \
++	static DEVICE_ATTR_RO(_name)
++
++ORCA_DDR_ATTR(cp_vote_hz, ORCA_DFS_GET_CP, true);
++
++static ssize_t orca_ddr_switch_store(struct device *dev, const char *buf,
++				     size_t size, bool automatic)
++{
++	struct orca_ddr *d = dev_get_drvdata(dev);
++	bool enable;
++	u32 value;
++	u16 command;
++	int ret = kstrtobool(buf, &enable);
++
++	if (ret)
++		return ret;
++	command = automatic ? (enable ? ORCA_DFS_AUTO_ENABLE :
++					ORCA_DFS_AUTO_DISABLE) :
++			      (enable ? ORCA_DFS_ENABLE : ORCA_DFS_DISABLE);
++	mutex_lock(&d->lock);
++	ret = orca_dfs_request(d, command, 0, &value);
++	if (!ret)
++		ret = orca_dfs_request(
++			d, automatic ? ORCA_DFS_GET_AUTO : ORCA_DFS_GET_STATUS,
++			0, &value);
++	if (!ret && value != enable)
++		ret = -EIO;
++	mutex_unlock(&d->lock);
++	return ret ? ret : size;
++}
++
++#define ORCA_DDR_SWITCH(_name, _query, _automatic)                            \
++	static ssize_t _name##_show(struct device *dev,                       \
++				    struct device_attribute *attr, char *buf) \
++	{                                                                     \
++		return orca_ddr_query_show(dev, _query, false, buf);          \
++	}                                                                     \
++	static ssize_t _name##_store(struct device *dev,                      \
++				     struct device_attribute *attr,           \
++				     const char *buf, size_t size)            \
++	{                                                                     \
++		return orca_ddr_switch_store(dev, buf, size, _automatic);     \
++	}                                                                     \
++	static DEVICE_ATTR_RW(_name)
++
++ORCA_DDR_SWITCH(firmware_dfs_enabled, ORCA_DFS_GET_STATUS, false);
++ORCA_DDR_SWITCH(firmware_auto_enabled, ORCA_DFS_GET_AUTO, true);
++
++static ssize_t ap_vote_hz_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	return orca_ddr_query_show(dev, ORCA_DFS_GET_AP, true, buf);
++}
++
++static ssize_t ap_vote_hz_store(struct device *dev,
++				struct device_attribute *attr, const char *buf,
++				size_t size)
++{
++	struct orca_ddr *d = dev_get_drvdata(dev);
++	unsigned long hz;
++	unsigned int i;
++	u32 value;
++	int ret = kstrtoul(buf, 0, &hz);
++
++	if (ret)
++		return ret;
++	/*
++	 * Zero withdraws the AP vote. A devfreq target is clamped to the minimum
++	 * OPP and cannot express this distinct firmware operation.
++	 */
++	if (hz) {
++		for (i = 0; i < d->profile.max_state; i++)
++			if (d->profile.freq_table[i] == hz)
++				break;
++		if (i == d->profile.max_state)
++			return -EINVAL;
++	}
++	mutex_lock(&d->lock);
++	ret = orca_dfs_request(d, ORCA_DFS_VOTE, hz / ORCA_MHZ, &value);
++	if (!ret) {
++		d->voted = true;
++		ret = orca_dfs_request(d, ORCA_DFS_GET_AP, 0, &value);
++	}
++	if (!ret && value != hz / ORCA_MHZ)
++		ret = -EIO;
++	mutex_unlock(&d->lock);
++	return ret ? ret : size;
++}
++static DEVICE_ATTR_RW(ap_vote_hz);
++
++static struct attribute *orca_ddr_attrs[] = {
++	&dev_attr_firmware_dfs_enabled.attr,
++	&dev_attr_firmware_auto_enabled.attr,
++	&dev_attr_ap_vote_hz.attr,
++	&dev_attr_cp_vote_hz.attr,
++	NULL,
++};
++ATTRIBUTE_GROUPS(orca_ddr);
++
++static int orca_freq_compare(const void *a, const void *b)
++{
++	unsigned long x = *(const unsigned long *)a;
++	unsigned long y = *(const unsigned long *)b;
++
++	return (x > y) - (x < y);
++}
++
++static void orca_ddr_remove_opps(void *data)
++{
++	struct orca_ddr *d = data;
++
++	while (d->added_opps)
++		dev_pm_opp_remove(d->dev,
++				  d->profile.freq_table[--d->added_opps]);
++}
++
++static int orca_ddr_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct orca_ddr *d;
++	unsigned long *table;
++	u32 count, mhz, enabled, automatic;
++	int ret;
++	unsigned int i;
++
++	ret = of_property_read_u32(dev->of_node, "freq-num", &count);
++	if (ret || !count || count > ORCA_DFS_MAX_FREQS)
++		return dev_err_probe(
++			dev, -EINVAL,
++			"DDR freq-num must describe the firmware table\n");
++	d = devm_kzalloc(dev, sizeof(*d), GFP_KERNEL);
++	if (!d)
++		return -ENOMEM;
++	table = devm_kcalloc(dev, count, sizeof(*table), GFP_KERNEL);
++	if (!table)
++		return -ENOMEM;
++	d->dev = dev;
++	mutex_init(&d->lock);
++	platform_set_drvdata(pdev, d);
++	ret = smsg_ch_open(SIPC_ID_PM_SYS, SMSG_CH_PM_CTRL,
++			   msecs_to_jiffies(500));
++	if (ret == -ENODEV)
++		ret = -EPROBE_DEFER;
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "PM_SYS DDR channel open failed\n");
++	d->connected = true;
++	mutex_lock(&d->lock);
++	ret = orca_dfs_request(d, ORCA_DFS_GET_STATUS, 0, &enabled);
++	if (ret)
++		goto unlock;
++	ret = orca_dfs_request(d, ORCA_DFS_GET_AUTO, 0, &automatic);
++	if (ret)
++		goto unlock;
++	ret = orca_dfs_request(d, ORCA_DFS_GET_AP, 0, &d->previous_ap_mhz);
++	if (ret)
++		goto unlock;
++	for (i = 0; i < count; i++) {
++		ret = orca_dfs_request(d, ORCA_DFS_GET_TABLE, i, &mhz);
++		if (ret)
++			goto unlock;
++		if (!mhz || mhz > ULONG_MAX / ORCA_MHZ) {
++			ret = -ERANGE;
++			goto unlock;
++		}
++		table[i] = (unsigned long)mhz * ORCA_MHZ;
++	}
++	sort(table, count, sizeof(*table), orca_freq_compare, NULL);
++	for (i = 1; i < count; i++)
++		if (table[i] == table[i - 1]) {
++			ret = -EINVAL;
++			goto unlock;
++		}
++	ret = orca_ddr_read_hz(d, ORCA_DFS_GET_FREQ, &d->profile.initial_freq);
++	if (!ret && !d->profile.initial_freq)
++		ret = -ERANGE;
++unlock:
++	mutex_unlock(&d->lock);
++	if (ret)
++		goto close;
++	d->profile.target = orca_ddr_target;
++	d->profile.get_cur_freq = orca_ddr_get_freq;
++	d->profile.freq_table = table;
++	d->profile.max_state = count;
++	ret = devm_add_action_or_reset(dev, orca_ddr_remove_opps, d);
++	if (ret)
++		goto close;
++	for (i = 0; i < count; i++) {
++		/* Frequency-only OPP: voltage transitions stay inside PM firmware. */
++		ret = dev_pm_opp_add(dev, table[i], 0);
++		if (ret)
++			goto close;
++		d->added_opps++;
++	}
++	/*
++	 * Firmware's auto governor keeps running. No fabricated busy-time data
++	 * and no AP polling daemon. Userspace governor supplies explicit votes.
++	 */
++	dev_info(
++		dev,
++		"PM_SYS DDR: %u frequencies, current %lu Hz, DFS %u, auto %u\n",
++		count, d->profile.initial_freq, enabled, automatic);
++	for (i = 0; i < count; i++)
++		dev_info(dev, "DDR firmware frequency %u: %lu Hz\n", i,
++			 table[i]);
++	d->devfreq = devfreq_add_device(dev, &d->profile, DEVFREQ_GOV_USERSPACE,
++					NULL);
++	if (IS_ERR(d->devfreq)) {
++		ret = PTR_ERR(d->devfreq);
++		goto close;
++	}
++	return 0;
++close:
++	/* Release the existing channel after a failed probe. */
++	smsg_ch_close(SIPC_ID_PM_SYS, SMSG_CH_PM_CTRL, msecs_to_jiffies(100));
++	d->connected = false;
++	return dev_err_probe(dev, ret, "PM_SYS DDR discovery failed\n");
++}
++
++static void orca_ddr_remove(struct platform_device *pdev)
++{
++	struct orca_ddr *d = platform_get_drvdata(pdev);
++	u32 status;
++	int ret;
++
++	devfreq_remove_device(d->devfreq);
++	mutex_lock(&d->lock);
++	if (d->voted) {
++		ret = orca_dfs_request(d, ORCA_DFS_VOTE, d->previous_ap_mhz,
++				       &status);
++		if (ret)
++			dev_warn(
++				d->dev,
++				"Could not restore preceding AP DDR vote: %d\n",
++				ret);
++	}
++	if (d->connected)
++		smsg_ch_close(SIPC_ID_PM_SYS, SMSG_CH_PM_CTRL,
++			      msecs_to_jiffies(100));
++	mutex_unlock(&d->lock);
++	/* Preserve firmware auto mode and other processors' votes. */
++}
++
++static const struct of_device_id orca_ddr_of_match[] = {
++	{ .compatible = "sprd,orca-ddr-dfs" },
++	{ .compatible = "sprd,dfs" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, orca_ddr_of_match);
++static struct platform_driver orca_ddr_driver = {
++	.probe = orca_ddr_probe,
++	.remove = orca_ddr_remove,
++	.driver = {
++		.name = "sprd-orca-ddr",
++		.of_match_table = orca_ddr_of_match,
++		.dev_groups = orca_ddr_groups,
++	},
++};
++module_platform_driver(orca_ddr_driver);
++MODULE_DESCRIPTION("Orca PM_SYS firmware DDR frequency votes");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/iio/adc/Kconfig b/drivers/iio/adc/Kconfig
+index 415e519ad..5253b5080 100644
+--- a/drivers/iio/adc/Kconfig
++++ b/drivers/iio/adc/Kconfig
+@@ -2098,4 +2098,11 @@ config XILINX_AMS
+ 	  The driver can also be built as a module. If so, the module will be called
+ 	  xilinx-ams.
+ 
++config SY108_MCU
++	tristate "SY108 board MCU ADC and event interface"
++	depends on SERIAL_DEV_BUS && GPIOLIB
++	help
++	  Expose the board MCU's raw ADC channels and firmware version through
++	  IIO and sysfs. Power and USB events are queued for board policy.
++
+ endmenu
+diff --git a/drivers/iio/adc/Makefile b/drivers/iio/adc/Makefile
+index dcec0abb0..210bc3a33 100644
+--- a/drivers/iio/adc/Makefile
++++ b/drivers/iio/adc/Makefile
+@@ -179,3 +179,4 @@ obj-$(CONFIG_VIPERBOARD_ADC) += viperboard_adc.o
+ obj-$(CONFIG_XILINX_AMS) += xilinx-ams.o
+ xilinx-xadc-y := xilinx-xadc-core.o xilinx-xadc-events.o
+ obj-$(CONFIG_XILINX_XADC) += xilinx-xadc.o
++obj-$(CONFIG_SY108_MCU) += sy108-mcu.o
+diff --git a/drivers/iio/adc/sy108-mcu.c b/drivers/iio/adc/sy108-mcu.c
+new file mode 100644
+index 000000000..0994248f4
+--- /dev/null
++++ b/drivers/iio/adc/sy108-mcu.c
+@@ -0,0 +1,564 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* SY108 board MCU over its fixed 115200/8N1 UART.
++ * ADC3..5 expose raw counts.
++ * USB/power requests are queued as device events. Board policy acknowledges
++ * the queue head before its gadget/shutdown operation.
++ */
++#include <linux/completion.h>
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/iio/iio.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/property.h>
++#include <linux/serdev.h>
++#include <linux/spinlock.h>
++#include <linux/unaligned.h>
++#include <linux/workqueue.h>
++
++#define SY108_FRAME_MAX 71
++#define SY108_EVENT_MAX 16
++#define SY108_TIMEOUT msecs_to_jiffies(2000)
++
++struct sy108_event {
++	u64 sequence;
++	u8 minor;
++	bool announced, ack_started;
++};
++
++struct sy108_mcu {
++	struct serdev_device *serdev;
++	struct mutex command_lock;
++	struct mutex event_lock;
++	spinlock_t rx_lock;
++	struct completion response;
++	struct work_struct event_work;
++	u8 stream[SY108_FRAME_MAX];
++	unsigned int used;
++	struct sy108_event events[SY108_EVENT_MAX];
++	u64 next_event;
++	unsigned int event_head, event_count;
++	bool waiting, stopping, orphan_reply;
++	u8 expected, expected_len, expected_channel;
++	u8 reply[64];
++	int response_error, link_error;
++	u64 rx_bytes, valid_frames, bad_frames, requests, timeouts;
++	u64 poweroff_events, usb_reset_events;
++	u64 ack_attempts, ack_failures, last_ack_seq;
++	int last_ack_error;
++};
++
++static size_t sy108_encode(u8 minor, const u8 *payload, unsigned int len,
++			   u8 *frame)
++{
++	unsigned int i;
++	u8 sum = 0;
++
++	frame[0] = 0xaa;
++	frame[1] = 0x60;
++	put_unaligned_le16(len + 7, frame + 2);
++	frame[4] = minor;
++	frame[5] = len;
++	if (len)
++		memcpy(frame + 6, payload, len);
++	for (i = 0; i < len + 6; i++)
++		sum += frame[i];
++	frame[len + 6] = sum;
++	return len + 7;
++}
++
++static void sy108_handle_frame(struct sy108_mcu *mcu, const u8 *frame)
++{
++	u8 minor = frame[4], len = frame[5];
++
++	lockdep_assert_held(&mcu->rx_lock);
++	mcu->valid_frames++;
++	if ((minor == 0x04 && !len) || (minor == 0x0a && len == 1)) {
++		if (mcu->event_count == SY108_EVENT_MAX) {
++			mcu->link_error = -EOVERFLOW;
++		} else {
++			struct sy108_event *event =
++				&mcu->events[(mcu->event_head +
++					      mcu->event_count++) %
++					     SY108_EVENT_MAX];
++
++			*event = (struct sy108_event){
++				.sequence = ++mcu->next_event,
++				.minor = minor,
++			};
++			if (minor == 0x04)
++				mcu->poweroff_events++;
++			else
++				mcu->usb_reset_events++;
++			schedule_work(&mcu->event_work);
++		}
++		/* No ACK until board policy acknowledges this queued event. */
++		return;
++	}
++	/* SY108_MCU_V07 echoes the ADC channel in payload[0]; match it to
++	 * the pending request before accepting the sample.
++	 */
++	if (minor == 0x10 && len == 4 && frame[6] != mcu->expected_channel)
++		return;
++	if (mcu->orphan_reply && minor == mcu->expected &&
++	    len == mcu->expected_len) {
++		/* Exactly one timed-out request remains outstanding; no subsequent
++		 * request was admitted. Drain its late reply without publishing it.
++		 */
++		mcu->orphan_reply = false;
++		if (mcu->link_error == -ETIMEDOUT)
++			mcu->link_error = 0;
++		return;
++	}
++	if (mcu->waiting && minor == mcu->expected &&
++	    len == mcu->expected_len) {
++		memcpy(mcu->reply, frame + 6, len);
++		mcu->response_error = 0;
++		mcu->waiting = false;
++		complete(&mcu->response);
++	}
++}
++
++static size_t sy108_receive(struct serdev_device *serdev, const u8 *data,
++			    size_t count)
++{
++	struct sy108_mcu *mcu = serdev_device_get_drvdata(serdev);
++	unsigned long flags;
++	size_t n;
++
++	spin_lock_irqsave(&mcu->rx_lock, flags);
++	if (mcu->stopping)
++		goto out;
++	mcu->rx_bytes += count;
++	for (n = 0; n < count; n++) {
++		mcu->stream[mcu->used++] = data[n];
++		for (;;) {
++			unsigned int total, i;
++			u8 sum = 0;
++
++			if (!mcu->used)
++				break;
++			if (mcu->stream[0] != 0xaa ||
++			    (mcu->used > 1 && mcu->stream[1] != 0x60))
++				goto discard;
++			if (mcu->used < 4)
++				break;
++			total = get_unaligned_le16(mcu->stream + 2);
++			if (total < 7 || total > SY108_FRAME_MAX ||
++			    (mcu->used >= 6 && total != mcu->stream[5] + 7))
++				goto invalid;
++			if (mcu->used < total)
++				break;
++			for (i = 0; i + 1 < total; i++)
++				sum += mcu->stream[i];
++			if (sum != mcu->stream[total - 1])
++				goto invalid;
++			sy108_handle_frame(mcu, mcu->stream);
++			mcu->used -= total;
++			memmove(mcu->stream, mcu->stream + total, mcu->used);
++			continue;
++invalid:
++			mcu->bad_frames++;
++discard:
++			mcu->used--;
++			memmove(mcu->stream, mcu->stream + 1, mcu->used);
++		}
++	}
++out:
++	spin_unlock_irqrestore(&mcu->rx_lock, flags);
++	return count;
++}
++
++static const struct serdev_device_ops sy108_serdev_ops = {
++	.receive_buf = sy108_receive,
++	.write_wakeup = serdev_device_write_wakeup,
++};
++
++static int sy108_request(struct sy108_mcu *mcu, u8 minor, const u8 *payload,
++			 unsigned int len, u8 expected, unsigned int reply_len,
++			 u8 *reply)
++{
++	u8 frame[11];
++	unsigned long flags;
++	size_t size;
++	ssize_t written;
++	int ret;
++
++	if (len > 4 || reply_len > sizeof(mcu->reply))
++		return -EINVAL;
++	mutex_lock(&mcu->command_lock);
++	spin_lock_irqsave(&mcu->rx_lock, flags);
++	ret = mcu->stopping ? -ESHUTDOWN : mcu->link_error;
++	if (!ret && mcu->event_count)
++		ret = -EAGAIN;
++	if (ret) {
++		spin_unlock_irqrestore(&mcu->rx_lock, flags);
++		goto unlock;
++	}
++	reinit_completion(&mcu->response);
++	mcu->expected = expected;
++	mcu->expected_len = reply_len;
++	mcu->expected_channel = minor == 0x01 && len ? payload[0] : 0;
++	mcu->response_error = -EINPROGRESS;
++	mcu->waiting = true;
++	mcu->requests++;
++	spin_unlock_irqrestore(&mcu->rx_lock, flags);
++
++	size = sy108_encode(minor, payload, len, frame);
++	written = serdev_device_write(mcu->serdev, frame, size, SY108_TIMEOUT);
++	if (written != (ssize_t)size) {
++		ret = written < 0 ? written : -EIO;
++		goto failed;
++	}
++	if (!wait_for_completion_timeout(&mcu->response, SY108_TIMEOUT)) {
++		ret = -ETIMEDOUT;
++		goto failed;
++	}
++	spin_lock_irqsave(&mcu->rx_lock, flags);
++	ret = mcu->response_error;
++	if (!ret)
++		memcpy(reply, mcu->reply, reply_len);
++	spin_unlock_irqrestore(&mcu->rx_lock, flags);
++	goto unlock;
++failed:
++	spin_lock_irqsave(&mcu->rx_lock, flags);
++	if (!mcu->waiting && !mcu->response_error && ret == -ETIMEDOUT) {
++		/* Completion won the race with the timeout boundary. */
++		memcpy(reply, mcu->reply, reply_len);
++		ret = 0;
++	} else {
++		mcu->waiting = false;
++		/* AA60 has no transaction ID. Block new requests until this
++		 * fully transmitted request's late reply has been drained.
++		 */
++		mcu->link_error = ret;
++		mcu->orphan_reply = ret == -ETIMEDOUT &&
++				    written == (ssize_t)size;
++		if (ret == -ETIMEDOUT)
++			mcu->timeouts++;
++	}
++	spin_unlock_irqrestore(&mcu->rx_lock, flags);
++unlock:
++	mutex_unlock(&mcu->command_lock);
++	return ret;
++}
++
++static void sy108_events(struct work_struct *work)
++{
++	struct sy108_mcu *mcu =
++		container_of(work, struct sy108_mcu, event_work);
++	unsigned long flags;
++
++	for (;;) {
++		struct sy108_event event = {};
++		char sequence[48];
++		char *env[4];
++		unsigned int i;
++
++		spin_lock_irqsave(&mcu->rx_lock, flags);
++		if (mcu->stopping) {
++			spin_unlock_irqrestore(&mcu->rx_lock, flags);
++			return;
++		}
++		for (i = 0; i < mcu->event_count; i++) {
++			struct sy108_event *pending =
++				&mcu->events[(mcu->event_head + i) %
++					     SY108_EVENT_MAX];
++
++			if (!pending->announced) {
++				pending->announced = true;
++				event = *pending;
++				break;
++			}
++		}
++		spin_unlock_irqrestore(&mcu->rx_lock, flags);
++		if (!event.sequence)
++			return;
++		snprintf(sequence, sizeof(sequence), "MCU_SEQ=%llu",
++			 event.sequence);
++		env[0] = event.minor == 4 ? "MCU_EVENT=poweroff" :
++					    "MCU_EVENT=usb-reset";
++		env[1] = sequence;
++		env[2] = "MCU_ACK=pending";
++		env[3] = NULL;
++		kobject_uevent_env(&mcu->serdev->dev.kobj, KOBJ_CHANGE, env);
++	}
++}
++
++static ssize_t event_show(struct device *dev, struct device_attribute *attr,
++			  char *buf)
++{
++	struct sy108_mcu *mcu = dev_get_drvdata(dev);
++	struct sy108_event event = {};
++	unsigned long flags;
++
++	spin_lock_irqsave(&mcu->rx_lock, flags);
++	if (mcu->event_count)
++		event = mcu->events[mcu->event_head];
++	spin_unlock_irqrestore(&mcu->rx_lock, flags);
++	if (!event.sequence)
++		return sysfs_emit(buf, "none\n");
++	return sysfs_emit(buf, "seq=%llu minor=%02x kind=%s ack=%s\n",
++			  event.sequence, event.minor,
++			  event.minor == 4 ? "poweroff" : "usb-reset",
++			  event.ack_started ? "writing" : "pending");
++}
++static DEVICE_ATTR_RO(event);
++
++static ssize_t event_ack_store(struct device *dev,
++			       struct device_attribute *attr, const char *buf,
++			       size_t count)
++{
++	struct sy108_mcu *mcu = dev_get_drvdata(dev);
++	struct sy108_event *event;
++	unsigned long flags;
++	u64 sequence;
++	u8 minor, zero = 0, frame[8];
++	size_t size;
++	ssize_t written;
++	int ret;
++
++	ret = kstrtou64(buf, 10, &sequence);
++	if (ret || !sequence)
++		return ret ?: -EINVAL;
++	mutex_lock(&mcu->event_lock);
++	spin_lock_irqsave(&mcu->rx_lock, flags);
++	ret = mcu->stopping ? -ESHUTDOWN : -ESTALE;
++	if (!mcu->event_count || mcu->stopping)
++		goto unlock_rx;
++	event = &mcu->events[mcu->event_head];
++	if (event->sequence != sequence)
++		goto unlock_rx;
++	ret = -EALREADY;
++	if (event->ack_started)
++		goto unlock_rx;
++	event->ack_started = true;
++	minor = event->minor;
++	spin_unlock_irqrestore(&mcu->rx_lock, flags);
++
++	/* serdev serializes whole frames with write_lock; an event ACK need
++	 * not wait for an ADC transaction's response.
++	 */
++	size = sy108_encode(minor == 4 ? 0x40 : 0xa0, &zero, minor == 4 ? 0 : 1,
++			    frame);
++	written = serdev_device_write(mcu->serdev, frame, size, SY108_TIMEOUT);
++	spin_lock_irqsave(&mcu->rx_lock, flags);
++	ret = written == (ssize_t)size ? 0 : written < 0 ? written : -EIO;
++	mcu->ack_attempts++;
++	if (ret)
++		mcu->ack_failures++;
++	mcu->last_ack_seq = sequence;
++	mcu->last_ack_error = ret;
++	/* Stock attempts ACK once and continues its AP action even on failure.
++	 * Consume this event after any attempt; neither replay its ACK nor let
++	 * a failed head prevent subsequent notifications from being handled.
++	 */
++	mcu->event_head = (mcu->event_head + 1) % SY108_EVENT_MAX;
++	mcu->event_count--;
++	/* Do not let VFS restart an interrupted ACK write as a second request. */
++	if (ret == -ERESTARTSYS || ret == -EINTR)
++		ret = -EIO;
++unlock_rx:
++	spin_unlock_irqrestore(&mcu->rx_lock, flags);
++	mutex_unlock(&mcu->event_lock);
++	return ret ? ret : count;
++}
++static DEVICE_ATTR_WO(event_ack);
++
++static int sy108_read_raw(struct iio_dev *indio,
++			  const struct iio_chan_spec *chan, int *val, int *val2,
++			  long mask)
++{
++	struct sy108_mcu *mcu = iio_priv(indio);
++	u8 payload[4] = { chan->channel, 0, 0, 0 };
++	u8 reply[4];
++	int ret;
++
++	if (mask != IIO_CHAN_INFO_RAW)
++		return -EINVAL;
++	ret = sy108_request(mcu, 0x01, payload, sizeof(payload), 0x10,
++			    sizeof(reply), reply);
++	if (ret)
++		return ret;
++	*val = get_unaligned_le16(reply + 2);
++	return IIO_VAL_INT;
++}
++
++static int sy108_fwnode_xlate(struct iio_dev *indio,
++			      const struct fwnode_reference_args *args)
++{
++	unsigned int i;
++
++	if (args->nargs != 1)
++		return -EINVAL;
++	for (i = 0; i < indio->num_channels; i++)
++		if (indio->channels[i].channel == args->args[0])
++			return i;
++	return -EINVAL;
++}
++static const struct iio_info sy108_iio_info = {
++	.read_raw = sy108_read_raw,
++	.fwnode_xlate = sy108_fwnode_xlate,
++};
++#define SY108_ADC(n)           \
++	{ .type = IIO_VOLTAGE, \
++	  .indexed = 1,        \
++	  .channel = n,        \
++	  .info_mask_separate = BIT(IIO_CHAN_INFO_RAW) }
++static const struct iio_chan_spec sy108_channels[] = {
++	SY108_ADC(3),
++	SY108_ADC(4),
++	SY108_ADC(5),
++};
++
++static ssize_t firmware_version_show(struct device *dev,
++				     struct device_attribute *attr, char *buf)
++{
++	struct sy108_mcu *mcu = dev_get_drvdata(dev);
++	char version[65];
++	unsigned int i;
++	int ret;
++
++	ret = sy108_request(mcu, 0x06, NULL, 0, 0x60, 64, (u8 *)version);
++	if (ret)
++		return ret;
++	version[64] = '\0';
++	for (i = 0; version[i]; i++)
++		if (version[i] < 32 || version[i] > 126)
++			version[i] = '.';
++	return sysfs_emit(buf, "%s\n", version);
++}
++static DEVICE_ATTR_RO(firmware_version);
++static ssize_t status_show(struct device *dev, struct device_attribute *attr,
++			   char *buf)
++{
++	struct sy108_mcu *mcu = dev_get_drvdata(dev);
++	unsigned long flags;
++	ssize_t count;
++
++	spin_lock_irqsave(&mcu->rx_lock, flags);
++	count = sysfs_emit(
++		buf,
++		"rx_bytes=%llu valid_frames=%llu bad_frames=%llu requests=%llu timeouts=%llu usb_reset=%llu poweroff=%llu link_error=%d ack_attempts=%llu ack_failures=%llu last_ack_seq=%llu last_ack_error=%d\n",
++		mcu->rx_bytes, mcu->valid_frames, mcu->bad_frames,
++		mcu->requests, mcu->timeouts, mcu->usb_reset_events,
++		mcu->poweroff_events, mcu->link_error, mcu->ack_attempts,
++		mcu->ack_failures, mcu->last_ack_seq, mcu->last_ack_error);
++	spin_unlock_irqrestore(&mcu->rx_lock, flags);
++	return count;
++}
++static DEVICE_ATTR_RO(status);
++static struct attribute *sy108_attrs[] = {
++	&dev_attr_firmware_version.attr,
++	&dev_attr_status.attr,
++	&dev_attr_event.attr,
++	&dev_attr_event_ack.attr,
++	NULL,
++};
++ATTRIBUTE_GROUPS(sy108);
++
++static void sy108_stop(void *data)
++{
++	struct sy108_mcu *mcu = data;
++	unsigned long flags;
++
++	spin_lock_irqsave(&mcu->rx_lock, flags);
++	mcu->stopping = true;
++	if (mcu->waiting) {
++		mcu->response_error = -ESHUTDOWN;
++		mcu->waiting = false;
++		complete(&mcu->response);
++	}
++	spin_unlock_irqrestore(&mcu->rx_lock, flags);
++	cancel_work_sync(&mcu->event_work);
++}
++
++static int sy108_probe(struct serdev_device *serdev)
++{
++	struct device *dev = &serdev->dev;
++	struct gpio_desc *reset, *wake;
++	struct iio_dev *indio;
++	struct sy108_mcu *mcu;
++	int ret;
++
++	indio = devm_iio_device_alloc(dev, sizeof(*mcu));
++	if (!indio)
++		return -ENOMEM;
++	mcu = iio_priv(indio);
++	mcu->serdev = serdev;
++	mutex_init(&mcu->command_lock);
++	mutex_init(&mcu->event_lock);
++	spin_lock_init(&mcu->rx_lock);
++	init_completion(&mcu->response);
++	INIT_WORK(&mcu->event_work, sy108_events);
++	serdev_device_set_drvdata(serdev, mcu);
++	serdev_device_set_client_ops(serdev, &sy108_serdev_ops);
++
++	reset = devm_gpiod_get(dev, "rst-mcu", GPIOD_ASIS);
++	if (IS_ERR(reset))
++		return dev_err_probe(dev, PTR_ERR(reset),
++				     "MCU reset GPIO unavailable\n");
++	wake = devm_gpiod_get(dev, "wkup-mcu", GPIOD_ASIS);
++	if (IS_ERR(wake))
++		return dev_err_probe(dev, PTR_ERR(wake),
++				     "MCU wake GPIO unavailable\n");
++	/* Use the original board driver's raw reset=0 and wake=1 levels.
++	 */
++	ret = gpiod_direction_output_raw(reset, 0);
++	if (ret)
++		return ret;
++	ret = gpiod_direction_output_raw(wake, 1);
++	if (ret)
++		return ret;
++	ret = devm_serdev_device_open(dev, serdev);
++	if (ret)
++		return ret;
++	ret = devm_add_action_or_reset(dev, sy108_stop, mcu);
++	if (ret)
++		return ret;
++	if (serdev_device_set_baudrate(serdev, 115200) != 115200)
++		return -EINVAL;
++	serdev_device_set_flow_control(serdev, false);
++	ret = serdev_device_set_parity(serdev, SERDEV_PARITY_NONE);
++	if (ret)
++		return ret;
++	/* Publish the event queue before userspace issues read requests. An
++	 * early power/USB event must remain observable even without policy yet.
++	 */
++
++	indio->name = "sy108-mcu";
++	indio->info = &sy108_iio_info;
++	indio->modes = INDIO_DIRECT_MODE;
++	indio->channels = sy108_channels;
++	indio->num_channels = ARRAY_SIZE(sy108_channels);
++	ret = devm_iio_device_register(dev, indio);
++	if (ret)
++		return ret;
++	dev_info(dev,
++		 "MCU ADC3..5 registered; event ACK requires board policy\n");
++	return 0;
++}
++
++static void sy108_shutdown(struct serdev_device *serdev)
++{
++	sy108_stop(serdev_device_get_drvdata(serdev));
++}
++static const struct of_device_id sy108_of_match[] = {
++	{ .compatible = "meig,sy108-mcu" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, sy108_of_match);
++static struct serdev_device_driver sy108_driver = {
++	.probe = sy108_probe,
++	.shutdown = sy108_shutdown,
++	.driver = {
++		.name = "sy108-mcu",
++		.of_match_table = sy108_of_match,
++		.dev_groups = sy108_groups,
++		.suppress_bind_attrs = true,
++	},
++};
++module_serdev_device_driver(sy108_driver);
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("SY108 board MCU serdev protocol, raw ADC and notifications");
+diff --git a/drivers/thermal/Kconfig b/drivers/thermal/Kconfig
+index 810eecced..d28983df3 100644
+--- a/drivers/thermal/Kconfig
++++ b/drivers/thermal/Kconfig
+@@ -530,4 +530,13 @@ config LOONGSON2_THERMAL
+ 	  is higher than the high temperature threshold or lower than the low
+ 	  temperature threshold, the interrupt will occur.
+ 
++
+ endif
++
++config SPRD_ORCA_AGGREGATE_THERMAL
++	tristate "Orca aggregate cluster and SoC temperature"
++	depends on OF && THERMAL_OF && SPRD_THERMAL
++	help
++	  Provide virtual aggregate cluster and SoC thermal sensors on
++	  Spreadtrum Orca (UDX710) using maximum/mean aggregation across
++	  constituent thermal zones.
+diff --git a/drivers/thermal/Makefile b/drivers/thermal/Makefile
+index 3b249195c..7de02f699 100644
+--- a/drivers/thermal/Makefile
++++ b/drivers/thermal/Makefile
+@@ -70,3 +70,5 @@ obj-$(CONFIG_SPRD_THERMAL)	+= sprd_thermal.o
+ obj-$(CONFIG_KHADAS_MCU_FAN_THERMAL)	+= khadas_mcu_fan.o
+ obj-$(CONFIG_LOONGSON2_THERMAL)	+= loongson2_thermal.o
+ obj-$(CONFIG_THERMAL_CORE_TESTING)	+= testing/
++
++obj-$(CONFIG_SPRD_ORCA_AGGREGATE_THERMAL) += sprd_orca_aggregate.o
+diff --git a/drivers/thermal/sprd_orca_aggregate.c b/drivers/thermal/sprd_orca_aggregate.c
+new file mode 100644
+index 000000000..2181be011
+--- /dev/null
++++ b/drivers/thermal/sprd_orca_aggregate.c
+@@ -0,0 +1,228 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Orca aggregate temperature providers.
++ * Algorithm: GPL sprd_cluster0_thm.c/sprd_soc_thm.c, Spreadtrum 2015.
++ * Source lifetimes are managed with supplier device links, not global raw
++ * thermal-zone pointers that can outlive their provider driver.
++ */
++#include <linux/device.h>
++#include <linux/limits.h>
++#include <linux/math64.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_platform.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++#include <linux/thermal.h>
++#include "thermal_hwmon.h"
++
++#define ORCA_AGG_MAX_SOURCES 16
++struct orca_aggregate_source {
++	struct device *supplier;
++	struct thermal_zone_device *zone;
++};
++struct orca_aggregate {
++	unsigned int count;
++	struct orca_aggregate_source sources[ORCA_AGG_MAX_SOURCES];
++};
++struct orca_aggregate_variant {
++	const char *source_compatible;
++};
++static const struct orca_aggregate_variant orca_cluster = {
++	.source_compatible = "sprd,orca-thermal",
++};
++static const struct orca_aggregate_variant orca_soc = {
++	.source_compatible = "sprd,cluster0-thermal",
++};
++
++static int orca_aggregate_get_temp(struct thermal_zone_device *zone, int *temp)
++{
++	struct orca_aggregate *agg = thermal_zone_device_priv(zone);
++	int maximum = INT_MIN, value, ret;
++	s64 sum = 0;
++	unsigned int i;
++
++	for (i = 0; i < agg->count; i++) {
++		ret = thermal_zone_get_temp(agg->sources[i].zone, &value);
++		if (ret)
++			return ret;
++		maximum = max(maximum, value);
++		sum += value;
++	}
++	/* Preserve the BSP's 30C crossover and integer truncation semantics. */
++	*temp = maximum >= 30000 ? maximum : div_s64(sum, agg->count);
++	return 0;
++}
++static const struct thermal_zone_device_ops orca_aggregate_ops = {
++	.get_temp = orca_aggregate_get_temp,
++};
++
++/* The ID is carried by the actual zone reference, not guessed from unit address. */
++static int orca_aggregate_id(struct device_node *zones,
++			     struct device_node *provider)
++{
++	struct of_phandle_args args;
++	struct device_node *zone;
++	int id = -ENODEV, ret;
++
++	for_each_available_child_of_node(zones, zone) {
++		ret = of_parse_phandle_with_args(zone, "thermal-sensors",
++						 "#thermal-sensor-cells", 0,
++						 &args);
++		if (ret)
++			continue;
++		if (args.np == provider) {
++			if (args.args_count != 1 || args.args[0] > INT_MAX ||
++			    (id >= 0 && id != args.args[0])) {
++				of_node_put(args.np);
++				of_node_put(zone);
++				return -EINVAL;
++			}
++			id = args.args[0];
++		}
++		of_node_put(args.np);
++	}
++	return id;
++}
++
++static int orca_aggregate_source(struct platform_device *pdev,
++				 struct device_node *zones,
++				 struct orca_aggregate *agg,
++				 const struct orca_aggregate_variant *variant,
++				 unsigned int index, const char *name)
++{
++	struct device_node *node;
++	struct of_phandle_args args;
++	struct platform_device *supplier;
++	struct thermal_zone_device *zone;
++	struct device_link *link;
++	unsigned int i;
++	int ret;
++
++	node = of_get_child_by_name(zones, name);
++	if (!node)
++		return -EINVAL;
++	if (!of_device_is_available(node)) {
++		of_node_put(node);
++		return -ENODEV;
++	}
++	ret = of_parse_phandle_with_args(node, "thermal-sensors",
++					 "#thermal-sensor-cells", 0, &args);
++	of_node_put(node);
++	if (ret)
++		return ret;
++	/* Enforce the proven DAG: raw Orca -> cluster aggregate -> SoC aggregate. */
++	if (args.np == pdev->dev.of_node ||
++	    !of_device_is_compatible(args.np, variant->source_compatible)) {
++		of_node_put(args.np);
++		return -EINVAL;
++	}
++	supplier = of_find_device_by_node(args.np);
++	of_node_put(args.np);
++	if (!supplier)
++		return -EPROBE_DEFER;
++	for (i = 0; i < index; i++)
++		if (agg->sources[i].supplier == &supplier->dev)
++			break;
++	if (i == index) {
++		/* Managed link unbinds this consumer before the supplier's devres. */
++		link = device_link_add(&pdev->dev, &supplier->dev,
++				       DL_FLAG_AUTOREMOVE_CONSUMER);
++		if (!link) {
++			ret = -ENOMEM;
++			goto put;
++		}
++	}
++	/* Exclude supplier remove/probe while acquiring its registered zone. */
++	device_lock(&supplier->dev);
++	if (!device_is_bound(&supplier->dev)) {
++		ret = -EPROBE_DEFER;
++	} else {
++		zone = thermal_zone_get_zone_by_name(name);
++		if (IS_ERR(zone))
++			ret = PTR_ERR(zone) == -ENODEV ? -EPROBE_DEFER :
++							 PTR_ERR(zone);
++		else {
++			agg->sources[index].supplier = &supplier->dev;
++			agg->sources[index].zone = zone;
++			ret = 0;
++		}
++	}
++	device_unlock(&supplier->dev);
++put:
++	put_device(&supplier->dev);
++	return ret;
++}
++
++static int orca_aggregate_probe(struct platform_device *pdev)
++{
++	const struct orca_aggregate_variant *variant =
++		of_device_get_match_data(&pdev->dev);
++	struct device_node *np = pdev->dev.of_node, *zones;
++	struct thermal_zone_device *zone;
++	struct orca_aggregate *agg;
++	const char *name, *prior;
++	int count, id, i, j, ret;
++
++	count = of_property_count_strings(np, "sensor-names");
++	if (count < 1 || count > ORCA_AGG_MAX_SOURCES)
++		return -EINVAL;
++	zones = of_find_node_by_path("/thermal-zones");
++	if (!zones)
++		return -ENODEV;
++	id = orca_aggregate_id(zones, np);
++	if (id < 0) {
++		ret = id;
++		goto put;
++	}
++	agg = devm_kzalloc(&pdev->dev, sizeof(*agg), GFP_KERNEL);
++	if (!agg) {
++		ret = -ENOMEM;
++		goto put;
++	}
++	agg->count = count;
++	for (i = 0; i < count; i++) {
++		ret = of_property_read_string_index(np, "sensor-names", i,
++						    &name);
++		if (ret)
++			goto put;
++		for (j = 0; j < i; j++) {
++			of_property_read_string_index(np, "sensor-names", j,
++						      &prior);
++			if (!strcmp(prior, name)) {
++				ret = -EINVAL;
++				goto put;
++			}
++		}
++		ret = orca_aggregate_source(pdev, zones, agg, variant, i, name);
++		if (ret)
++			goto put;
++	}
++	zone = devm_thermal_of_zone_register(&pdev->dev, id, agg,
++					     &orca_aggregate_ops);
++	ret = PTR_ERR_OR_ZERO(zone);
++	if (!ret)
++		ret = devm_thermal_add_hwmon_sysfs(&pdev->dev, zone);
++put:
++	of_node_put(zones);
++	return ret ? dev_err_probe(&pdev->dev, ret,
++				   "aggregate thermal sources\n") :
++		     0;
++}
++
++static const struct of_device_id orca_aggregate_match[] = {
++	{ .compatible = "sprd,cluster0-thermal", .data = &orca_cluster },
++	{ .compatible = "sprd,soc-thermal", .data = &orca_soc },
++	{}
++};
++MODULE_DEVICE_TABLE(of, orca_aggregate_match);
++static struct platform_driver orca_aggregate_driver = {
++	.probe = orca_aggregate_probe,
++	.driver = {
++		.name = "sprd-orca-aggregate-thermal",
++		.of_match_table = orca_aggregate_match,
++	},
++};
++module_platform_driver(orca_aggregate_driver);
++MODULE_DESCRIPTION("Orca cluster and SoC aggregate temperatures");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/thermal/sprd_thermal.c b/drivers/thermal/sprd_thermal.c
+index d683fcb0f..61265928d 100644
+--- a/drivers/thermal/sprd_thermal.c
++++ b/drivers/thermal/sprd_thermal.c
+@@ -5,11 +5,13 @@
+ #include <linux/io.h>
+ #include <linux/iopoll.h>
+ #include <linux/module.h>
++#include <linux/mutex.h>
+ #include <linux/nvmem-consumer.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/slab.h>
+ #include <linux/thermal.h>
++#include "thermal_hwmon.h"
+ 
+ #define SPRD_THM_CTL			0x0
+ #define SPRD_THM_INT_EN			0x4
+@@ -85,10 +87,15 @@ struct sprd_thermal_data {
+ 	const struct sprd_thm_variant_data *var_data;
+ 	struct sprd_thermal_sensor *sensor[SPRD_THM_MAX_SENSOR];
+ 	struct clk *clk;
++	struct clk *functional_clk;
++	struct device *dev;
++	struct mutex lock;
++	bool ready;
++	bool clock_enabled;
++	u32 sensor_mask;
+ 	void __iomem *base;
+ 	u32 ratio_off;
+ 	int ratio_sign;
+-	int nr_sensors;
+ };
+ 
+ /*
+@@ -101,11 +108,25 @@ struct sprd_thermal_data {
+ struct sprd_thm_variant_data {
+ 	u32 ideal_k;
+ 	u32 ideal_b;
++	u32 detect_period;
++	u32 monitor_period;
++	bool strict_calibration;
+ };
+ 
+ static const struct sprd_thm_variant_data ums512_data = {
+ 	.ideal_k = 262,
+ 	.ideal_b = 66400,
++	/* Preserve the existing UMS512 programming until separately verified. */
++	.detect_period = SPRD_THM_DET_PERIOD,
++	.monitor_period = SPRD_THM_MON_PERIOD,
++};
++
++static const struct sprd_thm_variant_data orca_data = {
++	.ideal_k = 262,
++	.ideal_b = 66400,
++	.detect_period = SPRD_THM_DET_PERIOD_DATA,
++	.monitor_period = SPRD_THM_MON_PERIOD_DATA,
++	.strict_calibration = true,
+ };
+ 
+ static inline void sprd_thm_update_bits(void __iomem *reg, u32 mask, u32 val)
+@@ -122,25 +143,23 @@ static int sprd_thm_cal_read(struct device_node *np, const char *cell_id,
+ 			     u32 *val)
+ {
+ 	struct nvmem_cell *cell;
+-	void *buf;
+-	size_t len;
++	u8 *buf;
++	size_t len, i;
+ 
+ 	cell = of_nvmem_cell_get(np, cell_id);
+ 	if (IS_ERR(cell))
+ 		return PTR_ERR(cell);
+-
+ 	buf = nvmem_cell_read(cell, &len);
+ 	nvmem_cell_put(cell);
+ 	if (IS_ERR(buf))
+ 		return PTR_ERR(buf);
+-
+-	if (len > sizeof(u32)) {
++	if (!len || len > sizeof(*val)) {
+ 		kfree(buf);
+ 		return -EINVAL;
+ 	}
+-
+-	memcpy(val, buf, len);
+-
++	*val = 0;
++	for (i = 0; i < len; i++)
++		*val |= (u32)buf[i] << (i * 8);
+ 	kfree(buf);
+ 	return 0;
+ }
+@@ -160,6 +179,15 @@ static int sprd_thm_sensor_calibration(struct device_node *np,
+ 	if (ret)
+ 		return ret;
+ 
++	if (thm->var_data->strict_calibration) {
++		if (dt_offset < 0 || dt_offset > 255 || thm->ratio_off > 127)
++			return -ERANGE;
++		/* No known validity marker: do not accept ambiguous erased cells. */
++		if ((thm->ratio_sign == 1 && !thm->ratio_off && !dt_offset) ||
++		    (thm->ratio_sign == -1 && thm->ratio_off == 127 &&
++		     dt_offset == 255))
++			return -ENODATA;
++	}
+ 	ratio += thm->ratio_sign * thm->ratio_off;
+ 
+ 	/*
+@@ -171,6 +199,8 @@ static int sprd_thm_sensor_calibration(struct device_node *np,
+ 	 */
+ 	sen->cal_slope = (thm->var_data->ideal_k * ratio) / 1000;
+ 	sen->cal_offset = thm->var_data->ideal_b + (dt_offset - 128) * 250;
++	if (sen->cal_slope <= 0)
++		return -ERANGE;
+ 
+ 	return 0;
+ }
+@@ -181,7 +211,7 @@ static int sprd_thm_rawdata_to_temp(struct sprd_thermal_sensor *sen,
+ 	rawdata = clamp(rawdata, SPRD_THM_RAW_DATA_LOW, SPRD_THM_RAW_DATA_HIGH);
+ 
+ 	/*
+-	 * According to the thermal datasheet, the formula of converting
++	 * According to thermal datasheet, the formula of converting
+ 	 * adc value to the temperature value should be:
+ 	 * T_final = k_cal * x - b_cal.
+ 	 */
+@@ -190,31 +220,43 @@ static int sprd_thm_rawdata_to_temp(struct sprd_thermal_sensor *sen,
+ 
+ static int sprd_thm_temp_to_rawdata(int temp, struct sprd_thermal_sensor *sen)
+ {
+-	u32 val;
++	int val;
+ 
+ 	temp = clamp(temp, SPRD_THM_TEMP_LOW, SPRD_THM_TEMP_HIGH);
+ 
+ 	/*
+-	 * According to the thermal datasheet, the formula of converting
++	 * According to thermal datasheet, the formula of converting
+ 	 * adc value to the temperature value should be:
+ 	 * T_final = k_cal * x - b_cal.
+ 	 */
+ 	val = (temp + sen->cal_offset) / sen->cal_slope;
+ 
+-	return min(val, SPRD_THM_RAW_DATA_HIGH - 1);
++	return clamp(val, 0, SPRD_THM_RAW_DATA_HIGH - 1);
+ }
+ 
+ static int sprd_thm_read_temp(struct thermal_zone_device *tz, int *temp)
+ {
+ 	struct sprd_thermal_sensor *sen = thermal_zone_device_priv(tz);
++	struct sprd_thermal_data *thm = sen->data;
+ 	u32 data;
++	int ret = 0;
+ 
+-	data = readl(sen->data->base + SPRD_THM_TEMP(sen->id)) &
+-		SPRD_THM_RAW_READ_MSK;
+-
++	mutex_lock(&thm->lock);
++	if (!thm->ready) {
++		ret = -EAGAIN;
++		goto out;
++	}
++	data = readl(thm->base + SPRD_THM_TEMP(sen->id)) &
++	       SPRD_THM_RAW_READ_MSK;
++	if (thm->var_data->strict_calibration &&
++	    data > SPRD_THM_RAW_DATA_HIGH) {
++		ret = -ERANGE;
++		goto out;
++	}
+ 	*temp = sprd_thm_rawdata_to_temp(sen, data);
+-
+-	return 0;
++out:
++	mutex_unlock(&thm->lock);
++	return ret;
+ }
+ 
+ static const struct thermal_zone_device_ops sprd_thm_ops = {
+@@ -307,7 +349,8 @@ static void sprd_thm_para_config(struct sprd_thermal_data *thm)
+ {
+ 	/* Set the period of two valid temperature detection action */
+ 	sprd_thm_update_bits(thm->base + SPRD_THM_DET_PERIOD,
+-			     SPRD_THM_DET_PERIOD_MASK, SPRD_THM_DET_PERIOD);
++			     SPRD_THM_DET_PERIOD_MASK,
++			     thm->var_data->detect_period);
+ 
+ 	/* Set the sensors' monitor mode */
+ 	sprd_thm_update_bits(thm->base + SPRD_THM_MON_CTL,
+@@ -315,7 +358,8 @@ static void sprd_thm_para_config(struct sprd_thermal_data *thm)
+ 
+ 	/* Set the sensors' monitor period */
+ 	sprd_thm_update_bits(thm->base + SPRD_THM_MON_PERIOD,
+-			     SPRD_THM_MON_PERIOD_MASK, SPRD_THM_MON_PERIOD);
++			     SPRD_THM_MON_PERIOD_MASK,
++			     thm->var_data->monitor_period);
+ }
+ 
+ static void sprd_thm_toggle_sensor(struct sprd_thermal_sensor *sen, bool on)
+@@ -328,194 +372,229 @@ static void sprd_thm_toggle_sensor(struct sprd_thermal_sensor *sen, bool on)
+ 		thermal_zone_device_disable(tzd);
+ }
+ 
++static int sprd_thm_clocks_enable(struct sprd_thermal_data *thm)
++{
++	int ret;
++
++	ret = clk_prepare_enable(thm->functional_clk);
++	if (ret)
++		return ret;
++	if (thm->functional_clk && !clk_get_rate(thm->functional_clk)) {
++		ret = -EINVAL;
++		goto disable_function;
++	}
++	ret = clk_prepare_enable(thm->clk);
++	if (!ret)
++		return 0;
++disable_function:
++	clk_disable_unprepare(thm->functional_clk);
++	return ret;
++}
++
++static void sprd_thm_clocks_disable(struct sprd_thermal_data *thm)
++{
++	clk_disable_unprepare(thm->clk);
++	clk_disable_unprepare(thm->functional_clk);
++}
++
++static int sprd_thm_hw_start(struct sprd_thermal_data *thm)
++{
++	u32 val;
++	int ret, i;
++
++	ret = readl_poll_timeout(thm->base + SPRD_THM_CTL, val,
++				 !(val & SPRD_THM_SET_RDY_ST),
++				 SPRD_THM_RDYST_POLLING_TIME,
++				 SPRD_THM_RDYST_TIMEOUT);
++	if (ret)
++		return ret;
++	sprd_thm_para_config(thm);
++	/* Only the explicitly configured sensors may remain enabled. */
++	sprd_thm_update_bits(thm->base + SPRD_THM_CTL, GENMASK(9, 2), 0);
++	sprd_thm_update_bits(thm->base + SPRD_THM_INT_EN, GENMASK(7, 0), 0);
++	for (i = 0; i < SPRD_THM_MAX_SENSOR; i++)
++		if (thm->sensor[i])
++			sprd_thm_sensor_init(thm, thm->sensor[i]);
++	ret = sprd_thm_set_ready(thm);
++	return ret ? ret : sprd_thm_wait_temp_ready(thm);
++}
++
++static int sprd_thm_hw_stop(struct sprd_thermal_data *thm)
++{
++	int ret;
++
++	sprd_thm_update_bits(thm->base + SPRD_THM_CTL, GENMASK(9, 2), 0);
++	/* Latch sensor disable before clearing the controller enable. */
++	ret = sprd_thm_poll_ready_status(thm);
++	sprd_thm_update_bits(thm->base + SPRD_THM_CTL, SPRD_THM_EN, 0);
++	return ret;
++}
++
++static void sprd_thm_disable(void *data)
++{
++	struct sprd_thermal_data *thm = data;
++
++	mutex_lock(&thm->lock);
++	thm->ready = false;
++	if (thm->clock_enabled) {
++		if (sprd_thm_hw_stop(thm))
++			dev_warn(thm->dev,
++				 "failed to stop thermal controller\n");
++		sprd_thm_clocks_disable(thm);
++		thm->clock_enabled = false;
++	}
++	mutex_unlock(&thm->lock);
++}
++
+ static int sprd_thm_probe(struct platform_device *pdev)
+ {
+-	struct device_node *np = pdev->dev.of_node;
+-	struct device_node *sen_child;
++	struct device *dev = &pdev->dev;
++	struct device_node *np = dev->of_node, *sen_child;
+ 	struct sprd_thermal_data *thm;
+ 	struct sprd_thermal_sensor *sen;
+-	const struct sprd_thm_variant_data *pdata;
+ 	int ret, i;
+-	u32 val;
+-
+-	pdata = of_device_get_match_data(&pdev->dev);
+-	if (!pdata) {
+-		dev_err(&pdev->dev, "No matching driver data found\n");
+-		return -EINVAL;
+-	}
++	u32 val, id;
+ 
+-	thm = devm_kzalloc(&pdev->dev, sizeof(*thm), GFP_KERNEL);
++	thm = devm_kzalloc(dev, sizeof(*thm), GFP_KERNEL);
+ 	if (!thm)
+ 		return -ENOMEM;
+-
+-	thm->var_data = pdata;
++	thm->var_data = of_device_get_match_data(dev);
++	if (!thm->var_data)
++		return -EINVAL;
++	thm->dev = dev;
++	mutex_init(&thm->lock);
+ 	thm->base = devm_platform_ioremap_resource(pdev, 0);
+ 	if (IS_ERR(thm->base))
+ 		return PTR_ERR(thm->base);
+-
+-	thm->nr_sensors = of_get_child_count(np);
+-	if (thm->nr_sensors == 0 || thm->nr_sensors > SPRD_THM_MAX_SENSOR) {
+-		dev_err(&pdev->dev, "incorrect sensor count\n");
+-		return -EINVAL;
++	thm->clk = devm_clk_get(dev, "enable");
++	if (IS_ERR(thm->clk))
++		return dev_err_probe(dev, PTR_ERR(thm->clk), "enable clock\n");
++	if (of_property_match_string(np, "clock-names", "functional") >= 0) {
++		thm->functional_clk = devm_clk_get(dev, "functional");
++		if (IS_ERR(thm->functional_clk))
++			return dev_err_probe(dev, PTR_ERR(thm->functional_clk),
++					     "functional clock\n");
+ 	}
+-
+-	thm->clk = devm_clk_get_enabled(&pdev->dev, "enable");
+-	if (IS_ERR(thm->clk)) {
+-		dev_err(&pdev->dev, "failed to get enable clock\n");
+-		return PTR_ERR(thm->clk);
+-	}
+-
+-	sprd_thm_para_config(thm);
+-
++	/* Calibrate every sensor before enabling clocks or writing registers. */
+ 	ret = sprd_thm_cal_read(np, "thm_sign_cal", &val);
+ 	if (ret)
+-		return ret;
+-
+-	if (val > 0)
+-		thm->ratio_sign = -1;
+-	else
+-		thm->ratio_sign = 1;
+-
++		return dev_err_probe(dev, ret, "sign calibration\n");
++	if (thm->var_data->strict_calibration && val > 1)
++		return -ERANGE;
++	thm->ratio_sign = val ? -1 : 1;
+ 	ret = sprd_thm_cal_read(np, "thm_ratio_cal", &thm->ratio_off);
+ 	if (ret)
+-		return ret;
+-
+-	for_each_child_of_node(np, sen_child) {
+-		sen = devm_kzalloc(&pdev->dev, sizeof(*sen), GFP_KERNEL);
++		return dev_err_probe(dev, ret, "ratio calibration\n");
++	for_each_available_child_of_node(np, sen_child) {
++		ret = of_property_read_u32(sen_child, "reg", &id);
++		if (ret)
++			goto of_put;
++		if (id >= SPRD_THM_MAX_SENSOR || thm->sensor[id]) {
++			ret = -EINVAL;
++			goto of_put;
++		}
++		sen = devm_kzalloc(dev, sizeof(*sen), GFP_KERNEL);
+ 		if (!sen) {
+ 			ret = -ENOMEM;
+ 			goto of_put;
+ 		}
+-
++		sen->id = id;
+ 		sen->data = thm;
+-		sen->dev = &pdev->dev;
+-
+-		ret = of_property_read_u32(sen_child, "reg", &sen->id);
+-		if (ret) {
+-			dev_err(&pdev->dev, "get sensor reg failed");
+-			goto of_put;
+-		}
+-
++		sen->dev = dev;
+ 		ret = sprd_thm_sensor_calibration(sen_child, thm, sen);
+-		if (ret) {
+-			dev_err(&pdev->dev, "efuse cal analysis failed");
++		if (ret)
+ 			goto of_put;
+-		}
+-
+-		sprd_thm_sensor_init(thm, sen);
+-
+-		sen->tzd = devm_thermal_of_zone_register(sen->dev,
+-							 sen->id,
+-							 sen,
+-							 &sprd_thm_ops);
+-		if (IS_ERR(sen->tzd)) {
+-			dev_err(&pdev->dev, "register thermal zone failed %d\n",
+-				sen->id);
+-			ret = PTR_ERR(sen->tzd);
+-			goto of_put;
+-		}
+-
+-		thm->sensor[sen->id] = sen;
++		thm->sensor[id] = sen;
++		thm->sensor_mask |= BIT(id);
+ 	}
+-	/* sen_child set to NULL at this point */
+-
+-	ret = sprd_thm_set_ready(thm);
++	if (!thm->sensor_mask)
++		return -EINVAL;
++	ret = sprd_thm_clocks_enable(thm);
+ 	if (ret)
+-		goto of_put;
+-
+-	ret = sprd_thm_wait_temp_ready(thm);
++		return ret;
++	thm->clock_enabled = true;
++	ret = devm_add_action_or_reset(dev, sprd_thm_disable, thm);
+ 	if (ret)
+-		goto of_put;
+-
+-	for (i = 0; i < thm->nr_sensors; i++)
+-		sprd_thm_toggle_sensor(thm->sensor[i], true);
+-
++		return ret;
++	ret = sprd_thm_hw_start(thm);
++	if (ret)
++		return dev_err_probe(dev, ret, "controller not ready\n");
++	thm->ready = true;
++	for (i = 0; i < SPRD_THM_MAX_SENSOR; i++) {
++		sen = thm->sensor[i];
++		if (!sen)
++			continue;
++		sen->tzd = devm_thermal_of_zone_register(dev, i, sen,
++							 &sprd_thm_ops);
++		if (IS_ERR(sen->tzd))
++			return dev_err_probe(dev, PTR_ERR(sen->tzd),
++					     "thermal zone %d\n", i);
++		ret = devm_thermal_add_hwmon_sysfs(dev, sen->tzd);
++		if (ret)
++			return dev_err_probe(dev, ret, "hwmon sensor %d\n", i);
++	}
+ 	platform_set_drvdata(pdev, thm);
+ 	return 0;
+-
+ of_put:
+ 	of_node_put(sen_child);
+-	return ret;
++	return dev_err_probe(dev, ret, "invalid sensor or calibration\n");
+ }
+ 
+-#ifdef CONFIG_PM_SLEEP
+-static void sprd_thm_hw_suspend(struct sprd_thermal_data *thm)
+-{
+-	int i;
+-
+-	for (i = 0; i < thm->nr_sensors; i++) {
+-		sprd_thm_update_bits(thm->base + SPRD_THM_CTL,
+-				     SPRD_THM_SEN(thm->sensor[i]->id), 0);
+-	}
+-
+-	sprd_thm_update_bits(thm->base + SPRD_THM_CTL,
+-			     SPRD_THM_EN, 0x0);
+-}
+-
+-static int sprd_thm_suspend(struct device *dev)
++static int __maybe_unused sprd_thm_suspend(struct device *dev)
+ {
+ 	struct sprd_thermal_data *thm = dev_get_drvdata(dev);
+-	int i;
+-
+-	for (i = 0; i < thm->nr_sensors; i++)
+-		sprd_thm_toggle_sensor(thm->sensor[i], false);
+-
+-	sprd_thm_hw_suspend(thm);
+-	clk_disable_unprepare(thm->clk);
+-
+-	return 0;
+-}
+-
+-static int sprd_thm_hw_resume(struct sprd_thermal_data *thm)
+-{
+-	int ret, i;
++	int ret;
+ 
+-	for (i = 0; i < thm->nr_sensors; i++) {
+-		sprd_thm_update_bits(thm->base + SPRD_THM_CTL,
+-				     SPRD_THM_SEN(thm->sensor[i]->id),
+-				     SPRD_THM_SEN(thm->sensor[i]->id));
++	mutex_lock(&thm->lock);
++	thm->ready = false;
++	ret = thm->clock_enabled ? sprd_thm_hw_stop(thm) : 0;
++	if (ret) {
++		if (!sprd_thm_hw_start(thm))
++			thm->ready = true;
++		else
++			dev_warn(dev, "failed to restore thermal controller\n");
++	} else if (thm->clock_enabled) {
++		sprd_thm_clocks_disable(thm);
++		thm->clock_enabled = false;
+ 	}
+-
+-	ret = sprd_thm_poll_ready_status(thm);
+-	if (ret)
+-		return ret;
+-
+-	writel(SPRD_THM_INT_CLR_MASK, thm->base + SPRD_THM_INT_CLR);
+-	sprd_thm_update_bits(thm->base + SPRD_THM_CTL,
+-			     SPRD_THM_EN, SPRD_THM_EN);
+-	return sprd_thm_wait_temp_ready(thm);
++	mutex_unlock(&thm->lock);
++	return ret;
+ }
+ 
+-static int sprd_thm_resume(struct device *dev)
++static int __maybe_unused sprd_thm_resume(struct device *dev)
+ {
+ 	struct sprd_thermal_data *thm = dev_get_drvdata(dev);
+-	int ret, i;
+-
+-	ret = clk_prepare_enable(thm->clk);
+-	if (ret)
+-		return ret;
+-
+-	ret = sprd_thm_hw_resume(thm);
+-	if (ret)
+-		goto disable_clk;
+-
+-	for (i = 0; i < thm->nr_sensors; i++)
+-		sprd_thm_toggle_sensor(thm->sensor[i], true);
+-
+-	return 0;
++	int ret;
+ 
+-disable_clk:
+-	clk_disable_unprepare(thm->clk);
++	mutex_lock(&thm->lock);
++	thm->ready = false;
++	if (!thm->clock_enabled) {
++		ret = sprd_thm_clocks_enable(thm);
++		if (ret)
++			goto out;
++		thm->clock_enabled = true;
++	}
++	ret = sprd_thm_hw_start(thm);
++	if (ret) {
++		sprd_thm_hw_stop(thm);
++		sprd_thm_clocks_disable(thm);
++		thm->clock_enabled = false;
++	} else {
++		thm->ready = true;
++	}
++out:
++	mutex_unlock(&thm->lock);
+ 	return ret;
+ }
+-#endif
+ 
+ static void sprd_thm_remove(struct platform_device *pdev)
+ {
+ 	struct sprd_thermal_data *thm = platform_get_drvdata(pdev);
+ 	int i;
+ 
+-	for (i = 0; i < thm->nr_sensors; i++) {
++	for (i = 0; i < SPRD_THM_MAX_SENSOR; i++) {
++		if (!thm->sensor[i])
++			continue;
+ 		sprd_thm_toggle_sensor(thm->sensor[i], false);
+ 		devm_thermal_of_zone_unregister(&pdev->dev,
+ 						thm->sensor[i]->tzd);
+@@ -524,7 +603,8 @@ static void sprd_thm_remove(struct platform_device *pdev)
+ 
+ static const struct of_device_id sprd_thermal_of_match[] = {
+ 	{ .compatible = "sprd,ums512-thermal", .data = &ums512_data },
+-	{ },
++	{ .compatible = "sprd,orca-thermal", .data = &orca_data },
++	{},
+ };
+ MODULE_DEVICE_TABLE(of, sprd_thermal_of_match);
+ 
+@@ -546,4 +626,4 @@ module_platform_driver(sprd_thermal_driver);
+ 
+ MODULE_AUTHOR("Freeman Liu <freeman.liu@unisoc.com>");
+ MODULE_DESCRIPTION("Spreadtrum thermal driver");
+-MODULE_LICENSE("GPL v2");
++MODULE_LICENSE("GPL");
+diff --git a/include/dt-bindings/clock/sprd,orca-clk.h b/include/dt-bindings/clock/sprd,orca-clk.h
+new file mode 100644
+index 000000000..eb5f9e1d4
+--- /dev/null
++++ b/include/dt-bindings/clock/sprd,orca-clk.h
+@@ -0,0 +1,310 @@
++/* SPDX-License-Identifier: (GPL-2.0-or-later OR MIT) */
++/*
++ *
++ * Spreadtrum ORCA platform clocks
++ *
++ * Copyright (C) 2018, Spreadtrum Communications Inc.
++ */
++
++#ifndef __DT_BINDINGS_CLK_ORCA_H__
++#define __DT_BINDINGS_CLK_ORCA_H__
++
++#define CLK_MPLL0_GATE 0
++#define CLK_MPLL1_GATE 1
++#define CLK_PMU_GATE_NUM (CLK_MPLL1_GATE + 1)
++
++#define CLK_V3RPLL 0
++#define CLK_V3RPLL_195M 1
++#define CLK_V3PLL 2
++#define CLK_TWPLL_768M 3
++#define CLK_TWPLL_384M 4
++#define CLK_TWPLL_192M 5
++#define CLK_TWPLL_96M 6
++#define CLK_TWPLL_48M 7
++#define CLK_TWPLL_24M 8
++#define CLK_TWPLL_12M 9
++#define CLK_TWPLL_512M 10
++#define CLK_TWPLL_256M 11
++#define CLK_TWPLL_128M 12
++#define CLK_TWPLL_64M 13
++#define CLK_TWPLL_307M2 14
++#define CLK_TWPLL_219M4 15
++#define CLK_TWPLL_170M6 16
++#define CLK_TWPLL_153M6 17
++#define CLK_TWPLL_76M8 18
++#define CLK_TWPLL_51M2 19
++#define CLK_TWPLL_38M4 20
++#define CLK_TWPLL_19M2 21
++#define CLK_MPLL0 22
++#define CLK_MPLL1 23
++#define CLK_ANLG_PHY_G3_NUM (CLK_MPLL1 + 1)
++
++#define CLK_CORE0_CLK 0
++#define CLK_CORE1_CLK 1
++#define CLK_SCU_CLK 2
++#define CLK_ACE_CLK 3
++#define CLK_GIC_CLK 4
++#define CLK_PERIPH_CLK 5
++#define CLK_APCPU_CLK_NUM (CLK_PERIPH_CLK + 1)
++
++#define CLK_APAHB_CKG_EB 0
++#define CLK_NANDC_EB 1
++#define CLK_NANDC_ECC_EB 2
++#define CLK_NANDC_26M_EB 3
++#define CLK_DMA_EB 4
++#define CLK_DMA_EB2 5
++#define CLK_USB0_EB 6
++#define CLK_USB0_SUSPEND_EB 7
++#define CLK_USB0_REF_EB 8
++#define CLK_SDIO_MST_EB 9
++#define CLK_SDIO_MST_32K_EB 10
++#define CLK_EMMC_EB 11
++#define CLK_EMMC_32K_EB 12
++#define CLK_AP_AHB_GATE_NUM (CLK_EMMC_32K_EB + 1)
++
++#define CLK_AP_AXI 0
++#define CLK_PERI_APB 1
++#define CLK_NANDC_ECC 2
++#define CLK_USB0_REF 3
++#define CLK_USB1_REF 4
++#define CLK_PCIE_AUX 5
++#define CLK_AP_UART0 6
++#define CLK_AP_I2C0 7
++#define CLK_AP_I2C1 8
++#define CLK_AP_I2C2 9
++#define CLK_AP_I2C3 10
++#define CLK_AP_I2C4 11
++#define CLK_AP_SIM 12
++#define CLK_PWM0 13
++#define CLK_PWM1 14
++#define CLK_PWM2 15
++#define CLK_PWM3 16
++#define CLK_USB0_PIPE 17
++#define CLK_USB0_UTMI 18
++#define CLK_USB1_PIPE 19
++#define CLK_USB1_UTMI 20
++#define CLK_PCIE_PIPE 21
++#define CLK_AP_CLK_NUM (CLK_PCIE_PIPE + 1)
++
++#define CLK_APAPB_REG_EB 0
++#define CLK_AP_UART0_EB 1
++#define CLK_AP_I2C0_EB 2
++#define CLK_AP_I2C1_EB 3
++#define CLK_AP_I2C2_EB 4
++#define CLK_AP_I2C3_EB 5
++#define CLK_AP_I2C4_EB 6
++#define CLK_AP_APB_SPI0_EB 7
++#define CLK_SPI0_LF_IN_EB 8
++#define CLK_AP_APB_SPI1_EB 9
++#define CLK_SPI1_IF_IN_EB 10
++#define CLK_AP_APB_SPI2_EB 11
++#define CLK_SPI2_IF_IN_EB 12
++#define CLK_PWM0_EB 13
++#define CLK_PWM1_EB 14
++#define CLK_PWM2_EB 15
++#define CLK_PWM3_EB 16
++#define CLK_SIM0_EB 17
++#define CLK_SIM0_32K_EB 18
++#define CLK_AP_APB_GATE_NUM (CLK_SIM0_32K_EB + 1)
++
++#define CLK_IPA_USB1_EB 0
++#define CLK_USB1_SUSPEND_EB 1
++#define CLK_IPA_USB1_REF_EB 2
++#define CLK_SDIO_SLV_EB 3
++#define CLK_SD_SLV_FRUN_EB 4
++#define CLK_PCIE_EB 5
++#define CLK_PCIE_AUX_EB 6
++#define CLK_IPA_EB 7
++#define CLK_USB_PAM_EB 8
++#define CLK_PCIE_SEL 9
++#define CLK_IPA_GATE_NUM (CLK_PCIE_SEL + 1)
++
++#define CLK_RC100_CAL_EB 0
++#define CLK_AON_SPI_EB 1
++#define CLK_DJTAG_TCK_EB 2
++#define CLK_DJTAG_EB 3
++#define CLK_AUX0_EB 4
++#define CLK_AUX1_EB 5
++#define CLK_AUX2_EB 6
++#define CLK_PROBE_EB 7
++#define CLK_BSM_TMR_EB 8
++#define CLK_AON_APB_BM_EB 9
++#define CLK_PMU_APB_BM_EB 10
++#define CLK_APCPU_CSSYS_EB 11
++#define CLK_DEBUG_FILTER_EB 12
++#define CLK_APCPU_DAP_EB 13
++#define CLK_CSSYS_EB 14
++#define CLK_CSSYS_APB_EB 15
++#define CLK_CSSYS_PUB_EB 16
++#define CLK_SD0_CFG_EB 17
++#define CLK_SD0_REF_EB 18
++#define CLK_SD1_CFG_EB 19
++#define CLK_SD1_REF_EB 20
++#define CLK_SD2_CFG_EB 21
++#define CLK_SD2_REF_EB 22
++#define CLK_SERDES0_EB 23
++#define CLK_SERDES1_EB 24
++#define CLK_SERDES2_EB 25
++#define CLK_RTM_EB 26
++#define CLK_RTM_ATB_EB 27
++#define CLK_AON_NR_SPI_EB 28
++#define CLK_AON_BM_S5_EB 29
++#define CLK_EFUSE_EB 30
++#define CLK_GPIO_EB 31
++#define CLK_MBOX_EB 32
++#define CLK_KPD_EB 33
++#define CLK_AON_SYST_EB 34
++#define CLK_AP_SYST_EB 35
++#define CLK_AON_TMR_EB 36
++#define CLK_DVFS_TOP_EB 37
++#define CLK_APCPU_CLK_EB 38
++#define CLK_SPLK_EB 39
++#define CLK_PIN_EB 40
++#define CLK_ANA_EB 41
++#define CLK_AON_CKG_EB 42
++#define CLK_DJTAG_CTRL_EB 43
++#define CLK_APCPU_TS0_EB 44
++#define CLK_NIC400_AON_EB 45
++#define CLK_SCC_EB 46
++#define CLK_AP_SPI0_EB 47
++#define CLK_AP_SPI1_EB 48
++#define CLK_AP_SPI2_EB 49
++#define CLK_AON_BM_S3_EB 50
++#define CLK_SC_CC_EB 51
++#define CLK_THM0_EB 52
++#define CLK_THM1_EB 53
++#define CLK_AP_SIM_EB 54
++#define CLK_AON_I2C_EB 55
++#define CLK_PMU_EB 56
++#define CLK_ADI_EB 57
++#define CLK_EIC_EB 58
++#define CLK_AP_INTC0_EB 59
++#define CLK_AP_INTC1_EB 60
++#define CLK_AP_INTC2_EB 61
++#define CLK_AP_INTC3_EB 62
++#define CLK_AP_INTC4_EB 63
++#define CLK_AP_INTC5_EB 64
++#define CLK_AUDCP_INTC_EB 65
++#define CLK_AP_TMR0_EB 66
++#define CLK_AP_TMR1_EB 67
++#define CLK_AP_TMR2_EB 68
++#define CLK_AP_WDG_EB 69
++#define CLK_APCPU_WDG_EB 70
++#define CLK_THM2_EB 71
++#define CLK_ARCH_RTC_EB 72
++#define CLK_KPD_RTC_EB 73
++#define CLK_AON_SYST_RTC_EB 74
++#define CLK_AP_SYST_RTC_EB 75
++#define CLK_AON_TMR_RTC_EB 76
++#define CLK_EIC_RTC_EB 77
++#define CLK_EIC_RTCDV5_EB 78
++#define CLK_AP_WDG_RTC_EB 79
++#define CLK_AC_WDG_RTC_EB 80
++#define CLK_AP_TMR0_RTC_EB 81
++#define CLK_AP_TMR1_RTC_EB 82
++#define CLK_AP_TMR2_RTC_EB 83
++#define CLK_DCXO_LC_RTC_EB 84
++#define CLK_BB_CAL_RTC_EB 85
++#define CLK_DSI0_TEST_EB 86
++#define CLK_DSI1_TEST_EB 87
++#define CLK_DSI2_TEST_EB 88
++#define CLK_DMC_REF_EN 89
++#define CLK_TSEN_EN 90
++#define CLK_TMR_EN 91
++#define CLK_RC100_REF_EN 92
++#define CLK_RC100_FDK_EN 93
++#define CLK_DEBOUNCE_EN 94
++#define CLK_DET_32K_EB 95
++#define CLK_CSSYS_EN 96
++#define CLK_SDIO0_2X_EN 97
++#define CLK_SDIO0_1X_EN 98
++#define CLK_SDIO1_2X_EN 99
++#define CLK_SDIO1_1X_EN 100
++#define CLK_SDIO2_2X_EN 101
++#define CLK_SDIO2_1X_EN 102
++#define CLK_EMMC_1X_EN 103
++#define CLK_EMMC_2X_EN 104
++#define CLK_NANDC_1X_EN 105
++#define CLK_NANDC_2X_EN 106
++#define CLK_ALL_PLL_TEST_EB 107
++#define CLK_AAPC_TEST_EB 108
++#define CLK_DEBUG_TS_EB 109
++#define CLK_U2_0_REF_EN 110
++#define CLK_U2_1_REF_EN 111
++#define CLK_U3_0_REF_EN 112
++#define CLK_U3_0_SUSPEND_EN 113
++#define CLK_U3_1_REF_EN 114
++#define CLK_U3_1_SUSPEND_EN 115
++#define CLK_DSI0_REF_EN 116
++#define CLK_DSI1_REF_EN 117
++#define CLK_DSI2_REF_EN 118
++#define CLK_PCIE_REF_EN 119
++#define CLK_AON_GATE_NUM (CLK_PCIE_REF_EN + 1)
++
++#define CLK_13M 0
++#define CLK_6M5 1
++#define CLK_4M 2
++#define CLK_2M 3
++#define CLK_1M 4
++#define CLK_250K 5
++#define CLK_RCO25M 6
++#define CLK_RCO20M 7
++#define CLK_RCO4M 8
++#define CLK_RCO2M 9
++#define CLK_AON_APB 10
++#define CLK_ADI 11
++#define CLK_AON_UART0 12
++#define CLK_AON_I2C 13
++#define CLK_EFUSE 14
++#define CLK_TMR 15
++#define CLK_THM0 16
++#define CLK_THM1 17
++#define CLK_THM2 18
++#define CLK_PMU 19
++#define CLK_APCPU_PMU 20
++#define CLK_AUX0 21
++#define CLK_AUX1 22
++#define CLK_AUX2 23
++#define CLK_PROBE 24
++#define CLK_APCPU_DAP 25
++#define CLK_APCPU_DAP_MTCK 26
++#define CLK_DEBUG_TS 27
++#define CLK_DSI0_TEST 28
++#define CLK_DSI1_TEST 29
++#define CLK_DSI2_TEST 30
++#define CLK_DJTAG_TCK 31
++#define CLK_DJTAG_TCK_HW 32
++#define CLK_DEBOUNCE 33
++#define CLK_SCC 34
++#define CLK_TOP_DVFS 35
++#define CLK_SDIO2_2X 36
++#define CLK_SDIO2_1X 37
++#define CLK_CSSYS 38
++#define CLK_CSSYS_APB 39
++#define CLK_APCPU_AXI 40
++#define CLK_SDIO1_2X 41
++#define CLK_SDIO1_1X 42
++#define CLK_SDIO0_SLV 43
++#define CLK_EMMC_2X 44
++#define CLK_EMMC_1X 45
++#define CLK_NANDC_2X 46
++#define CLK_NANDC_1X 47
++#define CLK_AP_SPI0 48
++#define CLK_AP_SPI1 49
++#define CLK_AP_SPI2 50
++#define CLK_OTG2A_REF 51
++#define CLK_U3A_SUSPEND_REF 52
++#define CLK_OTG2B_REF 53
++#define CLK_U3B_SUSPEND_REF 54
++#define CLK_ANALOG_IO 55
++#define CLK_DMC_REF 56
++#define CLK_EMC 57
++#define CLK_SC_CC 58
++#define CLK_PMU_26M 59
++#define CLK_AON_CLK_NUM (CLK_PMU_26M + 1)
++
++/* SP-AHB gate provider. */
++#define CLK_SP_UART0_EB 0
++#define CLK_SPAHB_GATE_NUM (CLK_SP_UART0_EB + 1)
++
++#endif

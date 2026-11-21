@@ -1,0 +1,56 @@
+#!/bin/sh
+# Production-only USB internet sharing using standard netifd/dnsmasq/fw4 UCI.
+set -eu
+[ "$(cat /etc/udx-openwrt-root 2>/dev/null)" = 'OpenWrt production root' ] || exit 0
+[ ! -e /etc/udx-recovery-root ] || exit 0
+[ "$(uci -q get network.usbmgmt.proto)" = static ]
+[ "$(uci -q get network.wan.proto)" = udx ]
+[ "$(uci -q get dhcp.usbmgmt.interface)" = usbmgmt ]
+
+wan_zone=
+for section in $(uci -q show firewall | sed -n 's/^firewall\.\([^=]*\)=zone$/\1/p'); do
+	[ "$(uci -q get "firewall.$section.name")" = wan ] || continue
+	[ -z "$wan_zone" ] || { echo 'udx: ambiguous WAN firewall zone' >&2; exit 1; }
+	wan_zone=$section
+done
+[ -n "$wan_zone" ] || { echo 'udx: missing WAN firewall zone' >&2; exit 1; }
+uci set "firewall.$wan_zone.masq=1"
+uci set "firewall.$wan_zone.mtu_fix=1"
+uci set firewall.udx_usb_wan=forwarding
+uci set firewall.udx_usb_wan.src=usbmgmt
+uci set firewall.udx_usb_wan.dest=wan
+
+# Remove only the shared package's empty router/DNS options. Without them,
+# dnsmasq advertises this interface's address for gateway and DNS normally.
+uci -q del_list dhcp.usbmgmt.dhcp_option=3 || :
+uci -q del_list dhcp.usbmgmt.dhcp_option=6 || :
+# Repair an inherited Recovery DNS-off policy, if one exists. Fresh production
+# already has the stock DNS service and resolv.conf.auto configuration.
+if [ "$(uci -q get 'dhcp.@dnsmasq[0].port' || true)" = 0 ]; then
+	uci set 'dhcp.@dnsmasq[0].port=53'
+	uci set 'dhcp.@dnsmasq[0].noresolv=0'
+fi
+# Extend the cellular /64 to USB using odhcp6c's RFC 7278 support.
+# SIPA is a routed, NOARP link; it does not solicit LAN neighbors.
+uci set network.wan6=interface
+uci set network.wan6.proto=dhcpv6
+uci set network.wan6.device=@wan
+uci set network.wan6.reqaddress=none
+uci set network.wan6.reqprefix=no
+uci set network.wan6.extendprefix=1
+uci set network.wan6.sourcefilter=0
+uci set network.usbmgmt.ip6assign=64
+uci -q del_list "firewall.$wan_zone.network=wan6" || :
+uci add_list "firewall.$wan_zone.network=wan6"
+uci -q delete dhcp.wan.master || :
+uci set dhcp.wan.ra=disabled
+uci set dhcp.wan.dhcpv6=disabled
+uci set dhcp.wan.ndp=disabled
+uci set dhcp.usbmgmt.ra=server
+uci set dhcp.usbmgmt.dhcpv6=server
+uci set dhcp.usbmgmt.ndp=disabled
+uci set dhcp.usbmgmt.ra_slaac=1
+uci commit network
+uci commit firewall
+uci commit dhcp
+exit 0

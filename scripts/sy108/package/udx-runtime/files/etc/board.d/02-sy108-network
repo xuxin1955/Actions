@@ -1,0 +1,8 @@
+#!/bin/sh
+# Dedicated USB/cellular defaults create the interfaces after config_generate.
+# An explicit empty network prevents the generic eth0 LAN fallback.
+. /lib/functions/uci-defaults.sh
+board_config_update
+json_select_object network
+json_select ..
+board_config_flush

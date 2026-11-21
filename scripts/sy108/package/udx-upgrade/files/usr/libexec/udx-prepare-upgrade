@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+case "$(cat /etc/udx-openwrt-root /etc/udx-recovery-root 2>/dev/null)" in
+	'OpenWrt production root')
+		/usr/libexec/udx-verify-root running >/dev/null
+		/usr/sbin/udx-system-quiesce
+		# The standard sysupgrade stop pass includes exited registrations' timeout.
+		# These services have completed their cooperative shutdown above.
+		for service in udx-cellular udx-cpnv; do
+			ubus call service delete "{\"name\":\"$service\"}" >/dev/null
+		done
+		;;
+	'OpenWrt Recovery RAM root') ;;
+	*) exit 64;;
+esac
+/usr/libexec/udx-boot-state pending
+# Retain the existing PMIC upgrade window and its automatic Recovery fallback.
+/usr/sbin/udx-runtime --prepare-upgrade
+ubus call service delete '{"name":"udx-runtime"}' >/dev/null

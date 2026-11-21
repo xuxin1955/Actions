@@ -1,0 +1,79 @@
+#!/bin/sh
+# Run OpenWrt's own backup generator against the installed main system.
+set -e
+mode=${1:-}; shift
+case "$mode:$#" in backup:4|restore:1) ;; *) exit 64;; esac
+[ -f /etc/udx-recovery-root ] || exit 64
+. /lib/functions.sh
+. /lib/upgrade/nand.sh
+. /lib/upgrade/platform.sh
+destination=$1
+directory=$(mktemp -d /tmp/sy108-main-backup.XXXXXX)
+mounts=''
+created_block=''
+cleanup() {
+	local result=$? path failed=0
+	trap - EXIT
+	for path in $mounts; do umount "$path" || failed=1; done
+	# Never traverse a mounted main-system view during temporary-file cleanup.
+	# This also covers interruption between a successful mount and bookkeeping.
+	if awk -v prefix="$directory/" 'index($2,prefix)==1 {found=1} END {exit !found}' /proc/mounts; then
+		echo "Main-system view is still mounted at $directory; leaving it intact" >&2
+		exit 1
+	fi
+	[ -z "$created_block" ] || ubiblock -r "$created_block" || failed=1
+	rm -rf "$directory"
+	[ "$failed" = 0 ] || result=1
+	exit "$result"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+root=$(sy108_volume rootfs)
+data=$(sy108_volume rootfs_data)
+if [ ! -e "/sys/class/block/ubiblock${root#ubi}" ]; then
+	ubiblock -c "/dev/$root"
+	created_block=/dev/$root
+fi
+mkdir "$directory/rom" "$directory/data" "$directory/root" "$directory/tmp"
+# rc.common checks service enablement through procd, which uses /var/lock.
+# /var points into this private RAM /tmp; these are normal boot directories.
+mkdir "$directory/tmp/lock" "$directory/tmp/run"
+mount -t squashfs -o ro "/dev/ubiblock${root#ubi}" "$directory/rom"
+mounts="$directory/rom $mounts"
+option=ro
+[ "$mode" != restore ] || option=rw
+mount -t ubifs -o "$option" "/dev/$data" "$directory/data"
+mounts="$directory/data $mounts"
+[ -d "$directory/data/upper/etc" ]
+# Overlayfs handles upper whiteouts and opaque directories as a lower layer.
+if [ "$mode" = backup ]; then
+ mount -t overlay -o "ro,lowerdir=$directory/data/upper:$directory/rom" overlay "$directory/root"
+else
+ mount -t overlay -o "lowerdir=$directory/rom,upperdir=$directory/data/upper,workdir=$directory/data/work" overlay "$directory/root"
+fi
+mounts="$directory/root $mounts"
+for pair in "rom:$directory/rom" "overlay:$directory/data" "tmp:$directory/tmp" "proc:/proc" "dev:/dev" "sys:/sys"; do
+	name=${pair%%:*}; source=${pair#*:}
+	mount -o bind "$source" "$directory/root/$name"
+	mounts="$directory/root/$name $mounts"
+done
+[ "$(cat "$directory/root/etc/udx-openwrt-root")" = 'OpenWrt production root' ]
+if [ "$mode" = restore ]; then
+ cp "$destination" "$directory/tmp/config.tar.gz"
+ chroot "$directory/root" /sbin/sysupgrade -r /tmp/config.tar.gz
+ sync
+ exit 0
+fi
+set -- "$2" "$3" "$4"
+options=''
+[ "$1" = 0 ] || options="$options -u"
+[ "$2" = 0 ] || options="$options -k"
+case "$3" in '') ;; /etc) options="$options -c";; /) options="$options -o";; *) exit 64;; esac
+# Only fixed switches are expanded; the archive path is fixed inside RAM.
+chroot "$directory/root" /sbin/sysupgrade $options -b /tmp/config.tar.gz
+[ -s "$directory/tmp/config.tar.gz" ]
+if [ "$destination" = - ]; then
+	cat "$directory/tmp/config.tar.gz"
+else
+	cp "$directory/tmp/config.tar.gz" "$destination"
+fi

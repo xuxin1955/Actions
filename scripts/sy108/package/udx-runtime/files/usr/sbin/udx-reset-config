@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+[ "$#" = 1 ] && [ "$1" = --execute ] || exit 64
+[ "$(cat /etc/udx-openwrt-root 2>/dev/null)" = 'OpenWrt production root' ] || exit 64
+/usr/libexec/udx-verify-root running >/dev/null
+/usr/sbin/udx-system-quiesce
+# Preserve the existing device SSH identity through fstools' standard archive.
+directory=$(mktemp -d /tmp/sy108-reset.XXXXXX)
+reset_started=0
+cleanup() {
+	local result=$?
+	trap - EXIT
+	rm -rf "$directory"
+	if [ "$result" -ne 0 ] && [ "$reset_started" = 1 ]; then
+		/usr/sbin/udx-runtime --reboot recovery || /usr/sbin/udx-runtime --stop || true
+	fi
+	exit "$result"
+}
+trap cleanup EXIT
+: > "$directory/files"
+for item in /etc/dropbear/dropbear_*_host_key /etc/dropbear/authorized_keys /root/.ssh/authorized_keys; do
+	[ -f "$item" ] && [ ! -L "$item" ] || continue
+	printf '%s\n' "${item#/}" >> "$directory/files"
+done
+tar -czf "$directory/config.tar.gz" -C / -T "$directory/files"
+reset_started=1
+/sbin/factoryreset -y
+cp "$directory/config.tar.gz" /overlay/sysupgrade.tgz
+sync
+/usr/sbin/udx-runtime --reboot openwrt

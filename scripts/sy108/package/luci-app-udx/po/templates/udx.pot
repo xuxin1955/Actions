@@ -1,0 +1,718 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "4G LTE only"
+msgstr ""
+
+msgid "5G / 4G / 3G / 2G automatic"
+msgstr ""
+
+msgid "5G / 4G automatic (SA + NSA)"
+msgstr ""
+
+msgid "5G NSA"
+msgstr ""
+
+msgid "5G SA only"
+msgstr ""
+
+msgid "A previous send result needs checking"
+msgstr ""
+
+msgid "ACM console"
+msgstr ""
+
+msgid "AMBR downlink"
+msgstr ""
+
+msgid "AMBR uplink"
+msgstr ""
+
+msgid "APN mode"
+msgstr ""
+
+msgid "APN settings"
+msgstr ""
+
+msgid "AT command"
+msgstr ""
+
+msgid "AT terminal"
+msgstr ""
+
+msgid "AT terminal and IMEI"
+msgstr ""
+
+msgid "Action"
+msgstr ""
+
+msgid "Active SIM"
+msgstr ""
+
+msgid "Airplane mode"
+msgstr ""
+
+msgid "Applied bands"
+msgstr ""
+
+msgid "Apply"
+msgstr ""
+
+msgid "Apply APN"
+msgstr ""
+
+msgid "Apply USB configuration"
+msgstr ""
+
+msgid "Apply bands"
+msgstr ""
+
+msgid "Apply network settings"
+msgstr ""
+
+msgid "Apply result"
+msgstr ""
+
+msgid "Apply settings"
+msgstr ""
+
+msgid "Authenticated ACM console"
+msgstr ""
+
+msgid "Authentication"
+msgstr ""
+
+msgid "Automatic"
+msgstr ""
+
+msgid "Automatic operator selection"
+msgstr ""
+
+msgid "Available"
+msgstr ""
+
+msgid "Available memory"
+msgstr ""
+
+msgid "Band"
+msgstr ""
+
+msgid "Band locking"
+msgstr ""
+
+msgid "Bands, cells and APN"
+msgstr ""
+
+msgid "Bandwidth"
+msgstr ""
+
+msgid "Board and system"
+msgstr ""
+
+msgid "Board information"
+msgstr ""
+
+msgid "Board name"
+msgstr ""
+
+msgid "Boot and storage"
+msgstr ""
+
+msgid "Boot information"
+msgstr ""
+
+msgid "Boot policy"
+msgstr ""
+
+msgid "Buffered"
+msgstr ""
+
+msgid "CP/NV error"
+msgstr ""
+
+msgid "CPU clocks"
+msgstr ""
+
+msgid "CPU governor"
+msgstr ""
+
+msgid "CPU maximum frequency"
+msgstr ""
+
+msgid "CPU minimum frequency"
+msgstr ""
+
+msgid "CPU policy"
+msgstr ""
+
+msgid "Cell locks"
+msgstr ""
+
+msgid "Cellular settings"
+msgstr ""
+
+msgid "Changing USB mode restarts the device. Changing ACM reconnects USB."
+msgstr ""
+
+msgid "Check send result"
+msgstr ""
+
+msgid "Check the previous send result before starting another message"
+msgstr ""
+
+msgid "China Broadnet"
+msgstr ""
+
+msgid "China Mobile"
+msgstr ""
+
+msgid "China Telecom"
+msgstr ""
+
+msgid "China Unicom"
+msgstr ""
+
+msgid "Clear folder"
+msgstr ""
+
+msgid "Completed"
+msgstr ""
+
+msgid "Connected"
+msgstr ""
+
+msgid "Connecting"
+msgstr ""
+
+msgid "Connection"
+msgstr ""
+
+msgid "Core service"
+msgstr ""
+
+msgid "Current"
+msgstr ""
+
+msgid "Current frequency"
+msgstr ""
+
+msgid "Current network"
+msgstr ""
+
+msgid "DDR clocks"
+msgstr ""
+
+msgid "Data connection"
+msgstr ""
+
+msgid "Data roaming"
+msgstr ""
+
+msgid "Data size"
+msgstr ""
+
+msgid "Delete selected"
+msgstr ""
+
+msgid "Delete template"
+msgstr ""
+
+msgid "Deletion incomplete"
+msgstr ""
+
+msgid "Device"
+msgstr ""
+
+msgid "Device MAC"
+msgstr ""
+
+msgid "Direct reception"
+msgstr ""
+
+msgid "Disconnected"
+msgstr ""
+
+msgid "Enter a 15-digit IMEI"
+msgstr ""
+
+msgid "Execute AT command"
+msgstr ""
+
+msgid "Execute quick command"
+msgstr ""
+
+msgid "Filesystem"
+msgstr ""
+
+msgid "Filesystems"
+msgstr ""
+
+msgid "Firmware version"
+msgstr ""
+
+msgid "Forbidden"
+msgstr ""
+
+msgid "Free"
+msgstr ""
+
+msgid "GBR downlink"
+msgstr ""
+
+msgid "GBR uplink"
+msgstr ""
+
+msgid "Governor"
+msgstr ""
+
+msgid "Hardware acceleration"
+msgstr ""
+
+msgid "Hardware and platform"
+msgstr ""
+
+msgid "Host MAC"
+msgstr ""
+
+msgid "Hostname"
+msgstr ""
+
+msgid "IMEI"
+msgstr ""
+
+msgid "IMEI Luhn check failed"
+msgstr ""
+
+msgid "IMEI index"
+msgstr ""
+
+msgid "Identity"
+msgstr ""
+
+msgid "Inbox"
+msgstr ""
+
+msgid "Inbox limit"
+msgstr ""
+
+msgid "Kernel"
+msgstr ""
+
+msgid "LTE bands"
+msgstr ""
+
+msgid "Last error"
+msgstr ""
+
+msgid "Leave empty for all bands."
+msgstr ""
+
+msgid "Load average"
+msgstr ""
+
+msgid "Lock cell"
+msgstr ""
+
+msgid "MBR downlink"
+msgstr ""
+
+msgid "MBR uplink"
+msgstr ""
+
+msgid "Manual"
+msgstr ""
+
+msgid "Maximum frequency"
+msgstr ""
+
+msgid "Memory"
+msgstr ""
+
+msgid "Message"
+msgstr ""
+
+msgid "Minimum frequency"
+msgstr ""
+
+msgid "Minimum frequency must not exceed maximum frequency."
+msgstr ""
+
+msgid "Mobile data"
+msgstr ""
+
+msgid "Mode"
+msgstr ""
+
+msgid "Model"
+msgstr ""
+
+msgid "Modem reset is not supported in this version."
+msgstr ""
+
+msgid "Modem service"
+msgstr ""
+
+msgid "Modem storage"
+msgstr ""
+
+msgid "Mount point"
+msgstr ""
+
+msgid "NCM hardware acceleration"
+msgstr ""
+
+msgid "NCM software mode"
+msgstr ""
+
+msgid "NR bands"
+msgstr ""
+
+msgid "Neighbor"
+msgstr ""
+
+msgid "Network control"
+msgstr ""
+
+msgid "Network mode"
+msgstr ""
+
+msgid "New template name"
+msgstr ""
+
+msgid "No"
+msgstr ""
+
+msgid "No messages selected"
+msgstr ""
+
+msgid "No pending message"
+msgstr ""
+
+msgid "None"
+msgstr ""
+
+msgid "Number"
+msgstr ""
+
+msgid "Off"
+msgstr ""
+
+msgid "On"
+msgstr ""
+
+msgid "Open network management"
+msgstr ""
+
+msgid "Operation failed"
+msgstr ""
+
+msgid "Operation timed out; it was not submitted again"
+msgstr ""
+
+msgid "Operator"
+msgstr ""
+
+msgid "Operators"
+msgstr ""
+
+msgid "Overview and network control"
+msgstr ""
+
+msgid "PDP type"
+msgstr ""
+
+msgid "Page cache"
+msgstr ""
+
+msgid "Password"
+msgstr ""
+
+msgid "Platform services"
+msgstr ""
+
+msgid "Quick command"
+msgstr ""
+
+msgid "Radio"
+msgstr ""
+
+msgid "Read"
+msgstr ""
+
+msgid "Read IMEI"
+msgstr ""
+
+msgid "Read SIM operator APNs"
+msgstr ""
+
+msgid "Read band and cell locks"
+msgstr ""
+
+msgid "Read messages"
+msgstr ""
+
+msgid "Read only"
+msgstr ""
+
+msgid "Readback"
+msgstr ""
+
+msgid "Recipient number"
+msgstr ""
+
+msgid "Refresh"
+msgstr ""
+
+msgid "Refresh cells"
+msgstr ""
+
+msgid "Refresh network information"
+msgstr ""
+
+msgid "Register"
+msgstr ""
+
+msgid "Register manually"
+msgstr ""
+
+msgid "Reserved eraseblocks"
+msgstr ""
+
+msgid "Response"
+msgstr ""
+
+msgid "Restart modem"
+msgstr ""
+
+msgid "Root filesystem"
+msgstr ""
+
+msgid "Root marker"
+msgstr ""
+
+msgid "Running system"
+msgstr ""
+
+msgid "Runtime error"
+msgstr ""
+
+msgid "SIM slot"
+msgstr ""
+
+msgid "SIM status"
+msgstr ""
+
+msgid "SMS management"
+msgstr ""
+
+msgid "SY108"
+msgstr ""
+
+msgid "Save as template"
+msgstr ""
+
+msgid "Saved template"
+msgstr ""
+
+msgid "Scan operators"
+msgstr ""
+
+msgid "Searching for network"
+msgstr ""
+
+msgid "Select"
+msgstr ""
+
+msgid "Select a template"
+msgstr ""
+
+msgid "Select message"
+msgstr ""
+
+msgid "Send"
+msgstr ""
+
+msgid "Send message"
+msgstr ""
+
+msgid "Send result unavailable"
+msgstr ""
+
+msgid "Sending"
+msgstr ""
+
+msgid "Sensor"
+msgstr ""
+
+msgid "Sensors and clocks"
+msgstr ""
+
+msgid "Sent"
+msgstr ""
+
+msgid "Sent limit"
+msgstr ""
+
+msgid "Serial number"
+msgstr ""
+
+msgid "Serving"
+msgstr ""
+
+msgid "Serving and neighboring cells"
+msgstr ""
+
+msgid "Set the same minimum and maximum for a fixed CPU frequency."
+msgstr ""
+
+msgid "Settings"
+msgstr ""
+
+msgid "Settings are saved and restored at startup."
+msgstr ""
+
+msgid "Some messages were not deleted"
+msgstr ""
+
+msgid "Speed"
+msgstr ""
+
+msgid "Start another message"
+msgstr ""
+
+msgid "Status"
+msgstr ""
+
+msgid "Status uncertain"
+msgstr ""
+
+msgid "Submitted to modem"
+msgstr ""
+
+msgid "Swap free"
+msgstr ""
+
+msgid "Swap total"
+msgstr ""
+
+msgid "System"
+msgstr ""
+
+msgid "Target"
+msgstr ""
+
+msgid "Technology"
+msgstr ""
+
+msgid "Temperature"
+msgstr ""
+
+msgid "Temperatures"
+msgstr ""
+
+msgid "The modem supplies the IP configuration. Manage the APN and radio settings in UDX710; netifd manages this network interface."
+msgstr ""
+
+msgid "Time"
+msgstr ""
+
+msgid "Timeout"
+msgstr ""
+
+msgid "Total"
+msgstr ""
+
+msgid "Type"
+msgstr ""
+
+msgid "UBI volumes"
+msgstr ""
+
+msgid "UDX710 cellular"
+msgstr ""
+
+msgid "USB configuration"
+msgstr ""
+
+msgid "USB configuration failed"
+msgstr ""
+
+msgid "USB mode"
+msgstr ""
+
+msgid "USB reconnection timed out"
+msgstr ""
+
+msgid "USB status"
+msgstr ""
+
+msgid "Unchanged"
+msgstr ""
+
+msgid "Unknown"
+msgstr ""
+
+msgid "Unlock"
+msgstr ""
+
+msgid "Unlock all bands"
+msgstr ""
+
+msgid "Unlock all cells"
+msgstr ""
+
+msgid "Unlocked"
+msgstr ""
+
+msgid "Unread"
+msgstr ""
+
+msgid "Unrestricted"
+msgstr ""
+
+msgid "Uptime"
+msgstr ""
+
+msgid "Use APN"
+msgstr ""
+
+msgid "Use gateway metric"
+msgstr ""
+
+msgid "Use template"
+msgstr ""
+
+msgid "Username"
+msgstr ""
+
+msgid "Volume"
+msgstr ""
+
+msgid "Waiting for"
+msgstr ""
+
+msgid "Waiting for SIM"
+msgstr ""
+
+msgid "Waiting for packet attachment"
+msgstr ""
+
+msgid "Waiting for radio"
+msgstr ""
+
+msgid "Write IMEI"
+msgstr ""
+
+msgid "Yes"
+msgstr ""
+
+
+msgid "Available frequencies"
+msgstr ""
+
+msgid "DDR is managed automatically by firmware. Monitoring only."
+msgstr ""
+
+msgid "Apply CPU frequency settings"
+msgstr ""

@@ -1,0 +1,5565 @@
+From 27e904228d28141aff4a4f0d17cdd768e619f641 Mon Sep 17 00:00:00 2001
+From: jason-liu-4980 <38558962+jason-liu-4980@users.noreply.github.com>
+Date: Sun, 18 Oct 2026 21:30:56 +0800
+Subject: [PATCH 5/7] usb: support Orca controllers and PAM offload
+
+Integrate Orca DWC3, PHY and reset handling with PAM USB offload. Add the SIPA-backed NCM/RNDIS paths and virtual serial gadget function, including their configuration and shared interfaces. Describe fixed host/peripheral roles in the bindings; board activation is separate.
+---
+ .../bindings/phy/sprd,orca-usb-phy.yaml       |   56 +
+ .../bindings/reset/sprd,orca-usb-reset.yaml   |   24 +
+ .../bindings/usb/sprd,orca-dwc3.yaml          |   42 +
+ drivers/phy/Kconfig                           |    2 +
+ drivers/phy/Makefile                          |    2 +
+ drivers/phy/sprd/Kconfig                      |   10 +
+ drivers/phy/sprd/Makefile                     |    2 +
+ drivers/phy/sprd/phy-sprd-orca-usb-regs.h     |   67 +
+ drivers/phy/sprd/phy-sprd-orca-usb.c          |  558 +++++++++
+ drivers/reset/Kconfig                         |    7 +
+ drivers/reset/Makefile                        |    2 +
+ drivers/reset/reset-sprd-orca-usb.c           |   89 ++
+ drivers/usb/dwc3/core.c                       |  157 ++-
+ drivers/usb/dwc3/core.h                       |    7 +
+ drivers/usb/dwc3/dwc3-of-simple.c             |  173 ++-
+ drivers/usb/dwc3/gadget.c                     |  221 +++-
+ drivers/usb/dwc3/gadget.h                     |    7 +
+ drivers/usb/gadget/Kconfig                    |   10 +
+ drivers/usb/gadget/composite.c                |   58 +
+ drivers/usb/gadget/function/Makefile          |    2 +
+ drivers/usb/gadget/function/f_ncm.c           |  387 +++++-
+ drivers/usb/gadget/function/f_rndis.c         |  393 +++++-
+ drivers/usb/gadget/function/f_vserial.c       |  668 ++++++++++
+ drivers/usb/gadget/function/rndis.c           |   28 +-
+ drivers/usb/gadget/function/rndis.h           |    3 +
+ drivers/usb/gadget/function/u_ether.c         |  221 +++-
+ drivers/usb/gadget/function/u_ether.h         |    6 +
+ drivers/usb/gadget/function/u_ncm.h           |    1 +
+ drivers/usb/gadget/function/u_rndis.h         |    1 +
+ drivers/usb/misc/Kconfig                      |   14 +
+ drivers/usb/misc/Makefile                     |    2 +
+ drivers/usb/misc/sprd-pamu3.c                 | 1091 +++++++++++++++++
+ drivers/usb/misc/sprd-pamu3.h                 |  244 ++++
+ include/linux/usb/composite.h                 |   11 +
+ include/linux/usb/sprd-pamu3.h                |   59 +
+ 35 files changed, 4578 insertions(+), 47 deletions(-)
+ create mode 100644 Documentation/devicetree/bindings/phy/sprd,orca-usb-phy.yaml
+ create mode 100644 Documentation/devicetree/bindings/reset/sprd,orca-usb-reset.yaml
+ create mode 100644 Documentation/devicetree/bindings/usb/sprd,orca-dwc3.yaml
+ create mode 100644 drivers/phy/sprd/Kconfig
+ create mode 100644 drivers/phy/sprd/Makefile
+ create mode 100644 drivers/phy/sprd/phy-sprd-orca-usb-regs.h
+ create mode 100644 drivers/phy/sprd/phy-sprd-orca-usb.c
+ create mode 100644 drivers/reset/reset-sprd-orca-usb.c
+ create mode 100644 drivers/usb/gadget/function/f_vserial.c
+ create mode 100644 drivers/usb/misc/sprd-pamu3.c
+ create mode 100644 drivers/usb/misc/sprd-pamu3.h
+ create mode 100644 include/linux/usb/sprd-pamu3.h
+
+diff --git a/Documentation/devicetree/bindings/phy/sprd,orca-usb-phy.yaml b/Documentation/devicetree/bindings/phy/sprd,orca-usb-phy.yaml
+new file mode 100644
+index 000000000..fbe8eb65d
+--- /dev/null
++++ b/Documentation/devicetree/bindings/phy/sprd,orca-usb-phy.yaml
+@@ -0,0 +1,56 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/phy/sprd,orca-usb-phy.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++title: Spreadtrum Orca USB2 and USB3 analog PHY
++maintainers:
++  - Jiayong Yang <jiayong.yang@unisoc.com>
++description: |
++  Each instance contains both USB2 and USB3 functions. The same zero-cell
++  phandle is supplied for both DWC3 PHY inputs. USB0 has its own reset, while
++  USB1 shares a reset group with PAM. The driver holds shared analog settings
++  while either port is active and applies the fixed host/peripheral role to
++  each port separately. vdd-supply describes the PHY analog rail.
++properties:
++  compatible:
++    enum: ['sprd,orca1-ssphy0', 'sprd,orca1-ssphy1']
++  reg:
++    maxItems: 1
++  reg-names:
++    const: ssphy_glb_regs
++  '#phy-cells':
++    const: 0
++  resets:
++    maxItems: 1
++  vdd-supply: true
++  sprd,vdd-voltage:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    minimum: 1200000
++    maximum: 3750000
++  sprd,syscon-anag4:
++    $ref: /schemas/types.yaml#/definitions/phandle
++  sprd,syscon-aon-apb:
++    $ref: /schemas/types.yaml#/definitions/phandle
++  sprd,syscon-ap-ahb:
++    $ref: /schemas/types.yaml#/definitions/phandle
++  sprd,syscon-ipa-ahb:
++    $ref: /schemas/types.yaml#/definitions/phandle
++required:
++  - compatible
++  - '#phy-cells'
++  - resets
++  - vdd-supply
++  - sprd,vdd-voltage
++  - sprd,syscon-anag4
++  - sprd,syscon-aon-apb
++allOf:
++  - if:
++      properties:
++        compatible:
++          const: sprd,orca1-ssphy0
++    then:
++      required: ['sprd,syscon-ap-ahb']
++    else:
++      required: ['sprd,syscon-ipa-ahb']
++additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/reset/sprd,orca-usb-reset.yaml b/Documentation/devicetree/bindings/reset/sprd,orca-usb-reset.yaml
+new file mode 100644
+index 000000000..fc5044a5a
+--- /dev/null
++++ b/Documentation/devicetree/bindings/reset/sprd,orca-usb-reset.yaml
+@@ -0,0 +1,24 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/reset/sprd,orca-usb-reset.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++title: Spreadtrum Orca USB and PAM reset controller
++maintainers:
++  - Jiayong Yang <jiayong.yang@unisoc.com>
++description: |
++  Group 0 is USB0 AP AHB bit 1. Group 1 combines USB1 and PAM IPA AHB bits 0
++  and 5 for PHY/controller startup. Reset 2 pulses only PAM bit 5 for
++  accelerator reinitialization. PAM holds a controller runtime-PM reference
++  and quiesces its DMA before using reset 2.
++properties:
++  compatible:
++    const: sprd,orca-usb-reset
++  '#reset-cells':
++    const: 1
++  sprd,ap-ahb:
++    $ref: /schemas/types.yaml#/definitions/phandle
++  sprd,ipa-ahb:
++    $ref: /schemas/types.yaml#/definitions/phandle
++required: [compatible, '#reset-cells', 'sprd,ap-ahb', 'sprd,ipa-ahb']
++additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/usb/sprd,orca-dwc3.yaml b/Documentation/devicetree/bindings/usb/sprd,orca-dwc3.yaml
+new file mode 100644
+index 000000000..d5190a9b6
+--- /dev/null
++++ b/Documentation/devicetree/bindings/usb/sprd,orca-dwc3.yaml
+@@ -0,0 +1,42 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/usb/sprd,orca-dwc3.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++title: Spreadtrum Orca DesignWare USB3 fixed-role glue
++maintainers:
++  - Jiayong Yang <jiayong.yang@unisoc.com>
++description: |
++  The parent initializes the PHY and performs the shared reset before creating
++  its DWC3 child. The child selects a fixed host or peripheral role.
++properties:
++  compatible:
++    const: sprd,orca-dwc3
++  reg:
++    maxItems: 1
++  '#address-cells':
++    const: 2
++  '#size-cells':
++    const: 2
++  ranges: true
++  clocks:
++    minItems: 3
++    maxItems: 3
++  clock-names:
++    items:
++      - const: core_clk
++      - const: ref_clk
++      - const: susp_clk
++  phys:
++    maxItems: 1
++  phy-names:
++    const: usb
++patternProperties:
++  '^dwc3@[0-9a-f]+$':
++    $ref: snps,dwc3.yaml#
++    properties:
++      dr_mode:
++        enum: [host, peripheral]
++    required: [dr_mode]
++required: [compatible, clocks, clock-names, phys, phy-names, ranges]
++additionalProperties: false
+diff --git a/drivers/phy/Kconfig b/drivers/phy/Kconfig
+index 19f3b7d12..02d4881fc 100644
+--- a/drivers/phy/Kconfig
++++ b/drivers/phy/Kconfig
+@@ -203,4 +203,6 @@ source "drivers/phy/tegra/Kconfig"
+ source "drivers/phy/ti/Kconfig"
+ source "drivers/phy/xilinx/Kconfig"
+ 
++source "drivers/phy/sprd/Kconfig"
++
+ endmenu
+diff --git a/drivers/phy/Makefile b/drivers/phy/Makefile
+index d7aa516bc..61ce39fa3 100644
+--- a/drivers/phy/Makefile
++++ b/drivers/phy/Makefile
+@@ -54,3 +54,5 @@ obj-$(CONFIG_GENERIC_PHY)		+= allwinner/	\
+ 					   tegra/	\
+ 					   ti/		\
+ 					   xilinx/
++
++obj-y += sprd/
+diff --git a/drivers/phy/sprd/Kconfig b/drivers/phy/sprd/Kconfig
+new file mode 100644
+index 000000000..4a62db9ff
+--- /dev/null
++++ b/drivers/phy/sprd/Kconfig
+@@ -0,0 +1,10 @@
++# SPDX-License-Identifier: GPL-2.0-only
++config PHY_SPRD_ORCA_USB
++	bool "Spreadtrum Orca USB PHY"
++	depends on OF && (ARCH_SPRD || COMPILE_TEST)
++	depends on REGULATOR && RESET_CONTROLLER
++	select GENERIC_PHY
++	select MFD_SYSCON
++	help
++	  Enable the USB2/USB3 analog PHY driver for Spreadtrum Orca (UDX710)
++	  USB0 and USB1 controllers.
+diff --git a/drivers/phy/sprd/Makefile b/drivers/phy/sprd/Makefile
+new file mode 100644
+index 000000000..68dceb06e
+--- /dev/null
++++ b/drivers/phy/sprd/Makefile
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: GPL-2.0-only
++obj-$(CONFIG_PHY_SPRD_ORCA_USB) += phy-sprd-orca-usb.o
+diff --git a/drivers/phy/sprd/phy-sprd-orca-usb-regs.h b/drivers/phy/sprd/phy-sprd-orca-usb-regs.h
+new file mode 100644
+index 000000000..276bec115
+--- /dev/null
++++ b/drivers/phy/sprd/phy-sprd-orca-usb-regs.h
+@@ -0,0 +1,67 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Exact subset of Spreadtrum Orca register definitions, Copyright 2018. */
++#ifndef _SPRD_ORCA_USB_REGS_H
++#define _SPRD_ORCA_USB_REGS_H
++
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_DATABUS16_8 0x10000000
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_DMPULLDOWN 0x8
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_DPPULLDOWN 0x10
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_ISO_SW_EN 0x1
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_PS_PD_L 0x8
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_PS_PD_S 0x10
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_RESERVED 0xffff
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_TFREGRES 0x1f800000
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_TUNEHSAMP 0x60000000
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_VBUSVLDEXT 0x10000
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_DATABUS16_8 0x10000000
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_DMPULLDOWN 0x8
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_DPPULLDOWN 0x10
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_ISO_SW_EN 0x1
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_PS_PD_L 0x8
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_PS_PD_S 0x10
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_RESERVED 0xffff
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_TFREGRES 0x1f800000
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_TUNEHSAMP 0x60000000
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_VBUSVLDEXT 0x10000
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_0_USB30_ISO_SW_EN 0x2
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_0_USB30_PS_PD_L 0x4
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_0_USB30_PS_PD_S 0x8
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_1_USB30_ISO_SW_EN 0x2
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_1_USB30_PS_PD_L 0x4
++#define MASK_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_1_USB30_PS_PD_S 0x8
++#define MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_0_USB20_DMPULLDOWN 0x2
++#define MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_0_USB20_DPPULLDOWN 0x4
++#define MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_1_USB20_DMPULLDOWN 0x2
++#define MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_1_USB20_DPPULLDOWN 0x4
++#define MASK_AON_APB_RF_OTG_VBUS_VALID_PHYREG 0x1000000
++#define MASK_AON_APB_RF_USB2_PHY_IDDIG 0x8
++#define MASK_AP_AHB_RF_OTG_VBUS_VALID_PHYREG0 0x4000
++#define MASK_AP_AHB_RF_OTG_VBUS_VALID_PHYREG_SEL0 0x2000
++#define MASK_AP_AHB_RF_PIPE3_POWERPRESENT0 0x10000
++#define MASK_AP_AHB_RF_PME_EN0 0x10
++#define MASK_AP_AHB_RF_UTMISRP_BVALID_REG0 0x8000
++#define MASK_AP_IPA_AHB_RF_OTG_VBUS_VALID_PHYREG1 0x4000
++#define MASK_AP_IPA_AHB_RF_OTG_VBUS_VALID_PHYREG_SEL1 0x2000
++#define MASK_AP_IPA_AHB_RF_PIPE3_POWERPRESENT1 0x10000
++#define MASK_AP_IPA_AHB_RF_PME_EN1 0x10
++#define MASK_AP_IPA_AHB_RF_UTMISRP_BVALID_REG1 0x8000
++#define REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_REG_SEL_CFG_0 0x0038
++#define REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_BATTER_PLL 0x0020
++#define REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_ISO_SW 0x0034
++#define REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_TRIMMING 0x0028
++#define REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_UTMI_CTL1 0x001c
++#define REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_UTMI_CTL2 0x0024
++#define REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_REG_SEL_CFG_0 0x005c
++#define REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_BATTER_PLL 0x0044
++#define REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_ISO_SW 0x0058
++#define REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_TRIMMING 0x004c
++#define REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_UTMI_CTL1 0x0040
++#define REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_UTMI_CTL2 0x0048
++#define REG_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_0_ANA_USB30_CTRL1 0x0004
++#define REG_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_1_ANA_USB30_CTRL1 0x0010
++#define REG_AON_APB_RF_OTG_PHY_CTRL 0x0514
++#define REG_AON_APB_RF_OTG_PHY_TEST 0x0510
++#define REG_AP_AHB_RF_USB0_CTRL 0x0020
++#define REG_AP_IPA_AHB_RF_USB1_CTRL 0x000c
++
++#endif
+diff --git a/drivers/phy/sprd/phy-sprd-orca-usb.c b/drivers/phy/sprd/phy-sprd-orca-usb.c
+new file mode 100644
+index 000000000..2802f2d7b
+--- /dev/null
++++ b/drivers/phy/sprd/phy-sprd-orca-usb.c
+@@ -0,0 +1,558 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Orca USB PHY AP-side register sequences, adapted to the generic PHY API.
++ * Copyright (c) 2019 Spreadtrum Co., Ltd.
++ * Original author: Jiayong Yang <jiayong.yang@unisoc.com>
++ * Based on phy{0,}-sprd-orca.c at d834a127aa46356c63bd5a59bc6d86c66ea371be.
++ * No BC1.2 emulation, speculative host VBUS supply, or undocumented tuning.
++ */
++#include <linux/module.h>
++#include <linux/mfd/syscon.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/of_device.h>
++#include <linux/phy/phy.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
++#include <linux/reset.h>
++
++#include "phy-sprd-orca-usb-regs.h"
++
++enum orca_usb_bank { ANA, AON, CTRL, GLB, NUM_BANKS };
++struct orca_usb_step {
++	u32 bank, reg, mask, val;
++};
++struct orca_usb_data {
++	const struct orca_usb_step *on, *glb, *device, *host;
++	unsigned int num_on, num_glb, num_device, num_host;
++	unsigned int port;
++	const char *ctrl_property;
++};
++struct orca_usb {
++	struct device *dev;
++	struct regmap *map[NUM_BANKS];
++	struct regulator *vdd;
++	struct reset_control *reset;
++	const struct orca_usb_data *data;
++	u32 original[16];
++	u32 glb_original[2];
++	u32 mode_original[4];
++	enum phy_mode mode;
++	bool shared_held, glb_set;
++	bool active, mode_set, reset_held, supply_on;
++};
++/*
++ * Fixed DWC3 roles use GCTL.PRTCAPDIR. Keep the shared ID input at the
++ * established peripheral value; per-port Host pull-downs are independent.
++ * Public BSP also tunes both USB2 PHYs from PHY1, so these writes share one
++ * reference epoch and are never restored while either port is active.
++ */
++static DEFINE_MUTEX(orca_usb_shared_lock);
++static struct orca_usb *orca_usb_owner[2];
++static unsigned int orca_usb_shared_users;
++static u32 orca_usb_shared_original[4];
++
++static const struct orca_usb_step orca_usb_common[] = {
++	{ AON, REG_AON_APB_RF_OTG_PHY_TEST,
++	  MASK_AON_APB_RF_OTG_VBUS_VALID_PHYREG,
++	  MASK_AON_APB_RF_OTG_VBUS_VALID_PHYREG },
++	{ AON, REG_AON_APB_RF_OTG_PHY_CTRL, MASK_AON_APB_RF_USB2_PHY_IDDIG,
++	  MASK_AON_APB_RF_USB2_PHY_IDDIG },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_TRIMMING,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_TUNEHSAMP |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_TFREGRES,
++	  (0x11 << 23) | (1 << 29) },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_TRIMMING,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_TUNEHSAMP |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_TFREGRES,
++	  (0x11 << 23) | (1 << 29) },
++};
++
++static const struct orca_usb_step orca_usb0_on[] = {
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_0_ANA_USB30_CTRL1,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_0_USB30_PS_PD_S |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_0_USB30_PS_PD_L |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_0_USB30_ISO_SW_EN,
++	  0 },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_BATTER_PLL,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_PS_PD_S |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_PS_PD_L,
++	  0 },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_ISO_SW,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_ISO_SW_EN, 0 },
++	{ CTRL, REG_AP_AHB_RF_USB0_CTRL,
++	  MASK_AP_AHB_RF_UTMISRP_BVALID_REG0 |
++		  MASK_AP_AHB_RF_OTG_VBUS_VALID_PHYREG0 |
++		  MASK_AP_AHB_RF_PIPE3_POWERPRESENT0,
++	  MASK_AP_AHB_RF_UTMISRP_BVALID_REG0 |
++		  MASK_AP_AHB_RF_OTG_VBUS_VALID_PHYREG0 |
++		  MASK_AP_AHB_RF_PIPE3_POWERPRESENT0 },
++	{ CTRL, REG_AP_AHB_RF_USB0_CTRL,
++	  MASK_AP_AHB_RF_OTG_VBUS_VALID_PHYREG_SEL0 | MASK_AP_AHB_RF_PME_EN0,
++	  0 },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_UTMI_CTL1,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_DATABUS16_8 |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_VBUSVLDEXT,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_DATABUS16_8 |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_VBUSVLDEXT },
++};
++
++/* Read and write these only after the analog on sequence has completed.
++ * Exact board stock kernel PHY0 init at 0xffffff800845a818.
++ */
++static const struct orca_usb_step orca_usb0_glb[] = {
++	{ GLB, 0x9c, BIT(0), 0 },
++	{ GLB, 0xb4, GENMASK(17, 16), 0 },
++};
++
++static const struct orca_usb_step orca_usb0_device[] = {
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_REG_SEL_CFG_0,
++	  MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_0_USB20_DPPULLDOWN |
++		  MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_0_USB20_DMPULLDOWN,
++	  0 },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_UTMI_CTL2,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_DPPULLDOWN |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_DMPULLDOWN,
++	  0 },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_UTMI_CTL1,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_RESERVED, 0 },
++};
++
++static const struct orca_usb_step orca_usb0_host[] = {
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_REG_SEL_CFG_0,
++	  MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_0_USB20_DPPULLDOWN |
++		  MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_0_USB20_DMPULLDOWN,
++	  MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_0_USB20_DPPULLDOWN |
++		  MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_0_USB20_DMPULLDOWN },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_UTMI_CTL2,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_DPPULLDOWN |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_DMPULLDOWN,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_DPPULLDOWN |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_DMPULLDOWN },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_UTMI_CTL1,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_0_USB20_RESERVED, 0x200 },
++};
++
++static const struct orca_usb_step orca_usb1_on[] = {
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_1_ANA_USB30_CTRL1,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_1_USB30_PS_PD_S |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_1_USB30_PS_PD_L |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB3_TYPEC_1_USB30_ISO_SW_EN,
++	  0 },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_BATTER_PLL,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_PS_PD_S |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_PS_PD_L,
++	  0 },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_ISO_SW,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_ISO_SW_EN, 0 },
++	{ CTRL, REG_AP_IPA_AHB_RF_USB1_CTRL,
++	  MASK_AP_IPA_AHB_RF_UTMISRP_BVALID_REG1 |
++		  MASK_AP_IPA_AHB_RF_OTG_VBUS_VALID_PHYREG1 |
++		  MASK_AP_IPA_AHB_RF_PIPE3_POWERPRESENT1,
++	  MASK_AP_IPA_AHB_RF_UTMISRP_BVALID_REG1 |
++		  MASK_AP_IPA_AHB_RF_OTG_VBUS_VALID_PHYREG1 |
++		  MASK_AP_IPA_AHB_RF_PIPE3_POWERPRESENT1 },
++	{ CTRL, REG_AP_IPA_AHB_RF_USB1_CTRL,
++	  MASK_AP_IPA_AHB_RF_OTG_VBUS_VALID_PHYREG_SEL1 |
++		  MASK_AP_IPA_AHB_RF_PME_EN1,
++	  0 },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_UTMI_CTL1,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_DATABUS16_8 |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_VBUSVLDEXT,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_DATABUS16_8 |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_VBUSVLDEXT },
++};
++
++static const struct orca_usb_step orca_usb1_device[] = {
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_REG_SEL_CFG_0,
++	  MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_1_USB20_DPPULLDOWN |
++		  MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_1_USB20_DMPULLDOWN,
++	  0 },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_UTMI_CTL2,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_DPPULLDOWN |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_DMPULLDOWN,
++	  0 },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_UTMI_CTL1,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_RESERVED, 0 },
++};
++
++static const struct orca_usb_step orca_usb1_host[] = {
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_REG_SEL_CFG_0,
++	  MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_1_USB20_DPPULLDOWN |
++		  MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_1_USB20_DMPULLDOWN,
++	  MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_1_USB20_DPPULLDOWN |
++		  MASK_ANLG_PHY_G4_RF_DBG_SEL_ANALOG_USB20_1_USB20_DMPULLDOWN },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_UTMI_CTL2,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_DPPULLDOWN |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_DMPULLDOWN,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_DPPULLDOWN |
++		  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_DMPULLDOWN },
++	{ ANA, REG_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_UTMI_CTL1,
++	  MASK_ANLG_PHY_G4_RF_ANALOG_USB20_1_USB20_RESERVED, 0x200 },
++};
++
++static int orca_usb_apply(struct orca_usb *usb, const struct orca_usb_step *s,
++			  unsigned int count, u32 *saved)
++{
++	unsigned int i;
++	int ret;
++
++	for (i = 0; i < count; i++) {
++		ret = regmap_read(usb->map[s[i].bank], s[i].reg, &saved[i]);
++		if (ret)
++			return ret;
++	}
++	for (i = 0; i < count; i++) {
++		ret = regmap_update_bits(usb->map[s[i].bank], s[i].reg,
++					 s[i].mask, s[i].val);
++		if (ret) {
++			/* The failing bus operation may have partially taken effect. */
++			do {
++				int undo = regmap_update_bits(
++					usb->map[s[i].bank], s[i].reg,
++					s[i].mask, saved[i]);
++				if (undo) {
++					dev_err(usb->dev,
++						"PHY register rollback failed: %d\n",
++						undo);
++				}
++			} while (i--);
++			return ret;
++		}
++	}
++	return 0;
++}
++
++static int orca_usb_restore(struct orca_usb *usb)
++{
++	const struct orca_usb_data *d = usb->data;
++	int i, ret, err = 0;
++
++	if (usb->glb_set) {
++		for (i = d->num_glb - 1; i >= 0; i--) {
++			const struct orca_usb_step *s = &d->glb[i];
++
++			ret = regmap_update_bits(usb->map[s->bank], s->reg,
++						 s->mask, usb->glb_original[i]);
++			if (ret && !err)
++				err = ret;
++		}
++		usb->glb_set = false;
++	}
++	for (i = d->num_on - 1; i >= 0; i--) {
++		const struct orca_usb_step *s = &d->on[i];
++
++		ret = regmap_update_bits(usb->map[s->bank], s->reg, s->mask,
++					 usb->original[i]);
++		if (ret && !err)
++			err = ret;
++	}
++	return err;
++}
++
++static int orca_usb_shared_get(struct orca_usb *usb)
++{
++	int ret;
++
++	if (!orca_usb_shared_users) {
++		ret = orca_usb_apply(usb, orca_usb_common,
++				     ARRAY_SIZE(orca_usb_common),
++				     orca_usb_shared_original);
++		if (ret)
++			return ret;
++	}
++	orca_usb_shared_users++;
++	usb->shared_held = true;
++	return 0;
++}
++
++static int orca_usb_shared_put(struct orca_usb *usb)
++{
++	int i, ret, first = 0;
++
++	if (!usb->shared_held)
++		return 0;
++	if (orca_usb_shared_users == 1) {
++		for (i = ARRAY_SIZE(orca_usb_common) - 1; i >= 0; i--) {
++			const struct orca_usb_step *s = &orca_usb_common[i];
++
++			ret = regmap_update_bits(usb->map[s->bank], s->reg,
++						 s->mask,
++						 orca_usb_shared_original[i]);
++			if (ret && !first)
++				first = ret;
++		}
++	}
++	orca_usb_shared_users--;
++	usb->shared_held = false;
++	return first;
++}
++
++static int orca_usb_init(struct phy *phy)
++{
++	struct orca_usb *usb = phy_get_drvdata(phy);
++	int ret;
++
++	mutex_lock(&orca_usb_shared_lock);
++	if (orca_usb_owner[usb->data->port] &&
++	    orca_usb_owner[usb->data->port] != usb) {
++		ret = -EBUSY;
++		goto out;
++	}
++	if (usb->active) {
++		ret = 0;
++		goto out;
++	}
++	if (!usb->supply_on) {
++		ret = regulator_enable(usb->vdd);
++		if (ret)
++			goto out;
++		usb->supply_on = true;
++	}
++	ret = orca_usb_shared_get(usb);
++	if (ret)
++		goto disable;
++	ret = orca_usb_apply(usb, usb->data->on, usb->data->num_on,
++			     usb->original);
++	if (ret)
++		goto disable;
++	if (usb->data->num_glb) {
++		ret = orca_usb_apply(usb, usb->data->glb, usb->data->num_glb,
++				     usb->glb_original);
++		if (ret) {
++			int undo = orca_usb_restore(usb);
++
++			if (undo)
++				dev_err(usb->dev, "PHY cleanup failed: %d\n",
++					undo);
++			goto disable;
++		}
++		usb->glb_set = true;
++	}
++	/* Shared USB1/PAM reset is pulsed only once in the current ownership epoch. */
++	ret = reset_control_reset(usb->reset);
++	if (ret) {
++		int undo = orca_usb_restore(usb);
++
++		if (undo)
++			dev_err(usb->dev, "PHY reset rollback failed: %d\n",
++				undo);
++		goto disable;
++	}
++	usb->reset_held = true;
++	usb->active = true;
++	orca_usb_owner[usb->data->port] = usb;
++	goto out;
++disable:
++	{
++		int cleanup = orca_usb_shared_put(usb);
++
++		if (cleanup)
++			dev_err(usb->dev, "PHY shared cleanup failed: %d\n",
++				cleanup);
++		if (usb->supply_on) {
++			cleanup = regulator_disable(usb->vdd);
++			if (cleanup)
++				dev_err(usb->dev,
++					"PHY regulator disable failed: %d\n",
++					cleanup);
++			else
++				usb->supply_on = false;
++		}
++	}
++out:
++	mutex_unlock(&orca_usb_shared_lock);
++	return ret;
++}
++
++static int orca_usb_exit(struct phy *phy)
++{
++	struct orca_usb *usb = phy_get_drvdata(phy);
++	int ret, err;
++
++	mutex_lock(&orca_usb_shared_lock);
++	ret = 0;
++	if (usb->mode_set) {
++		int i;
++
++		for (i = (usb->mode == PHY_MODE_USB_HOST ?
++				  usb->data->num_host :
++				  usb->data->num_device) -
++			 1;
++		     i >= 0; i--) {
++			const struct orca_usb_step *s =
++				usb->mode == PHY_MODE_USB_HOST ?
++					&usb->data->host[i] :
++					&usb->data->device[i];
++			err = regmap_update_bits(usb->map[s->bank], s->reg,
++						 s->mask,
++						 usb->mode_original[i]);
++			if (err && !ret)
++				ret = err;
++		}
++	}
++	err = orca_usb_restore(usb);
++	if (!ret)
++		ret = err;
++	usb->mode_set = false;
++	err = orca_usb_shared_put(usb);
++	if (!ret)
++		ret = err;
++	if (usb->supply_on) {
++		err = regulator_disable(usb->vdd);
++		if (!err)
++			usb->supply_on = false;
++		if (!ret)
++			ret = err;
++	}
++	if (usb->reset_held) {
++		err = reset_control_rearm(usb->reset);
++		if (!err)
++			usb->reset_held = false;
++		if (!ret)
++			ret = err;
++	}
++	usb->active = false;
++	orca_usb_owner[usb->data->port] = NULL;
++	mutex_unlock(&orca_usb_shared_lock);
++	return ret;
++}
++
++static int orca_usb_set_mode(struct phy *phy, enum phy_mode mode, int submode)
++{
++	struct orca_usb *usb = phy_get_drvdata(phy);
++	int ret;
++	/* No OTG role changes after a controller has acquired its fixed mode. */
++	if (mode != PHY_MODE_USB_DEVICE && mode != PHY_MODE_USB_HOST)
++		return -EOPNOTSUPP;
++	mutex_lock(&orca_usb_shared_lock);
++	if (!usb->active)
++		ret = -EIO;
++	else if (usb->mode_set)
++		ret = usb->mode == mode ? 0 : -EBUSY;
++	else {
++		ret = orca_usb_apply(
++			usb,
++			mode == PHY_MODE_USB_HOST ? usb->data->host :
++						    usb->data->device,
++			mode == PHY_MODE_USB_HOST ? usb->data->num_host :
++						    usb->data->num_device,
++			usb->mode_original);
++		if (!ret) {
++			usb->mode = mode;
++			usb->mode_set = true;
++		}
++	}
++	mutex_unlock(&orca_usb_shared_lock);
++	return ret;
++}
++
++static const struct phy_ops orca_usb_ops = {
++	.init = orca_usb_init,
++	.exit = orca_usb_exit,
++	.set_mode = orca_usb_set_mode,
++	.owner = THIS_MODULE,
++};
++
++static const struct orca_usb_data orca_usb0_data = {
++	.on = orca_usb0_on,
++	.num_on = ARRAY_SIZE(orca_usb0_on),
++	.glb = orca_usb0_glb,
++	.num_glb = ARRAY_SIZE(orca_usb0_glb),
++	.device = orca_usb0_device,
++	.num_device = ARRAY_SIZE(orca_usb0_device),
++	.host = orca_usb0_host,
++	.num_host = ARRAY_SIZE(orca_usb0_host),
++	.port = 0,
++	.ctrl_property = "sprd,syscon-ap-ahb",
++};
++static const struct orca_usb_data orca_usb1_data = {
++	.on = orca_usb1_on,
++	.num_on = ARRAY_SIZE(orca_usb1_on),
++	.device = orca_usb1_device,
++	.num_device = ARRAY_SIZE(orca_usb1_device),
++	.host = orca_usb1_host,
++	.num_host = ARRAY_SIZE(orca_usb1_host),
++	.port = 1,
++	.ctrl_property = "sprd,syscon-ipa-ahb",
++};
++
++static const struct regmap_config orca_usb_glb_config = {
++	.reg_bits = 32,
++	.val_bits = 32,
++	.reg_stride = 4,
++	.max_register = 0xfffc,
++};
++
++static int orca_usb_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct phy_provider *provider;
++	struct orca_usb *usb;
++	struct phy *phy;
++	void __iomem *base;
++	u32 microvolt;
++	int ret, i;
++
++	usb = devm_kzalloc(dev, sizeof(*usb), GFP_KERNEL);
++	if (!usb)
++		return -ENOMEM;
++	usb->dev = dev;
++	usb->data = of_device_get_match_data(dev);
++	usb->map[ANA] = syscon_regmap_lookup_by_phandle(dev->of_node,
++							"sprd,syscon-anag4");
++	usb->map[AON] = syscon_regmap_lookup_by_phandle(dev->of_node,
++							"sprd,syscon-aon-apb");
++	usb->map[CTRL] = syscon_regmap_lookup_by_phandle(
++		dev->of_node, usb->data->ctrl_property);
++	base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++	usb->map[GLB] = devm_regmap_init_mmio(dev, base, &orca_usb_glb_config);
++	for (i = 0; i < NUM_BANKS; i++)
++		if (IS_ERR(usb->map[i]))
++			return dev_err_probe(dev, PTR_ERR(usb->map[i]),
++					     "Missing PHY syscon\n");
++	usb->reset = devm_reset_control_get_shared(dev, NULL);
++	if (IS_ERR(usb->reset))
++		return dev_err_probe(dev, PTR_ERR(usb->reset),
++				     "Missing shared PHY reset\n");
++	/* _optional forbids a dummy supply; every board port requires its real rail. */
++	usb->vdd = devm_regulator_get_optional(dev, "vdd");
++	if (IS_ERR(usb->vdd))
++		return dev_err_probe(dev, PTR_ERR(usb->vdd),
++				     "Missing PHY VDD\n");
++	ret = of_property_read_u32(dev->of_node, "sprd,vdd-voltage",
++				   &microvolt);
++	if (ret)
++		return ret;
++	if (microvolt < 1200000 || microvolt > 3750000)
++		return -EINVAL;
++	ret = regulator_set_voltage(usb->vdd, microvolt, microvolt);
++	if (ret)
++		return dev_err_probe(dev, ret, "Cannot set PHY VDD\n");
++	phy = devm_phy_create(dev, NULL, &orca_usb_ops);
++	if (IS_ERR(phy))
++		return PTR_ERR(phy);
++	phy_set_drvdata(phy, usb);
++	provider = devm_of_phy_provider_register(dev, of_phy_simple_xlate);
++	return PTR_ERR_OR_ZERO(provider);
++}
++
++static const struct of_device_id orca_usb_match[] = {
++	{ .compatible = "sprd,orca1-ssphy0", .data = &orca_usb0_data },
++	{ .compatible = "sprd,orca1-ssphy1", .data = &orca_usb1_data },
++	{}
++};
++MODULE_DEVICE_TABLE(of, orca_usb_match);
++static struct platform_driver orca_usb_driver = {
++	.probe = orca_usb_probe,
++	.driver = { .name = "sprd-orca-usb-phy",
++		    .of_match_table = orca_usb_match,
++		    .suppress_bind_attrs = true },
++};
++module_platform_driver(orca_usb_driver);
++MODULE_DESCRIPTION("Orca AP USB PHY");
++MODULE_AUTHOR("Jiayong Yang <jiayong.yang@unisoc.com>");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/reset/Kconfig b/drivers/reset/Kconfig
+index 3168ab1ee..fcfd119d9 100644
+--- a/drivers/reset/Kconfig
++++ b/drivers/reset/Kconfig
+@@ -448,3 +448,10 @@ source "drivers/reset/sti/Kconfig"
+ source "drivers/reset/tegra/Kconfig"
+ 
+ endif
++
++config RESET_SPRD_ORCA_USB
++	bool "Spreadtrum Orca USB shared reset groups"
++	depends on OF && (ARCH_SPRD || COMPILE_TEST)
++	select MFD_SYSCON
++	help
++	  Pulse the USB0 and USB1/PAM reset groups on Spreadtrum Orca (UDX710).
+diff --git a/drivers/reset/Makefile b/drivers/reset/Makefile
+index 45ad17062..b6b4f53b9 100644
+--- a/drivers/reset/Makefile
++++ b/drivers/reset/Makefile
+@@ -54,3 +54,5 @@ obj-$(CONFIG_RESET_UNIPHIER) += reset-uniphier.o
+ obj-$(CONFIG_RESET_UNIPHIER_GLUE) += reset-uniphier-glue.o
+ obj-$(CONFIG_RESET_ZYNQ) += reset-zynq.o
+ obj-$(CONFIG_RESET_ZYNQMP) += reset-zynqmp.o
++
++obj-$(CONFIG_RESET_SPRD_ORCA_USB) += reset-sprd-orca-usb.o
+diff --git a/drivers/reset/reset-sprd-orca-usb.c b/drivers/reset/reset-sprd-orca-usb.c
+new file mode 100644
+index 000000000..50f9850d5
+--- /dev/null
++++ b/drivers/reset/reset-sprd-orca-usb.c
+@@ -0,0 +1,89 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Orca USB reset groups from Spreadtrum BSP d834a127 (2019).
++ * The PHY uses the combined USB1/PAM startup group. PAM can then reset
++ * itself independently while holding the controller runtime-PM reference.
++ */
++#include <linux/delay.h>
++#include <linux/mfd/syscon.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/reset-controller.h>
++
++struct orca_usb_reset {
++	struct reset_controller_dev rcdev;
++	struct regmap *ap, *ipa;
++	struct mutex lock;
++};
++
++static int orca_usb_reset_pulse(struct reset_controller_dev *rcdev,
++				unsigned long id)
++{
++	struct orca_usb_reset *rst =
++		container_of(rcdev, struct orca_usb_reset, rcdev);
++	struct regmap *map;
++	u32 mask;
++	int ret;
++
++	if (id > 2)
++		return -EINVAL;
++	map = id ? rst->ipa : rst->ap;
++	/* BSP AP_AHB_USB0=BIT(1), IPA_AHB_USB1=BIT(0), USB_PAM=BIT(5). */
++	mask = id == 2 ? BIT(5) : id ? BIT(0) | BIT(5) : BIT(1);
++	mutex_lock(&rst->lock);
++	ret = regmap_update_bits(map, 0x4, mask, mask);
++	if (!ret) {
++		if (id == 2)
++			udelay(5);
++		else
++			usleep_range(20000, 30000);
++		ret = regmap_update_bits(map, 0x4, mask, 0);
++	}
++	mutex_unlock(&rst->lock);
++	return ret;
++}
++
++static const struct reset_control_ops orca_usb_reset_ops = {
++	.reset = orca_usb_reset_pulse,
++};
++
++static int orca_usb_reset_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct orca_usb_reset *rst;
++
++	rst = devm_kzalloc(dev, sizeof(*rst), GFP_KERNEL);
++	if (!rst)
++		return -ENOMEM;
++	rst->ap = syscon_regmap_lookup_by_phandle(dev->of_node, "sprd,ap-ahb");
++	if (IS_ERR(rst->ap))
++		return PTR_ERR(rst->ap);
++	rst->ipa =
++		syscon_regmap_lookup_by_phandle(dev->of_node, "sprd,ipa-ahb");
++	if (IS_ERR(rst->ipa))
++		return PTR_ERR(rst->ipa);
++	mutex_init(&rst->lock);
++	rst->rcdev.owner = THIS_MODULE;
++	rst->rcdev.dev = dev;
++	rst->rcdev.of_node = dev->of_node;
++	rst->rcdev.ops = &orca_usb_reset_ops;
++	rst->rcdev.nr_resets = 3;
++	return devm_reset_controller_register(dev, &rst->rcdev);
++}
++
++static const struct of_device_id orca_usb_reset_match[] = {
++	{ .compatible = "sprd,orca-usb-reset" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, orca_usb_reset_match);
++static struct platform_driver orca_usb_reset_driver = {
++	.probe = orca_usb_reset_probe,
++	.driver = { .name = "sprd-orca-usb-reset",
++		    .of_match_table = orca_usb_reset_match,
++		    .suppress_bind_attrs = true },
++};
++module_platform_driver(orca_usb_reset_driver);
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("Orca USB reset groups and independent PAM reset");
+diff --git a/drivers/usb/dwc3/core.c b/drivers/usb/dwc3/core.c
+index fd5c2cd36..19ae326ff 100644
+--- a/drivers/usb/dwc3/core.c
++++ b/drivers/usb/dwc3/core.c
+@@ -32,6 +32,7 @@
+ #include <linux/bitfield.h>
+ 
+ #include <linux/usb/ch9.h>
++#include <linux/usb/sprd-pamu3.h>
+ #include <linux/usb/gadget.h>
+ #include <linux/usb/of.h>
+ #include <linux/usb/otg.h>
+@@ -514,7 +515,18 @@ static struct dwc3_event_buffer *dwc3_alloc_one_event_buffer(struct dwc3 *dwc,
+ static void dwc3_free_event_buffers(struct dwc3 *dwc)
+ {
+ 	struct dwc3_event_buffer	*evt;
++	unsigned int i;
+ 
++	/* The supplier link must have detached PAM before coherent memory frees. */
++	if (WARN_ON(dwc->pamu3_owner))
++		return;
++	for (i = 0; i < ARRAY_SIZE(dwc->pamu3_events); i++) {
++		evt = dwc->pamu3_events[i];
++		if (evt) {
++			dwc3_free_one_event_buffer(dwc, evt);
++			dwc->pamu3_events[i] = NULL;
++		}
++	}
+ 	evt = dwc->ev_buf;
+ 	if (evt)
+ 		dwc3_free_one_event_buffer(dwc, evt);
+@@ -531,7 +543,8 @@ static void dwc3_free_event_buffers(struct dwc3 *dwc)
+ static int dwc3_alloc_event_buffers(struct dwc3 *dwc, unsigned int length)
+ {
+ 	struct dwc3_event_buffer *evt;
+-	unsigned int hw_mode;
++	unsigned int hw_mode, i;
++	int ret;
+ 
+ 	hw_mode = DWC3_GHWPARAMS0_MODE(dwc->hwparams.hwparams0);
+ 	if (hw_mode == DWC3_GHWPARAMS0_MODE_HOST) {
+@@ -545,8 +558,29 @@ static int dwc3_alloc_event_buffers(struct dwc3 *dwc, unsigned int length)
+ 		return PTR_ERR(evt);
+ 	}
+ 	dwc->ev_buf = evt;
+-
++	if (dwc->pamu3_capable) {
++		if (DWC3_NUM_INT(dwc->hwparams.hwparams1) < 3) {
++			ret = -EOPNOTSUPP;
++			goto fail;
++		}
++		for (i = 0; i < ARRAY_SIZE(dwc->pamu3_events); i++) {
++			evt = dwc3_alloc_one_event_buffer(dwc, length);
++			if (IS_ERR(evt)) {
++				ret = PTR_ERR(evt);
++				goto fail;
++			}
++			dwc->pamu3_events[i] = evt;
++			if ((u64)evt->dma + length - 1 > DMA_BIT_MASK(40)) {
++				ret = -ERANGE;
++				goto fail;
++			}
++		}
++	}
+ 	return 0;
++fail:
++	dwc3_free_event_buffers(dwc);
++	dwc->ev_buf = NULL;
++	return ret;
+ }
+ 
+ /**
+@@ -559,6 +593,7 @@ int dwc3_event_buffers_setup(struct dwc3 *dwc)
+ {
+ 	struct dwc3_event_buffer	*evt;
+ 	u32				reg;
++	unsigned int i;
+ 
+ 	if (!dwc->ev_buf)
+ 		return 0;
+@@ -575,6 +610,22 @@ int dwc3_event_buffers_setup(struct dwc3 *dwc)
+ 	/* Clear any stale event */
+ 	reg = dwc3_readl(dwc, DWC3_GEVNTCOUNT(0));
+ 	dwc3_writel(dwc, DWC3_GEVNTCOUNT(0), reg);
++	for (i = 0; i < ARRAY_SIZE(dwc->pamu3_events); i++) {
++		evt = dwc->pamu3_events[i];
++		if (!evt)
++			continue;
++		evt->lpos = 0;
++		dwc3_writel(dwc, DWC3_GEVNTADRLO(i + 1),
++			    lower_32_bits(evt->dma));
++		dwc3_writel(dwc, DWC3_GEVNTADRHI(i + 1),
++			    upper_32_bits(evt->dma));
++		dwc3_writel(dwc, DWC3_GEVNTSIZ(i + 1),
++			    DWC3_GEVNTSIZ_SIZE(evt->length) |
++				    DWC3_GEVNTSIZ_INTMASK);
++		reg = dwc3_readl(dwc, DWC3_GEVNTCOUNT(i + 1));
++		dwc3_writel(dwc, DWC3_GEVNTCOUNT(i + 1), reg);
++	}
++	dwc->pamu3_generation++;
+ 	return 0;
+ }
+ 
+@@ -582,6 +633,7 @@ void dwc3_event_buffers_cleanup(struct dwc3 *dwc)
+ {
+ 	struct dwc3_event_buffer	*evt;
+ 	u32				reg;
++	unsigned int i;
+ 
+ 	if (!dwc->ev_buf)
+ 		return;
+@@ -605,6 +657,15 @@ void dwc3_event_buffers_cleanup(struct dwc3 *dwc)
+ 	/* Clear any stale event */
+ 	reg = dwc3_readl(dwc, DWC3_GEVNTCOUNT(0));
+ 	dwc3_writel(dwc, DWC3_GEVNTCOUNT(0), reg);
++	for (i = 0; i < ARRAY_SIZE(dwc->pamu3_events); i++) {
++		if (!dwc->pamu3_events[i])
++			continue;
++		dwc3_writel(dwc, DWC3_GEVNTSIZ(i + 1), DWC3_GEVNTSIZ_INTMASK);
++		dwc3_writel(dwc, DWC3_GEVNTADRLO(i + 1), 0);
++		dwc3_writel(dwc, DWC3_GEVNTADRHI(i + 1), 0);
++		reg = dwc3_readl(dwc, DWC3_GEVNTCOUNT(i + 1));
++		dwc3_writel(dwc, DWC3_GEVNTCOUNT(i + 1), reg);
++	}
+ }
+ 
+ static void dwc3_core_num_eps(struct dwc3 *dwc)
+@@ -2315,6 +2376,11 @@ int dwc3_core_probe(const struct dwc3_probe_data *data)
+ 	dwc->regs_size	= resource_size(&dwc_res);
+ 
+ 	dwc3_get_properties(dwc);
++	dwc->pamu3_capable =
++		device_property_read_bool(dev, "sprd,pamu3-offload");
++	if (dwc->pamu3_capable && !IS_ENABLED(CONFIG_SPRD_PAMU3))
++		return -EOPNOTSUPP;
++	dwc->pamu3_regs_phys = res->start;
+ 
+ 	dwc3_get_software_properties(dwc, &data->properties);
+ 
+@@ -2358,6 +2424,15 @@ int dwc3_core_probe(const struct dwc3_probe_data *data)
+ 			goto err_disable_clks;
+ 	}
+ 
++	if (dwc->pamu3_capable) {
++		/* PAM address fields encode exactly 40 bits, including event buffers. */
++		ret = dma_set_mask_and_coherent(
++			dwc->sysdev, min_t(u64, dma_get_mask(dwc->sysdev),
++					   DMA_BIT_MASK(40)));
++		if (ret)
++			goto err_disable_clks;
++	}
++
+ 	/*
+ 	 * Currently only DWC3 controllers that are host-only capable
+ 	 * can have more than one port.
+@@ -2399,6 +2474,10 @@ int dwc3_core_probe(const struct dwc3_probe_data *data)
+ 	if (ret)
+ 		goto err_free_event_buffers;
+ 
++	if (dwc->pamu3_capable && dwc->dr_mode != USB_DR_MODE_PERIPHERAL) {
++		ret = -EOPNOTSUPP;
++		goto err_free_event_buffers;
++	}
+ 	ret = dwc3_core_init(dwc);
+ 	if (ret) {
+ 		dev_err_probe(dev, ret, "failed to initialize core\n");
+@@ -2507,6 +2586,71 @@ void dwc3_core_remove(struct dwc3 *dwc)
+ }
+ EXPORT_SYMBOL_GPL(dwc3_core_remove);
+ 
++/* Consumer holds a supplier link and pins controller runtime PM. */
++int dwc3_pamu3_attach(struct device *controller, struct device *owner,
++		      struct dwc3_pamu3_resources *resources)
++{
++	struct dwc3 *dwc = dev_get_drvdata(controller);
++	unsigned long flags;
++	unsigned int i;
++	int ret;
++
++	if (!dwc || !owner || !resources)
++		return -ENODEV;
++	if (!dwc->pamu3_capable || !dwc->gadget ||
++	    dwc->dr_mode != USB_DR_MODE_PERIPHERAL)
++		return -EOPNOTSUPP;
++	ret = pm_runtime_resume_and_get(controller);
++	if (ret < 0)
++		return ret;
++	spin_lock_irqsave(&dwc->lock, flags);
++	if (dwc->pamu3_owner) {
++		ret = -EBUSY;
++		goto unlock;
++	}
++	for (i = 0; i < ARRAY_SIZE(dwc->pamu3_events); i++) {
++		if (!dwc->pamu3_events[i]) {
++			ret = -ENODEV;
++			goto unlock;
++		}
++		resources->event_dma[i] = dwc->pamu3_events[i]->dma;
++		resources->event_size[i] = dwc->pamu3_events[i]->length;
++	}
++	resources->dma_dev = dwc->sysdev;
++	resources->regs_phys = dwc->pamu3_regs_phys;
++	resources->generation = dwc->pamu3_generation;
++	dwc->pamu3_owner = owner;
++	ret = 0;
++unlock:
++	spin_unlock_irqrestore(&dwc->lock, flags);
++	if (ret)
++		pm_runtime_put(controller);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(dwc3_pamu3_attach);
++
++int dwc3_pamu3_detach(struct device *controller, struct device *owner)
++{
++	struct dwc3 *dwc = dev_get_drvdata(controller);
++	unsigned long flags;
++	int ret = 0;
++
++	if (!dwc || !owner)
++		return -ENODEV;
++	spin_lock_irqsave(&dwc->lock, flags);
++	if (dwc->pamu3_owner != owner)
++		ret = -EPERM;
++	else if (dwc->pamu3_claimed)
++		ret = -EBUSY;
++	else
++		dwc->pamu3_owner = NULL;
++	spin_unlock_irqrestore(&dwc->lock, flags);
++	if (!ret)
++		pm_runtime_put(controller);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(dwc3_pamu3_detach);
++
+ static void dwc3_remove(struct platform_device *pdev)
+ {
+ 	dwc3_core_remove(platform_get_drvdata(pdev));
+@@ -2545,6 +2689,10 @@ static int dwc3_suspend_common(struct dwc3 *dwc, pm_message_t msg)
+ 	int i;
+ 	int ret;
+ 
++	/* No silent suspend under a second DMA master. Release PAM first. */
++	if (READ_ONCE(dwc->pamu3_owner))
++		return -EBUSY;
++
+ 	if (!pm_runtime_suspended(dwc->dev) && !PMSG_IS_AUTO(msg)) {
+ 		dwc->susphy_state = (dwc3_readl(dwc, DWC3_GUSB2PHYCFG(0)) &
+ 				    DWC3_GUSB2PHYCFG_SUSPHY) ||
+@@ -2925,6 +3073,9 @@ static struct platform_driver dwc3_driver = {
+ 		.of_match_table	= of_match_ptr(of_dwc3_match),
+ 		.acpi_match_table = ACPI_PTR(dwc3_acpi_match),
+ 		.pm	= &dwc3_dev_pm_ops,
++		/* Orca PHY/vser ownership also outlives failed teardown. */
++		.suppress_bind_attrs = IS_ENABLED(CONFIG_SPRD_PAMU3) ||
++			IS_ENABLED(CONFIG_PHY_SPRD_ORCA_USB),
+ 	},
+ };
+ 
+@@ -2932,5 +3083,5 @@ module_platform_driver(dwc3_driver);
+ 
+ MODULE_ALIAS("platform:dwc3");
+ MODULE_AUTHOR("Felipe Balbi <balbi@ti.com>");
+-MODULE_LICENSE("GPL v2");
++MODULE_LICENSE("GPL");
+ MODULE_DESCRIPTION("DesignWare USB3 DRD Controller Driver");
+diff --git a/drivers/usb/dwc3/core.h b/drivers/usb/dwc3/core.h
+index f3dabb37f..b8e49edf4 100644
+--- a/drivers/usb/dwc3/core.h
++++ b/drivers/usb/dwc3/core.h
+@@ -1226,6 +1226,13 @@ struct dwc3 {
+ 	struct resource		xhci_resources[DWC3_XHCI_RESOURCES_NUM];
+ 
+ 	struct dwc3_event_buffer *ev_buf;
++	/* Optional Orca PAM buffers are never consumed by event-0 IRQ code. */
++	struct dwc3_event_buffer *pamu3_events[2];
++	struct device *pamu3_owner;
++	phys_addr_t pamu3_regs_phys;
++	u32 pamu3_generation;
++	bool pamu3_capable;
++	bool pamu3_claimed;
+ 	struct dwc3_ep		*eps[DWC3_ENDPOINTS_NUM];
+ 
+ 	struct usb_gadget	*gadget;
+diff --git a/drivers/usb/dwc3/dwc3-of-simple.c b/drivers/usb/dwc3/dwc3-of-simple.c
+index c11614333..082b2f998 100644
+--- a/drivers/usb/dwc3/dwc3-of-simple.c
++++ b/drivers/usb/dwc3/dwc3-of-simple.c
+@@ -21,6 +21,22 @@
+ #include <linux/of_platform.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/reset.h>
++#include <linux/phy/phy.h>
++#include <linux/mutex.h>
++
++struct dwc3_of_simple_data {
++	const char *const *required_clocks;
++	unsigned int num_required_clocks;
++	bool early_fixed_phy;
++};
++
++static const char *const orca_clocks[] = { "core_clk", "ref_clk", "susp_clk" };
++static const struct dwc3_of_simple_data orca_data = {
++	.required_clocks = orca_clocks,
++	.num_required_clocks = ARRAY_SIZE(orca_clocks),
++	/* Its combined USB/PAM reset belongs to the PHY's shared-reset epoch. */
++	.early_fixed_phy = true,
++};
+ 
+ struct dwc3_of_simple {
+ 	struct device		*dev;
+@@ -28,22 +44,84 @@ struct dwc3_of_simple {
+ 	int			num_clocks;
+ 	struct reset_control	*resets;
+ 	bool			need_reset;
++	const struct dwc3_of_simple_data *data;
++	struct phy *phy;
+ };
+ 
++static int dwc3_simple_fixed_mode(struct device_node *np,
++				  enum phy_mode *phy_mode)
++{
++	struct device_node *child = of_get_compatible_child(np, "snps,dwc3");
++	const char *mode;
++	int ret;
++
++	if (!child)
++		return -ENODEV;
++	ret = of_property_read_string(child, "dr_mode", &mode);
++	if (!ret) {
++		if (!strcmp(mode, "peripheral"))
++			*phy_mode = PHY_MODE_USB_DEVICE;
++		else if (!strcmp(mode, "host"))
++			*phy_mode = PHY_MODE_USB_HOST;
++		else
++			ret = -EOPNOTSUPP;
++	}
++	of_node_put(child);
++	return ret;
++}
++
++static int dwc3_simple_check_clocks(struct dwc3_of_simple *simple)
++{
++	const struct dwc3_of_simple_data *data = simple->data;
++	unsigned int i;
++	int j;
++
++	if (!data || !data->num_required_clocks)
++		return 0;
++	if (simple->num_clocks != data->num_required_clocks)
++		return -EINVAL;
++	for (i = 0; i < data->num_required_clocks; i++) {
++		for (j = 0; j < simple->num_clocks; j++)
++			if (simple->clks[j].id &&
++			    !strcmp(simple->clks[j].id,
++				    data->required_clocks[i]))
++				break;
++		if (j == simple->num_clocks)
++			return -EINVAL;
++	}
++	return 0;
++}
++
+ static int dwc3_of_simple_probe(struct platform_device *pdev)
+ {
+ 	struct dwc3_of_simple	*simple;
+ 	struct device		*dev = &pdev->dev;
+ 	struct device_node	*np = dev->of_node;
+ 
+-	int			ret;
+-
++	const struct dwc3_of_simple_data *data = of_device_get_match_data(dev);
++	bool early_phy = data && data->early_fixed_phy;
++	int ret, cleanup;
++	enum phy_mode phy_mode = PHY_MODE_INVALID;
++
++	if (early_phy) {
++		/* The fixed-role Orca glue is built in. */
++		if (IS_MODULE(CONFIG_USB_DWC3_OF_SIMPLE))
++			return dev_err_probe(
++				dev, -EOPNOTSUPP,
++				"Orca shared ownership requires built-in glue\n");
++		ret = dwc3_simple_fixed_mode(np, &phy_mode);
++		if (ret)
++			return dev_err_probe(
++				dev, ret,
++				"Explicit host or peripheral mode required\n");
++	}
+ 	simple = devm_kzalloc(dev, sizeof(*simple), GFP_KERNEL);
+ 	if (!simple)
+ 		return -ENOMEM;
+ 
+ 	platform_set_drvdata(pdev, simple);
+ 	simple->dev = dev;
++	simple->data = data;
+ 
+ 	/*
+ 	 * Some controllers need to toggle the usb3-otg reset before trying to
+@@ -52,11 +130,17 @@ static int dwc3_of_simple_probe(struct platform_device *pdev)
+ 	if (of_device_is_compatible(np, "rockchip,rk3399-dwc3"))
+ 		simple->need_reset = true;
+ 
+-	simple->resets = of_reset_control_array_get_optional_exclusive(np);
++	/*
++	 * An early PHY owns the shared reset reference; do not acquire a second
++	 * exclusive reset or pulse it after the DWC3 child has been initialized.
++	 */
++	simple->resets =
++		early_phy ? NULL :
++			    of_reset_control_array_get_optional_exclusive(np);
+ 	if (IS_ERR(simple->resets)) {
+ 		ret = PTR_ERR(simple->resets);
+ 		dev_err(dev, "failed to get device resets, err=%d\n", ret);
+-		return ret;
++		goto err_free;
+ 	}
+ 
+ 	ret = reset_control_deassert(simple->resets);
+@@ -68,13 +152,41 @@ static int dwc3_of_simple_probe(struct platform_device *pdev)
+ 		goto err_resetc_assert;
+ 
+ 	simple->num_clocks = ret;
+-	ret = clk_bulk_prepare_enable(simple->num_clocks, simple->clks);
++	ret = dwc3_simple_check_clocks(simple);
+ 	if (ret)
+ 		goto err_clk_put_all;
++	if (early_phy) {
++		simple->phy = phy_get(dev, "usb");
++		if (IS_ERR(simple->phy)) {
++			ret = PTR_ERR(simple->phy);
++			simple->phy = NULL;
++			goto err_clk_put_all;
++		}
++	}
++	ret = clk_bulk_prepare_enable(simple->num_clocks, simple->clks);
++	if (ret)
++		goto err_phy_put;
++	if (early_phy) {
++		ret = phy_init(simple->phy);
++		if (ret)
++			goto err_clk_disable;
++		ret = phy_set_mode(simple->phy, phy_mode);
++		if (ret)
++			goto err_phy_exit;
++	}
+ 
+ 	ret = of_platform_populate(np, NULL, NULL, dev);
+-	if (ret)
+-		goto err_clk_disable;
++	if (ret) {
++		if (early_phy)
++			of_platform_depopulate(dev);
++		goto err_phy_exit;
++	}
++	/*
++	 * Keep PHY init and gates held. Unsupported system/runtime sleep must not
++	 * silently cut a shared PAM epoch while a different owner can use it.
++	 */
++	if (early_phy)
++		return 0;
+ 
+ 	pm_runtime_set_active(dev);
+ 	pm_runtime_enable(dev);
+@@ -82,8 +194,17 @@ static int dwc3_of_simple_probe(struct platform_device *pdev)
+ 
+ 	return 0;
+ 
++err_phy_exit:
++	if (early_phy) {
++		cleanup = phy_exit(simple->phy);
++		if (cleanup)
++			dev_err(dev, "PHY cleanup failed: %d\n", cleanup);
++	}
+ err_clk_disable:
+ 	clk_bulk_disable_unprepare(simple->num_clocks, simple->clks);
++err_phy_put:
++	if (simple->phy)
++		phy_put(dev, simple->phy);
+ err_clk_put_all:
+ 	clk_bulk_put_all(simple->num_clocks, simple->clks);
+ 
+@@ -92,12 +213,21 @@ static int dwc3_of_simple_probe(struct platform_device *pdev)
+ 
+ err_resetc_put:
+ 	reset_control_put(simple->resets);
++err_free:
+ 	return ret;
+ }
+ 
+-static void __dwc3_of_simple_teardown(struct dwc3_of_simple *simple)
++static bool __dwc3_of_simple_teardown(struct dwc3_of_simple *simple)
+ {
+ 	of_platform_depopulate(simple->dev);
++	if (simple->phy) {
++		int ret = phy_exit(simple->phy);
++
++		if (ret)
++			dev_err(simple->dev, "PHY exit failed: %d\n", ret);
++		phy_put(simple->dev, simple->phy);
++		simple->phy = NULL;
++	}
+ 
+ 	clk_bulk_disable_unprepare(simple->num_clocks, simple->clks);
+ 	clk_bulk_put_all(simple->num_clocks, simple->clks);
+@@ -107,9 +237,12 @@ static void __dwc3_of_simple_teardown(struct dwc3_of_simple *simple)
+ 
+ 	reset_control_put(simple->resets);
+ 
+-	pm_runtime_disable(simple->dev);
+-	pm_runtime_put_noidle(simple->dev);
+-	pm_runtime_set_suspended(simple->dev);
++	if (!simple->data || !simple->data->early_fixed_phy) {
++		pm_runtime_disable(simple->dev);
++		pm_runtime_put_noidle(simple->dev);
++		pm_runtime_set_suspended(simple->dev);
++	}
++	return true;
+ }
+ 
+ static void dwc3_of_simple_remove(struct platform_device *pdev)
+@@ -123,13 +256,20 @@ static void dwc3_of_simple_shutdown(struct platform_device *pdev)
+ {
+ 	struct dwc3_of_simple	*simple = platform_get_drvdata(pdev);
+ 
+-	__dwc3_of_simple_teardown(simple);
++	/*
++	 * The Orca child shuts down first; retain the shared analog/reset epoch
++	 * until system power-off, as in its explicit no-power-management contract.
++	 */
++	if (!simple->data || !simple->data->early_fixed_phy)
++		__dwc3_of_simple_teardown(simple);
+ }
+ 
+ static int __maybe_unused dwc3_of_simple_runtime_suspend(struct device *dev)
+ {
+ 	struct dwc3_of_simple	*simple = dev_get_drvdata(dev);
+ 
++	if (simple->data && simple->data->early_fixed_phy)
++		return -EBUSY;
+ 	clk_bulk_disable(simple->num_clocks, simple->clks);
+ 
+ 	return 0;
+@@ -139,6 +279,8 @@ static int __maybe_unused dwc3_of_simple_runtime_resume(struct device *dev)
+ {
+ 	struct dwc3_of_simple	*simple = dev_get_drvdata(dev);
+ 
++	if (simple->data && simple->data->early_fixed_phy)
++		return -EBUSY;
+ 	return clk_bulk_enable(simple->num_clocks, simple->clks);
+ }
+ 
+@@ -146,6 +288,8 @@ static int __maybe_unused dwc3_of_simple_suspend(struct device *dev)
+ {
+ 	struct dwc3_of_simple *simple = dev_get_drvdata(dev);
+ 
++	if (simple->data && simple->data->early_fixed_phy)
++		return -EBUSY;
+ 	if (simple->need_reset)
+ 		reset_control_assert(simple->resets);
+ 
+@@ -169,6 +313,7 @@ static const struct dev_pm_ops dwc3_of_simple_dev_pm_ops = {
+ };
+ 
+ static const struct of_device_id of_dwc3_simple_match[] = {
++	{ .compatible = "sprd,orca-dwc3", .data = &orca_data },
+ 	{ .compatible = "rockchip,rk3399-dwc3" },
+ 	{ .compatible = "sprd,sc9860-dwc3" },
+ 	{ .compatible = "allwinner,sun50i-h6-dwc3" },
+@@ -187,10 +332,12 @@ static struct platform_driver dwc3_of_simple_driver = {
+ 		.name	= "dwc3-of-simple",
+ 		.of_match_table = of_dwc3_simple_match,
+ 		.pm	= &dwc3_of_simple_dev_pm_ops,
++		/* Supplier unbind must not bypass the shared PAM/PHY ownership gate. */
++		.suppress_bind_attrs = IS_ENABLED(CONFIG_PHY_SPRD_ORCA_USB),
+ 	},
+ };
+ 
+ module_platform_driver(dwc3_of_simple_driver);
+-MODULE_LICENSE("GPL v2");
++MODULE_LICENSE("GPL");
+ MODULE_DESCRIPTION("DesignWare USB3 OF Simple Glue Layer");
+ MODULE_AUTHOR("Felipe Balbi <balbi@ti.com>");
+diff --git a/drivers/usb/dwc3/gadget.c b/drivers/usb/dwc3/gadget.c
+index ee8372356..a339b1d7d 100644
+--- a/drivers/usb/dwc3/gadget.c
++++ b/drivers/usb/dwc3/gadget.c
+@@ -16,11 +16,13 @@
+ #include <linux/pm_runtime.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
++#include <linux/iopoll.h>
+ #include <linux/list.h>
+ #include <linux/dma-mapping.h>
+ 
+ #include <linux/usb/ch9.h>
+ #include <linux/usb/gadget.h>
++#include <linux/usb/sprd-pamu3.h>
+ 
+ #include "debug.h"
+ #include "core.h"
+@@ -660,6 +662,12 @@ static int dwc3_gadget_set_ep_config(struct dwc3_ep *dep, unsigned int action)
+ 		params.param1 |= DWC3_DEPCFG_BINTERVAL_M1(bInterval_m1);
+ 	}
+ 
++	if (dwc3_pamu3_ep_owned(dep)) {
++		if (!usb_endpoint_xfer_bulk(desc) || dep->stream_capable)
++			return -EOPNOTSUPP;
++		params.param1 |= DWC3_DEPCFG_INT_NUM(dep->direction ? 1 : 2);
++		params.param1 |= DWC3_DEPCFG_XFER_COMPLETE_EN;
++	}
+ 	return dwc3_send_gadget_ep_cmd(dep, DWC3_DEPCMD_SETEPCONFIG, &params);
+ }
+ 
+@@ -971,6 +979,8 @@ static int __dwc3_gadget_ep_enable(struct dwc3_ep *dep, unsigned int action)
+ 	 * Issue StartTransfer here with no-op TRB so we can always rely on No
+ 	 * Response Update Transfer command.
+ 	 */
++	if (dwc3_pamu3_ep_owned(dep))
++		goto out;
+ 	if (usb_endpoint_xfer_bulk(desc) ||
+ 			usb_endpoint_xfer_int(desc)) {
+ 		struct dwc3_gadget_ep_cmd_params params;
+@@ -1180,12 +1190,177 @@ static int dwc3_gadget_ep_disable(struct usb_ep *ep)
+ 		return 0;
+ 
+ 	spin_lock_irqsave(&dwc->lock, flags);
+-	ret = __dwc3_gadget_ep_disable(dep);
++	ret = dwc3_pamu3_ep_owned(dep) ? -EBUSY : __dwc3_gadget_ep_disable(dep);
+ 	spin_unlock_irqrestore(&dwc->lock, flags);
+ 
+ 	return ret;
+ }
+ 
++int dwc3_pamu3_claim(struct device *controller, struct device *owner,
++		     struct usb_ep *out, struct usb_ep *in)
++{
++	struct dwc3 *dwc = dev_get_drvdata(controller);
++	struct dwc3_ep *dep;
++	unsigned long flags;
++	unsigned int i;
++	int ret = 0;
++
++	if (!dwc || !owner || !out || !in)
++		return -EINVAL;
++	spin_lock_irqsave(&dwc->lock, flags);
++	if (dwc->pamu3_owner != owner || !dwc->eps[2] || !dwc->eps[3] ||
++	    out != &dwc->eps[2]->endpoint || in != &dwc->eps[3]->endpoint) {
++		ret = -EINVAL;
++		goto out;
++	}
++	if (dwc->pamu3_claimed) {
++		ret = -EBUSY;
++		goto out;
++	}
++	for (i = 2; i <= 3; i++) {
++		dep = dwc->eps[i];
++		if (dep->flags & (DWC3_EP_ENABLED | DWC3_EP_TRANSFER_STARTED) ||
++		    !list_empty(&dep->pending_list) ||
++		    !list_empty(&dep->started_list) ||
++		    !list_empty(&dep->cancelled_list)) {
++			ret = -EBUSY;
++			goto out;
++		}
++	}
++	dwc->pamu3_claimed = true;
++	for (i = 1; i <= 2; i++) {
++		struct dwc3_event_buffer *evt = dwc->pamu3_events[i - 1];
++		u32 count;
++
++		/* PAM restarts its consumer at zero after its independent reset.
++		 * Both endpoints are disabled here; synchronize their dedicated
++		 * event buffers with that new epoch without touching event ring 0.
++		 */
++		dwc3_writel(dwc, DWC3_GEVNTSIZ(i),
++			    DWC3_GEVNTSIZ_INTMASK |
++				    DWC3_GEVNTSIZ_SIZE(evt->length));
++		count = dwc3_readl(dwc, DWC3_GEVNTCOUNT(i));
++		dwc3_writel(dwc, DWC3_GEVNTCOUNT(i), count);
++		memset(evt->buf, 0, evt->length);
++		evt->lpos = 0;
++		dma_wmb();
++		dwc3_writel(dwc, DWC3_GEVNTADRLO(i), lower_32_bits(evt->dma));
++		dwc3_writel(dwc, DWC3_GEVNTADRHI(i), upper_32_bits(evt->dma));
++		dwc3_writel(dwc, DWC3_GEVNTSIZ(i),
++			    DWC3_GEVNTSIZ_SIZE(evt->length));
++	}
++out:
++	spin_unlock_irqrestore(&dwc->lock, flags);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(dwc3_pamu3_claim);
++
++/* PAM issues STARTTRANSFER through MMIO, so dep->flags/resource_index do
++ * not track its live transfer. The caller has stopped PAM and proved it idle;
++ * retire the last hardware resource explicitly before disabling the endpoint.
++ */
++static int dwc3_pamu3_end_transfer(struct dwc3_ep *dep)
++{
++	struct dwc3 *dwc = dep->dwc;
++	struct dwc3_gadget_ep_cmd_params params = {};
++	u32 value, index, command;
++	int ret;
++
++	ret = read_poll_timeout_atomic(dwc3_readl, value,
++				       !(value & DWC3_DEPCMD_CMDACT), 1, 1000,
++				       false, dwc, DWC3_DEPCMD(dep->number));
++	if (ret)
++		return ret;
++	command = DWC3_DEPCMD_CMD(value);
++	if (command != DWC3_DEPCMD_STARTTRANSFER &&
++	    command != DWC3_DEPCMD_UPDATETRANSFER)
++		return 0;
++	index = DWC3_DEPCMD_GET_RSC_IDX(value);
++	if (DWC3_DEPCMD_STATUS(value) || !index)
++		return -EIO;
++	/* Orca's DWC_usb3 supports synchronous ENDXFER polling. CMDIOC would
++	 * enqueue a completion into a ring whose PAM consumer is now stopped.
++	 */
++	if (!(dwc3_readl(dwc, DWC3_GUCTL2) & DWC3_GUCTL2_RST_ACTBITLATER))
++		return -EOPNOTSUPP;
++	ret = dwc3_send_gadget_ep_cmd(dep,
++				      DWC3_DEPCMD_ENDTRANSFER |
++					      DWC3_DEPCMD_HIPRI_FORCERM |
++					      DWC3_DEPCMD_PARAM(index),
++				      &params);
++	if (ret)
++		return ret;
++	ret = read_poll_timeout_atomic(dwc3_readl, value,
++				       !(value & DWC3_DEPCMD_CMDACT), 1, 1000,
++				       false, dwc, DWC3_DEPCMD(dep->number));
++	if (ret || DWC3_DEPCMD_STATUS(value))
++		return ret ?: -EIO;
++	dep->resource_index = 0;
++	return 0;
++}
++
++static int dwc3_pamu3_finish(struct device *controller, struct device *owner,
++			     bool release)
++{
++	struct dwc3 *dwc = dev_get_drvdata(controller);
++	unsigned long flags;
++	unsigned int i;
++	u32 count;
++	int ret = 0;
++
++	if (!dwc || !owner)
++		return -EINVAL;
++	spin_lock_irqsave(&dwc->lock, flags);
++	if (dwc->pamu3_owner != owner || !dwc->pamu3_claimed) {
++		ret = -EPERM;
++		goto out;
++	}
++	/* Caller has quiesced PAM. Disable the two exclusively owned endpoints. */
++	for (i = 2; i <= 3; i++) {
++		if (dwc->eps[i]->flags & DWC3_EP_TRANSFER_STARTED) {
++			ret = -EBUSY;
++			goto out;
++		}
++		if (dwc->eps[i]->flags & DWC3_EP_ENABLED) {
++			ret = dwc3_pamu3_end_transfer(dwc->eps[i]);
++			if (ret) {
++				dev_err(dwc->dev,
++					"PAM ep%u ENDTRANSFER failed: %d\n", i,
++					ret);
++				goto out;
++			}
++			ret = __dwc3_gadget_ep_disable(dwc->eps[i]);
++			if (ret)
++				goto out;
++			dwc->eps[i]->endpoint.enabled = false;
++		}
++	}
++	for (i = 1; i <= 2; i++) {
++		dwc3_writel(dwc, DWC3_GEVNTSIZ(i),
++			    DWC3_GEVNTSIZ_INTMASK |
++				    DWC3_GEVNTSIZ_SIZE(
++					    dwc->pamu3_events[i - 1]->length));
++		count = dwc3_readl(dwc, DWC3_GEVNTCOUNT(i));
++		dwc3_writel(dwc, DWC3_GEVNTCOUNT(i), count);
++	}
++	if (release)
++		dwc->pamu3_claimed = false;
++out:
++	spin_unlock_irqrestore(&dwc->lock, flags);
++	return ret;
++}
++int dwc3_pamu3_drain(struct device *controller, struct device *owner)
++{
++	return dwc3_pamu3_finish(controller, owner, false);
++}
++EXPORT_SYMBOL_GPL(dwc3_pamu3_drain);
++
++int dwc3_pamu3_release(struct device *controller, struct device *owner)
++{
++	return dwc3_pamu3_finish(controller, owner, true);
++}
++EXPORT_SYMBOL_GPL(dwc3_pamu3_release);
++
+ static struct usb_request *dwc3_gadget_ep_alloc_request(struct usb_ep *ep,
+ 		gfp_t gfp_flags)
+ {
+@@ -1990,6 +2165,9 @@ static int __dwc3_gadget_ep_queue(struct dwc3_ep *dep, struct dwc3_request *req)
+ {
+ 	struct dwc3		*dwc = dep->dwc;
+ 
++	if (dwc3_pamu3_ep_owned(dep))
++		return -EBUSY;
++
+ 	if (!dep->endpoint.desc || !dwc->pullups_connected || !dwc->connected) {
+ 		dev_dbg(dwc->dev, "%s: can't queue to disabled endpoint\n",
+ 				dep->name);
+@@ -2912,11 +3090,11 @@ static irqreturn_t dwc3_thread_interrupt(int irq, void *_dwc);
+  *
+  * To calculate RxFIFO size we need two numbers:
+  * MDWIDTH = size, in bits, of the internal memory bus
+- * RAM2_DEPTH = depth, in MDWIDTH, of internal RAM2 (where RxFIFO sits)
++ * RXFIFO_DEPTH = programmed RxFIFO depth, bounded by internal RAM2 depth
+  *
+  * Given these two numbers, the formula is simple:
+  *
+- * RxFIFO Size = (RAM2_DEPTH * MDWIDTH / 8) - 24 - 16;
++ * RxFIFO Size = (RXFIFO_DEPTH * MDWIDTH / 8) - 24 - 16;
+  *
+  * 24 bytes is for 3x SETUP packets
+  * 16 bytes is a clock domain crossing tolerance
+@@ -2926,6 +3104,8 @@ static irqreturn_t dwc3_thread_interrupt(int irq, void *_dwc);
+ static void dwc3_gadget_setup_nump(struct dwc3 *dwc)
+ {
+ 	u32 ram2_depth;
++	u32 rx_fifo_depth;
++	u32 rx_fifo_bytes;
+ 	u32 mdwidth;
+ 	u32 nump;
+ 	u32 reg;
+@@ -2933,7 +3113,18 @@ static void dwc3_gadget_setup_nump(struct dwc3 *dwc)
+ 	ram2_depth = DWC3_GHWPARAMS7_RAM2_DEPTH(dwc->hwparams.hwparams7);
+ 	mdwidth = dwc3_mdwidth(dwc);
+ 
+-	nump = ((ram2_depth * mdwidth / 8) - 24 - 16) / 1024;
++	/* RAM2 is the available memory, not necessarily the configured FIFO.
++	 * In particular, UDX710 exposes 1160 RAM2 words but programs only 645
++	 * words for RxFIFO. Advertising the whole RAM overstates OUT credits.
++	 * Use the same programmed depth as dwc3_gadget_init_out_endpoint().
++	 */
++	rx_fifo_depth = dwc3_readl(dwc, DWC3_GRXFIFOSIZ(0));
++	if (DWC3_IP_IS(DWC3))
++		rx_fifo_depth = DWC3_GRXFIFOSIZ_RXFDEP(rx_fifo_depth);
++	else
++		rx_fifo_depth = DWC31_GRXFIFOSIZ_RXFDEP(rx_fifo_depth);
++	rx_fifo_bytes = min(ram2_depth, rx_fifo_depth) * (mdwidth / 8);
++	nump = rx_fifo_bytes > 40 ? (rx_fifo_bytes - 40) / 1024 : 0;
+ 	nump = min_t(u32, nump, 16);
+ 
+ 	/* update NumP */
+@@ -2960,18 +3151,20 @@ static int __dwc3_gadget_start(struct dwc3 *dwc)
+ 		dwc3_writel(dwc, DWC3_DEV_IMOD(0), 0);
+ 	}
+ 
+-	/*
+-	 * We are telling dwc3 that we want to use DCFG.NUMP as ACK TP's NUMP
+-	 * field instead of letting dwc3 itself calculate that automatically.
+-	 *
+-	 * This way, we maximize the chances that we'll be able to get several
+-	 * bursts of data without going through any sort of endpoint throttling.
++	/* Default to DCFG.NUMP for ACK credits unless the platform selected
++	 * threshold-based receive flow control during core initialization.
+ 	 */
+ 	reg = dwc3_readl(dwc, DWC3_GRXTHRCFG);
+-	if (DWC3_IP_IS(DWC3))
+-		reg &= ~DWC3_GRXTHRCFG_PKTCNTSEL;
+-	else
+-		reg &= ~DWC31_GRXTHRCFG_PKTCNTSEL;
++	/* core initialization enables threshold-based receive flow control
++	 * when the platform supplies both parameters. Preserve that policy;
++	 * otherwise use the FIFO-bounded DCFG.NUMP default below.
++	 */
++	if (!dwc->rx_thr_num_pkt || !dwc->rx_max_burst) {
++		if (DWC3_IP_IS(DWC3))
++			reg &= ~DWC3_GRXTHRCFG_PKTCNTSEL;
++		else
++			reg &= ~DWC31_GRXTHRCFG_PKTCNTSEL;
++	}
+ 
+ 	dwc3_writel(dwc, DWC3_GRXTHRCFG, reg);
+ 
+diff --git a/drivers/usb/dwc3/gadget.h b/drivers/usb/dwc3/gadget.h
+index 45f113b3c..4a094cb99 100644
+--- a/drivers/usb/dwc3/gadget.h
++++ b/drivers/usb/dwc3/gadget.h
+@@ -19,6 +19,13 @@ struct dwc3;
+ #define to_dwc3_ep(ep)		(container_of(ep, struct dwc3_ep, endpoint))
+ #define gadget_to_dwc(g)	(dev_get_platdata(&g->dev))
+ 
++/* Must be evaluated under dwc->lock for endpoint state changes. */
++static inline bool dwc3_pamu3_ep_owned(struct dwc3_ep *dep)
++{
++	return dep->dwc->pamu3_claimed &&
++	       (dep->number == 2 || dep->number == 3);
++}
++
+ /* DEPCFG parameter 1 */
+ #define DWC3_DEPCFG_INT_NUM(n)		(((n) & 0x1f) << 0)
+ #define DWC3_DEPCFG_XFER_COMPLETE_EN	BIT(8)
+diff --git a/drivers/usb/gadget/Kconfig b/drivers/usb/gadget/Kconfig
+index 76521555e..5e36a9d5b 100644
+--- a/drivers/usb/gadget/Kconfig
++++ b/drivers/usb/gadget/Kconfig
+@@ -237,6 +237,16 @@ config USB_CONFIGFS
+ 	  appropriate symbolic links.
+ 	  For more information see Documentation/usb/gadget_configfs.rst.
+ 
++config USB_CONFIGFS_VSER
++	bool "Spreadtrum vendor serial misc-device function"
++	depends on USB_CONFIGFS=y && TTY
++	select USB_U_SERIAL
++	help
++	  Provide the captured vser.gs0 vendor-specific bulk interface and
++	  /dev/vser with the class 0x22 port-open handshake. This is not CDC
++	  ACM. Only normal AP byte transport is supported; vendor test/IQ
++	  requests fail. Open files hold references across configfs removal.
++
+ config USB_CONFIGFS_SERIAL
+ 	bool "Generic serial bulk in/out"
+ 	depends on USB_CONFIGFS
+diff --git a/drivers/usb/gadget/composite.c b/drivers/usb/gadget/composite.c
+index df39e3487..9d6ff7281 100644
+--- a/drivers/usb/gadget/composite.c
++++ b/drivers/usb/gadget/composite.c
+@@ -942,6 +942,8 @@ static void reset_config(struct usb_composite_dev *cdev)
+ 	}
+ 	cdev->config = NULL;
+ 	cdev->delayed_status = 0;
++	cdev->checked_setup_pending = false;
++	cdev->setup_generation++;
+ }
+ 
+ static int set_config(struct usb_composite_dev *cdev,
+@@ -1765,6 +1767,14 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
+ 	struct usb_function		*iter;
+ 	u8				endp;
+ 
++	spin_lock(&cdev->lock);
++	cdev->setup_generation++;
++	if (cdev->checked_setup_pending) {
++		cdev->delayed_status = 0;
++		cdev->checked_setup_pending = false;
++	}
++	spin_unlock(&cdev->lock);
++
+ 	if (w_length > USB_COMP_EP0_BUFSIZ) {
+ 		if (ctrl->bRequestType & USB_DIR_IN) {
+ 			/* Cast away the const, we are going to overwrite on purpose. */
+@@ -2758,6 +2768,54 @@ void usb_composite_setup_continue(struct usb_composite_dev *cdev)
+ }
+ EXPORT_SYMBOL_GPL(usb_composite_setup_continue);
+ 
++int usb_composite_setup_defer_checked(struct usb_composite_dev *cdev,
++				      u32 *token)
++{
++	lockdep_assert_held(&cdev->lock);
++	/* One opt-in owner per control transfer; ordinary delayed functions
++	 * can still participate through the existing delayed_status counter.
++	 */
++	if (cdev->checked_setup_pending)
++		return -EBUSY;
++	cdev->checked_setup_pending = true;
++	*token = cdev->setup_generation;
++	return 0;
++}
++EXPORT_SYMBOL_GPL(usb_composite_setup_defer_checked);
++
++int usb_composite_setup_continue_checked(struct usb_composite_dev *cdev,
++					 u32 setup_generation,
++					 const u32 *function_generation,
++					 u32 expected_generation, int status)
++{
++	unsigned long flags;
++	int ret = status;
++
++	spin_lock_irqsave(&cdev->lock, flags);
++	if (cdev->setup_generation != setup_generation ||
++	    READ_ONCE(*function_generation) != expected_generation ||
++	    !cdev->checked_setup_pending || !cdev->delayed_status) {
++		ret = -ECANCELED;
++		goto out;
++	}
++	cdev->checked_setup_pending = false;
++	if (status < 0) {
++		/* Stall this transaction; never manufacture a successful status. */
++		cdev->delayed_status = 0;
++		usb_ep_set_halt(cdev->gadget->ep0);
++	} else if (--cdev->delayed_status == 0) {
++		cdev->req->length = 0;
++		cdev->req->context = cdev;
++		ret = composite_ep0_queue(cdev, cdev->req, GFP_ATOMIC);
++		if (ret)
++			usb_ep_set_halt(cdev->gadget->ep0);
++	}
++out:
++	spin_unlock_irqrestore(&cdev->lock, flags);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(usb_composite_setup_continue_checked);
++
+ static char *composite_default_mfr(struct usb_gadget *gadget)
+ {
+ 	return kasprintf(GFP_KERNEL, "%s %s with %s", init_utsname()->sysname,
+diff --git a/drivers/usb/gadget/function/Makefile b/drivers/usb/gadget/function/Makefile
+index 7ce163727..53ccbf4de 100644
+--- a/drivers/usb/gadget/function/Makefile
++++ b/drivers/usb/gadget/function/Makefile
+@@ -56,3 +56,5 @@ usb_f_printer-y			:= f_printer.o
+ obj-$(CONFIG_USB_F_PRINTER)	+= usb_f_printer.o
+ usb_f_tcm-y			:= f_tcm.o
+ obj-$(CONFIG_USB_F_TCM)		+= usb_f_tcm.o
++
++obj-$(CONFIG_USB_CONFIGFS_VSER) += f_vserial.o
+diff --git a/drivers/usb/gadget/function/f_ncm.c b/drivers/usb/gadget/function/f_ncm.c
+index 500c9c19c..89280ff25 100644
+--- a/drivers/usb/gadget/function/f_ncm.c
++++ b/drivers/usb/gadget/function/f_ncm.c
+@@ -22,6 +22,8 @@
+ 
+ #include <linux/usb/cdc.h>
+ #include <linux/usb/gadget.h>
++#include <linux/usb/sprd-pamu3.h>
++#include <linux/sizes.h>
+ 
+ #include "u_ether.h"
+ #include "u_ether_configfs.h"
+@@ -76,6 +78,16 @@ struct f_ncm {
+ 	struct sk_buff			*skb_tx_ndp;
+ 	u16				ndp_dgram_count;
+ 	struct hrtimer			task_timer;
++	bool pam_optin, pam_running;
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	struct device *pam;
++	struct net_device *pam_net;
++	struct work_struct pam_work;
++	spinlock_t pam_lock;
++	bool pam_wanted, pam_pending, pam_prepared, pam_armed, pam_negotiated;
++	u32 pam_generation, pam_setup;
++	int pam_error;
++#endif
+ };
+ 
+ static inline struct f_ncm *func_to_ncm(struct usb_function *f)
+@@ -531,6 +543,226 @@ static inline void ncm_reset_values(struct f_ncm *ncm)
+ 	ncm->port.fixed_in_len = NTB_DEFAULT_IN_SIZE;
+ }
+ 
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++static void ncm_notify(struct f_ncm *ncm);
++
++static int ncm_pamu3_stop(struct f_ncm *ncm)
++{
++	int ret;
++
++	gether_pamu3_disconnect(&ncm->port);
++	ncm->netdev = NULL;
++	WRITE_ONCE(ncm->pam_running, false);
++	ret = sprd_pamu3_stop(ncm->pam);
++	if (!ret) {
++		ncm->pam_armed = false;
++		ncm->pam_prepared = false;
++	}
++	return ret;
++}
++
++static int ncm_pamu3_start(struct f_ncm *ncm, u32 generation, bool enable_dma)
++{
++	struct usb_function *f = &ncm->port.func;
++	struct sprd_pamu3_config cfg = {
++		.protocol = SPRD_PAMU3_NCM_NTB16,
++		.max_transfer = SZ_16K,
++		.nth_signature = USB_CDC_NCM_NTH16_SIGN,
++		.ndp_signature = USB_CDC_NCM_NDP16_NOCRC_SIGN,
++	};
++	u32 input_size = READ_ONCE(ncm->port.fixed_in_len);
++	unsigned long flags;
++	int ret;
++
++	if (ncm->pam_error)
++		return ncm->pam_error;
++	if (ncm->parser_opts != &ndp16_opts || ncm->is_crc ||
++	    input_size < USB_CDC_NCM_NTB_MIN_IN_SIZE || input_size > SZ_16K)
++		return -EOPNOTSUPP;
++	/* Include NTH/NDP, terminator, and all alignment in the host's limit.
++	 * Use the maximum permitted Ethernet MTU, so a later MTU increase is safe.
++	 */
++	cfg.max_packets =
++		min_t(u32, 7, (input_size - 128) / (ETH_FRAME_LEN + 4));
++	if (!cfg.max_packets)
++		return -EMSGSIZE;
++	if (!ncm->pam_prepared) {
++		ret = sprd_pamu3_prepare(ncm->pam);
++		if (ret)
++			return ret;
++		ncm->pam_prepared = true;
++	}
++	if (!ncm->pam_armed) {
++		ret = config_ep_by_speed(f->config->cdev->gadget, f,
++					 ncm->port.in_ep);
++		if (!ret)
++			ret = config_ep_by_speed(f->config->cdev->gadget, f,
++						 ncm->port.out_ep);
++		if (!ret)
++			ret = sprd_pamu3_arm(ncm->pam, ncm->port.out_ep,
++					     ncm->port.in_ep);
++		if (ret)
++			return ret;
++		ncm->pam_armed = true;
++	}
++	if (!READ_ONCE(ncm->pam_wanted) ||
++	    generation != READ_ONCE(ncm->pam_generation))
++		return -ECANCELED;
++	/* Linux toggles alt 1 -> 0 before GET_NTB_PARAMETERS. During that
++	 * discovery toggle, enable endpoints but leave PAM DMA unstarted.
++	 */
++	if (!enable_dma || !READ_ONCE(ncm->pam_negotiated))
++		return 0;
++	ret = sprd_pamu3_start(ncm->pam, &cfg);
++	if (!ret)
++		ret = gether_pamu3_connect(&ncm->port);
++	if (ret)
++		return ret;
++	spin_lock_irqsave(&ncm->pam_lock, flags);
++	if (!ncm->pam_wanted || generation != ncm->pam_generation) {
++		spin_unlock_irqrestore(&ncm->pam_lock, flags);
++		return -ECANCELED;
++	}
++	ncm->netdev = ncm->pam_net;
++	WRITE_ONCE(ncm->pam_running, true);
++	gether_pamu3_carrier(&ncm->port, true);
++	spin_unlock_irqrestore(&ncm->pam_lock, flags);
++	return 0;
++}
++
++static void ncm_pamu3_work(struct work_struct *work)
++{
++	struct f_ncm *ncm = container_of(work, struct f_ncm, pam_work);
++	struct usb_composite_dev *cdev = ncm->port.func.config->cdev;
++	unsigned long flags;
++	u32 generation, setup;
++	bool wanted, pending, again;
++	int ret, cleanup;
++
++	/* set_alt must return before composite publishes its delayed status. */
++	spin_lock_irqsave(&cdev->lock, flags);
++	spin_unlock_irqrestore(&cdev->lock, flags);
++	for (;;) {
++		spin_lock_irqsave(&ncm->pam_lock, flags);
++		generation = ncm->pam_generation;
++		setup = ncm->pam_setup;
++		wanted = ncm->pam_wanted;
++		pending = ncm->pam_pending;
++		spin_unlock_irqrestore(&ncm->pam_lock, flags);
++		/* A parameters request on an already armed alt 1 only starts DMA.
++		 * Real alternate-setting transitions still stop the previous state.
++		 */
++		ret = pending || !wanted || !ncm->pam_armed ?
++			      ncm_pamu3_stop(ncm) :
++			      0;
++		if (!ret && wanted)
++			ret = ncm_pamu3_start(ncm, generation, true);
++		if (ret) {
++			cleanup = ncm_pamu3_stop(ncm);
++			if (cleanup)
++				ncm->pam_error = cleanup;
++			pr_err("PAM NCM transition failed: %d (cleanup %d)\n",
++			       ret, cleanup);
++		}
++		if (pending) {
++			/* After negotiation, DMA must be ready before SET_INTERFACE
++			 * succeeds: the host may submit bulk OUT immediately. The
++			 * cold-boot resource wait ran before pullup, outside EP0's
++			 * deadline. The initial discovery alt 1 has no negotiated
++			 * NTB parameters and still only enables the endpoints.
++			 */
++			spin_lock_irqsave(&ncm->pam_lock, flags);
++			if (generation == ncm->pam_generation)
++				ncm->pam_pending = false;
++			spin_unlock_irqrestore(&ncm->pam_lock, flags);
++			ret = usb_composite_setup_continue_checked(
++				cdev, setup, &ncm->pam_generation, generation,
++				ret);
++		}
++		spin_lock_irqsave(&ncm->pam_lock, flags);
++		again = generation != ncm->pam_generation;
++		if (!again) {
++			ncm->pam_pending = false;
++			if (ret)
++				ncm->pam_wanted = false;
++		}
++		spin_unlock_irqrestore(&ncm->pam_lock, flags);
++		if (again)
++			continue;
++		if (ret && wanted) {
++			cleanup = ncm_pamu3_stop(ncm);
++			if (cleanup)
++				ncm->pam_error = cleanup;
++			if (ret != -ECANCELED)
++				pr_err("PAM NCM data start failed: %d (cleanup %d)\n",
++				       ret, cleanup);
++		}
++		spin_lock_irqsave(&ncm->lock, flags);
++		ncm->is_open = READ_ONCE(ncm->pam_running) &&
++			       netif_running(ncm->pam_net);
++		if (ncm->notify->enabled)
++			ncm_notify(ncm);
++		spin_unlock_irqrestore(&ncm->lock, flags);
++		return;
++	}
++}
++
++static int ncm_pamu3_set_alt(struct f_ncm *ncm, unsigned int alt)
++{
++	struct usb_composite_dev *cdev = ncm->port.func.config->cdev;
++	unsigned long flags;
++	int ret;
++
++	spin_lock_irqsave(&ncm->pam_lock, flags);
++	if (ncm->pam_pending) {
++		spin_unlock_irqrestore(&ncm->pam_lock, flags);
++		return -EBUSY;
++	}
++	ret = usb_composite_setup_defer_checked(cdev, &ncm->pam_setup);
++	if (!ret) {
++		ncm->pam_generation++;
++		ncm->pam_wanted = !!alt;
++		ncm->pam_pending = true;
++		sprd_pamu3_quiesce_atomic(ncm->pam);
++	}
++	spin_unlock_irqrestore(&ncm->pam_lock, flags);
++	if (ret)
++		return ret;
++	schedule_work(&ncm->pam_work);
++	return USB_GADGET_DELAYED_STATUS;
++}
++
++static void ncm_pamu3_parameters_seen(struct f_ncm *ncm)
++{
++	unsigned long flags;
++	bool start = false;
++
++	spin_lock_irqsave(&ncm->pam_lock, flags);
++	if (!ncm->pam_negotiated) {
++		ncm->pam_negotiated = true;
++		start = ncm->pam_wanted && !ncm->pam_running;
++	}
++	spin_unlock_irqrestore(&ncm->pam_lock, flags);
++	if (start)
++		schedule_work(&ncm->pam_work);
++}
++
++static void ncm_pamu3_disable(struct f_ncm *ncm)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&ncm->pam_lock, flags);
++	ncm->pam_generation++;
++	ncm->pam_wanted = false;
++	ncm->pam_pending = false;
++	ncm->pam_negotiated = false;
++	gether_pamu3_carrier(&ncm->port, false);
++	sprd_pamu3_quiesce_atomic(ncm->pam);
++	spin_unlock_irqrestore(&ncm->pam_lock, flags);
++	schedule_work(&ncm->pam_work);
++}
++#endif
++
+ /*
+  * Context: ncm->lock held
+  */
+@@ -666,6 +898,15 @@ static void ncm_ep0out_complete(struct usb_ep *ep, struct usb_request *req)
+ 		DBG(cdev, "Got wrong INPUT SIZE (%d) from host\n", in_size);
+ 		goto invalid;
+ 	}
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	/* An acknowledged data alt setting also freezes framing while the
++	 * resource grant is pending; a new size belongs to the next alt 0.
++	 */
++	if (ncm->pam_optin && READ_ONCE(ncm->pam_wanted) &&
++	    READ_ONCE(ncm->pam_negotiated) &&
++	    in_size != READ_ONCE(ncm->port.fixed_in_len))
++		goto invalid;
++#endif
+ 
+ 	ncm->port.fixed_in_len = in_size;
+ 	VDBG(cdev, "Set NTB INPUT SIZE %d\n", in_size);
+@@ -682,6 +923,7 @@ static int ncm_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
+ 	struct usb_composite_dev *cdev = f->config->cdev;
+ 	struct usb_request	*req = cdev->req;
+ 	int			value = -EOPNOTSUPP;
++	bool ntb_parameters_reply __maybe_unused = false;
+ 	u16			w_index = le16_to_cpu(ctrl->wIndex);
+ 	u16			w_value = le16_to_cpu(ctrl->wValue);
+ 	u16			w_length = le16_to_cpu(ctrl->wLength);
+@@ -723,9 +965,23 @@ static int ncm_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
+ 
+ 		if (w_length == 0 || w_value != 0 || w_index != ncm->ctrl_id)
+ 			goto invalid;
++		ntb_parameters_reply = true;
+ 		value = w_length > sizeof ntb_parameters ?
+ 			sizeof ntb_parameters : w_length;
+ 		memcpy(req->buf, &ntb_parameters, value);
++		if (ncm->pam_optin) {
++			struct usb_cdc_ncm_ntb_parameters params =
++				ntb_parameters;
++			params.bmNtbFormatsSupported =
++				cpu_to_le16(USB_CDC_NCM_NTB16_SUPPORTED);
++			/* PAM packs Ethernet datagrams contiguously; only the NDP
++			 * itself is padded to a four-byte boundary. Table alignment
++			 * and datagram-payload alignment are distinct NCM fields.
++			 */
++			params.wNdpInDivisor = cpu_to_le16(1);
++			params.wNtbOutMaxDatagrams = cpu_to_le16(7);
++			memcpy(req->buf, &params, value);
++		}
+ 		VDBG(cdev, "Host asked NTB parameters\n");
+ 		break;
+ 
+@@ -778,6 +1034,8 @@ static int ncm_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
+ 			DBG(cdev, "NCM16 selected\n");
+ 			break;
+ 		case 0x0001:
++			if (ncm->pam_optin)
++				goto invalid;
+ 			ncm->parser_opts = &ndp32_opts;
+ 			DBG(cdev, "NCM32 selected\n");
+ 			break;
+@@ -812,6 +1070,8 @@ static int ncm_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
+ 			DBG(cdev, "non-CRC mode selected\n");
+ 			break;
+ 		case 0x0001:
++			if (ncm->pam_optin)
++				goto invalid;
+ 			ncm->is_crc = true;
+ 			DBG(cdev, "CRC mode selected\n");
+ 			break;
+@@ -845,6 +1105,11 @@ static int ncm_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
+ 		req->zero = 0;
+ 		req->length = value;
+ 		value = usb_ep_queue(cdev->gadget->ep0, req, GFP_ATOMIC);
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++		/* DWC3 reuses the SETUP/TRB storage while queueing this response. */
++		if (!value && ncm->pam && ntb_parameters_reply)
++			ncm_pamu3_parameters_seen(ncm);
++#endif
+ 		if (value < 0)
+ 			ERROR(cdev, "ncm req %02x.%02x response err %d\n",
+ 					ctrl->bRequestType, ctrl->bRequest,
+@@ -880,6 +1145,10 @@ static int ncm_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
+ 	} else if (intf == ncm->data_id) {
+ 		if (alt > 1)
+ 			goto fail;
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++		if (ncm->pam)
++			return ncm_pamu3_set_alt(ncm, alt);
++#endif
+ 
+ 		if (ncm->netdev) {
+ 			DBG(cdev, "reset ncm\n");
+@@ -943,6 +1212,10 @@ static int ncm_get_alt(struct usb_function *f, unsigned intf)
+ 
+ 	if (intf == ncm->ctrl_id)
+ 		return 0;
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	if (ncm->pam)
++		return READ_ONCE(ncm->pam_armed) ? 1 : 0;
++#endif
+ 	return ncm->port.in_ep->enabled ? 1 : 0;
+ }
+ 
+@@ -1379,9 +1652,16 @@ static void ncm_disable(struct usb_function *f)
+ 
+ 	DBG(cdev, "ncm deactivated\n");
+ 
+-	if (ncm->netdev) {
+-		ncm->netdev = NULL;
+-		gether_disconnect(&ncm->port);
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	if (ncm->pam) {
++		ncm_pamu3_disable(ncm);
++	} else
++#endif
++	{
++		if (ncm->netdev) {
++			ncm->netdev = NULL;
++			gether_disconnect(&ncm->port);
++		}
+ 	}
+ 
+ 	if (ncm->notify->enabled) {
+@@ -1455,9 +1735,13 @@ static int ncm_bind(struct usb_configuration *c, struct usb_function *f)
+ 		return -EINVAL;
+ 
+ 	ncm_opts = container_of(f->fi, struct f_ncm_opts, func_inst);
++	if (ncm->pam_optin && (!IS_ENABLED(CONFIG_SPRD_PAMU3) ||
++			       ncm_opts->max_segment_size > ETH_FRAME_LEN ||
++			       ncm_opts->max_segment_size < ETH_HLEN + 68))
++		return -EOPNOTSUPP;
+ 
+ 	if (cdev->use_os_string) {
+-		os_desc_table = kzalloc(sizeof(*os_desc_table), GFP_KERNEL);
++		os_desc_table = kzalloc_obj(*os_desc_table, GFP_KERNEL);
+ 		if (!os_desc_table)
+ 			return -ENOMEM;
+ 	}
+@@ -1555,6 +1839,50 @@ static int ncm_bind(struct usb_configuration *c, struct usb_function *f)
+ 			ncm_ss_function, ncm_ss_function);
+ 	if (status)
+ 		return status;
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	if (ncm->pam_optin) {
++		struct usb_descriptor_header **sets[] = {
++			f->fs_descriptors,
++			f->hs_descriptors,
++			f->ss_descriptors,
++			f->ssp_descriptors,
++		};
++		unsigned int i, j;
++
++		ncm->pam = sprd_pamu3_get(cdev->gadget->dev.parent);
++		if (IS_ERR(ncm->pam)) {
++			status = PTR_ERR(ncm->pam);
++			ncm->pam = NULL;
++			usb_free_all_descriptors(f);
++			return status;
++		}
++		status = sprd_pamu3_wait_ready(ncm->pam);
++		if (status) {
++			int cleanup = sprd_pamu3_put(ncm->pam);
++
++			if (cleanup)
++				pr_err("PAM NCM prebind resource remains pinned: %d\n",
++				       cleanup);
++			ncm->pam = NULL;
++			usb_free_all_descriptors(f);
++			return status;
++		}
++		ncm->pam_net = ncm_opts->net;
++		/* Change only this function's descriptor copies. */
++		for (i = 0; i < ARRAY_SIZE(sets); i++)
++			for (j = 0; sets[i] && sets[i][j]; j++) {
++				struct usb_cdc_ncm_desc *desc =
++					(void *)sets[i][j];
++				if (desc->bDescriptorType ==
++					    USB_DT_CS_INTERFACE &&
++				    desc->bLength >= sizeof(*desc) &&
++				    desc->bDescriptorSubType ==
++					    USB_CDC_NCM_TYPE)
++					desc->bmNetworkCapabilities &=
++						~USB_CDC_NCM_NCAP_CRC_MODE;
++			}
++	}
++#endif
+ 
+ 	/*
+ 	 * NOTE:  all that is done without knowing or caring about
+@@ -1649,12 +1977,45 @@ static ssize_t ncm_opts_max_segment_size_store(struct config_item *item,
+ 
+ CONFIGFS_ATTR(ncm_opts_, max_segment_size);
+ 
++static ssize_t ncm_opts_pamu3_show(struct config_item *item, char *page)
++{
++	struct f_ncm_opts *opts = to_f_ncm_opts(item);
++	bool enabled;
++
++	mutex_lock(&opts->lock);
++	enabled = opts->pamu3;
++	mutex_unlock(&opts->lock);
++	return sysfs_emit(page, "%u\n", enabled);
++}
++
++static ssize_t ncm_opts_pamu3_store(struct config_item *item, const char *page,
++				    size_t len)
++{
++	struct f_ncm_opts *opts = to_f_ncm_opts(item);
++	bool enabled;
++	int ret = kstrtobool(page, &enabled);
++
++	if (ret)
++		return ret;
++	if (enabled && !IS_ENABLED(CONFIG_SPRD_PAMU3))
++		return -EOPNOTSUPP;
++	mutex_lock(&opts->lock);
++	if (opts->refcnt)
++		ret = -EBUSY;
++	else
++		opts->pamu3 = enabled;
++	mutex_unlock(&opts->lock);
++	return ret ?: len;
++}
++CONFIGFS_ATTR(ncm_opts_, pamu3);
++
+ static struct configfs_attribute *ncm_attrs[] = {
+ 	&ncm_opts_attr_dev_addr,
+ 	&ncm_opts_attr_host_addr,
+ 	&ncm_opts_attr_qmult,
+ 	&ncm_opts_attr_ifname,
+ 	&ncm_opts_attr_max_segment_size,
++	&ncm_opts_attr_pamu3,
+ 	NULL,
+ };
+ 
+@@ -1737,6 +2098,19 @@ static void ncm_unbind(struct usb_configuration *c, struct usb_function *f)
+ 	DBG(c->cdev, "ncm unbind\n");
+ 
+ 	ncm_opts = container_of(f->fi, struct f_ncm_opts, func_inst);
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	if (ncm->pam) {
++		unsigned long flags;
++
++		spin_lock_irqsave(&c->cdev->lock, flags);
++		ncm_pamu3_disable(ncm);
++		spin_unlock_irqrestore(&c->cdev->lock, flags);
++		flush_work(&ncm->pam_work);
++		if (sprd_pamu3_put(ncm->pam))
++			pr_err("PAM NCM provider remains pinned after unbind\n");
++		ncm->pam = NULL;
++	}
++#endif
+ 
+ 	hrtimer_cancel(&ncm->task_timer);
+ 
+@@ -1773,6 +2147,11 @@ static struct usb_function *ncm_alloc(struct usb_function_instance *fi)
+ 	opts = container_of(fi, struct f_ncm_opts, func_inst);
+ 	mutex_lock(&opts->lock);
+ 	opts->refcnt++;
++	ncm->pam_optin = opts->pamu3;
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	spin_lock_init(&ncm->pam_lock);
++	INIT_WORK(&ncm->pam_work, ncm_pamu3_work);
++#endif
+ 
+ 	/* export host's Ethernet address in CDC format */
+ 	status = gether_get_host_addr_cdc(opts->net, ncm->ethaddr,
+diff --git a/drivers/usb/gadget/function/f_rndis.c b/drivers/usb/gadget/function/f_rndis.c
+index 7de1c5f8e..df48cad96 100644
+--- a/drivers/usb/gadget/function/f_rndis.c
++++ b/drivers/usb/gadget/function/f_rndis.c
+@@ -25,6 +25,11 @@
+ #include "u_ether.h"
+ #include "u_ether_configfs.h"
+ #include "u_rndis.h"
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++#include <linux/usb/sprd-pamu3.h>
++#include <linux/sizes.h>
++#include <linux/unaligned.h>
++#endif
+ #include "rndis.h"
+ #include "configfs.h"
+ 
+@@ -80,6 +85,19 @@ struct f_rndis {
+ 	struct usb_ep			*notify;
+ 	struct usb_request		*notify_req;
+ 	atomic_t			notify_count;
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	bool pam_optin, pam_wanted, pam_pending, pam_prepared, pam_armed,
++		pam_running;
++	bool pam_init_valid;
++	int pam_error;
++	u32 pam_generation, pam_setup;
++	struct device *pam;
++	struct work_struct pam_work;
++	spinlock_t pam_lock;
++	struct list_head pam_commands;
++	unsigned int pam_command_count;
++	struct sprd_pamu3_config pam_config;
++#endif
+ };
+ 
+ static inline struct f_rndis *func_to_rndis(struct usb_function *f)
+@@ -87,6 +105,304 @@ static inline struct f_rndis *func_to_rndis(struct usb_function *f)
+ 	return container_of(f, struct f_rndis, port.func);
+ }
+ 
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++struct rndis_pamu3_command {
++	struct list_head node;
++	u32 generation;
++	u8 data[];
++};
++
++static int rndis_pamu3_arm(struct f_rndis *rndis)
++{
++	struct usb_function *f = &rndis->port.func;
++	int ret;
++
++	if (rndis->pam_armed)
++		return 0;
++	if (!rndis->pam_prepared) {
++		ret = sprd_pamu3_prepare(rndis->pam);
++		if (ret)
++			return ret;
++		rndis->pam_prepared = true;
++	}
++	ret = config_ep_by_speed(f->config->cdev->gadget, f, rndis->port.in_ep);
++	if (!ret)
++		ret = config_ep_by_speed(f->config->cdev->gadget, f,
++					 rndis->port.out_ep);
++	if (!ret)
++		ret = sprd_pamu3_arm(rndis->pam, rndis->port.out_ep,
++				     rndis->port.in_ep);
++	if (!ret)
++		rndis->pam_armed = true;
++	return ret;
++}
++
++static int rndis_pamu3_stop(struct f_rndis *rndis)
++{
++	int ret;
++
++	gether_pamu3_disconnect(&rndis->port);
++	/* Normal STOP lets published AP TX drain before stopping PAM. USB
++	 * reset/disable still invokes the separate atomic quiesce front half.
++	 */
++	ret = sprd_pamu3_stop(rndis->pam);
++	if (!ret) {
++		rndis->pam_running = false;
++		rndis->pam_armed = false;
++		rndis->pam_prepared = false;
++	}
++	return ret;
++}
++
++static int rndis_pamu3_filter(void *data, u16 filter)
++{
++	struct f_rndis *rndis = data;
++	int ret, cleanup;
++	u32 generation = READ_ONCE(rndis->pam_generation);
++	unsigned long flags;
++
++	if (!filter) {
++		ret = rndis_pamu3_stop(rndis);
++		if (ret)
++			rndis->pam_error = ret;
++		return ret;
++	}
++	if (!READ_ONCE(rndis->pam_wanted))
++		return -ESHUTDOWN;
++	if (!READ_ONCE(rndis->pam_init_valid))
++		return -EPROTO;
++	if (rndis->pam_error)
++		return rndis->pam_error;
++	if (rndis->pam_running)
++		return 0;
++	ret = rndis_pamu3_arm(rndis);
++	if (!ret && (!READ_ONCE(rndis->pam_wanted) ||
++		     generation != READ_ONCE(rndis->pam_generation)))
++		ret = -ECANCELED;
++	if (!ret)
++		ret = sprd_pamu3_start(rndis->pam, &rndis->pam_config);
++	if (!ret)
++		ret = gether_pamu3_connect(&rndis->port);
++	if (ret) {
++		cleanup = rndis_pamu3_stop(rndis);
++		if (cleanup) {
++			rndis->pam_error = cleanup;
++			pr_err("PAM RNDIS rollback pinned: %d (activation %d)\n",
++			       cleanup, ret);
++		}
++		return ret;
++	}
++	spin_lock_irqsave(&rndis->pam_lock, flags);
++	if (!rndis->pam_wanted || generation != rndis->pam_generation) {
++		spin_unlock_irqrestore(&rndis->pam_lock, flags);
++		ret = rndis_pamu3_stop(rndis);
++		return ret ?: -ECANCELED;
++	}
++	rndis->pam_running = true;
++	gether_pamu3_carrier(&rndis->port, true);
++	spin_unlock_irqrestore(&rndis->pam_lock, flags);
++	return 0;
++}
++
++static int rndis_pamu3_init_transfer(void *data, u32 max_transfer)
++{
++	struct f_rndis *rndis = data;
++	u32 packet_bytes = rndis->params->dev->mtu + ETH_HLEN +
++			   sizeof(struct rndis_packet_msg_type) + 22;
++
++	/* INIT's MaxTransferSize bounds device-to-host transfers. The fixed
++	 * 16 KiB PAM RX TRBs describe the opposite direction. With one packet
++	 * per transfer, use the same packet bound as our INIT response; Linux
++	 * normally offers a 2048-byte receive URB for a 1500-byte MTU.
++	 */
++	WRITE_ONCE(rndis->pam_init_valid, rndis->pam_config.max_packets == 1 &&
++						  max_transfer >= packet_bytes);
++	if (!READ_ONCE(rndis->pam_init_valid))
++		return -EOPNOTSUPP;
++	rndis->pam_config.max_transfer = SZ_16K;
++	return 0;
++}
++
++static void rndis_pamu3_work(struct work_struct *work)
++{
++	struct f_rndis *rndis = container_of(work, struct f_rndis, pam_work);
++	struct usb_composite_dev *cdev = rndis->port.func.config->cdev;
++	struct rndis_pamu3_command *cmd;
++	unsigned long flags;
++	u32 generation, setup;
++	bool wanted, pending;
++	int ret;
++
++	/* Fence set_alt's return and composite's delayed_status increment. */
++	spin_lock_irqsave(&cdev->lock, flags);
++	spin_unlock_irqrestore(&cdev->lock, flags);
++	for (;;) {
++		spin_lock_irqsave(&rndis->pam_lock, flags);
++		generation = rndis->pam_generation;
++		setup = rndis->pam_setup;
++		wanted = rndis->pam_wanted;
++		pending = rndis->pam_pending;
++		cmd = NULL;
++		if (!list_empty(&rndis->pam_commands)) {
++			cmd = list_first_entry(&rndis->pam_commands,
++					       struct rndis_pamu3_command,
++					       node);
++			list_del(&cmd->node);
++			rndis->pam_command_count--;
++		}
++		spin_unlock_irqrestore(&rndis->pam_lock, flags);
++		if (!wanted) {
++			kfree(cmd);
++			ret = rndis_pamu3_stop(rndis);
++			if (ret)
++				pr_err("PAM RNDIS disconnect pinned: %d\n",
++				       ret);
++			rndis_uninit(rndis->params);
++			spin_lock_irqsave(&rndis->pam_lock, flags);
++			pending = !list_empty(&rndis->pam_commands) ||
++				  rndis->pam_wanted;
++			spin_unlock_irqrestore(&rndis->pam_lock, flags);
++			if (pending)
++				continue;
++			return;
++		}
++		if (pending) {
++			ret = rndis_pamu3_stop(
++				rndis); /* repeated SET_INTERFACE rollback */
++			if (!ret)
++				ret = rndis_pamu3_arm(rndis);
++			if (ret) {
++				int cleanup = rndis_pamu3_stop(rndis);
++
++				if (cleanup)
++					rndis->pam_error = cleanup;
++			}
++			ret = usb_composite_setup_continue_checked(
++				cdev, setup, &rndis->pam_generation, generation,
++				ret);
++			spin_lock_irqsave(&rndis->pam_lock, flags);
++			if (generation == rndis->pam_generation) {
++				rndis->pam_pending = false;
++				if (ret)
++					rndis->pam_wanted = false;
++			}
++			spin_unlock_irqrestore(&rndis->pam_lock, flags);
++			if (ret) {
++				kfree(cmd);
++				continue;
++			}
++		}
++		if (cmd) {
++			if (cmd->generation ==
++				    READ_ONCE(rndis->pam_generation) &&
++			    READ_ONCE(rndis->pam_wanted)) {
++				ret = rndis_msg_parser(rndis->params,
++						       cmd->data);
++				if (ret)
++					pr_err("PAM RNDIS command failed: %d\n",
++					       ret);
++			}
++			kfree(cmd);
++			continue;
++		}
++		return;
++	}
++}
++
++static int rndis_pamu3_set_alt(struct f_rndis *rndis)
++{
++	struct usb_composite_dev *cdev = rndis->port.func.config->cdev;
++	unsigned long flags;
++	int ret;
++
++	spin_lock_irqsave(&rndis->pam_lock, flags);
++	if (rndis->pam_pending) {
++		spin_unlock_irqrestore(&rndis->pam_lock, flags);
++		return -EBUSY;
++	}
++	ret = usb_composite_setup_defer_checked(cdev, &rndis->pam_setup);
++	if (ret) {
++		spin_unlock_irqrestore(&rndis->pam_lock, flags);
++		return ret;
++	}
++	rndis->pam_generation++;
++	rndis->pam_wanted = true;
++	WRITE_ONCE(rndis->pam_init_valid, false);
++	rndis->pam_pending = true;
++	sprd_pamu3_quiesce_atomic(rndis->pam);
++	spin_unlock_irqrestore(&rndis->pam_lock, flags);
++	schedule_work(&rndis->pam_work);
++	return USB_GADGET_DELAYED_STATUS;
++}
++
++static void rndis_pamu3_disable(struct f_rndis *rndis)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&rndis->pam_lock, flags);
++	rndis->pam_generation++;
++	rndis->pam_wanted = false;
++	WRITE_ONCE(rndis->pam_init_valid, false);
++	gether_pamu3_carrier(&rndis->port, false);
++	rndis->pam_pending = false;
++	sprd_pamu3_quiesce_atomic(rndis->pam);
++	spin_unlock_irqrestore(&rndis->pam_lock, flags);
++	schedule_work(&rndis->pam_work);
++}
++
++static int rndis_pamu3_queue_command(struct f_rndis *rndis,
++				     struct usb_request *req)
++{
++	struct rndis_pamu3_command *cmd;
++	u32 type, length, offset, bytes;
++	unsigned long flags;
++
++	if (req->status || req->actual < 8 ||
++	    req->actual > RNDIS_MAX_TOTAL_SIZE)
++		return -EINVAL;
++	type = get_unaligned_le32(req->buf);
++	length = get_unaligned_le32(req->buf + 4);
++	if (length != req->actual)
++		return -EMSGSIZE;
++	switch (type) {
++	case RNDIS_MSG_INIT:
++		if (length < sizeof(rndis_init_msg_type))
++			return -EINVAL;
++		break;
++	case RNDIS_MSG_QUERY:
++	case RNDIS_MSG_SET:
++		if (length < sizeof(rndis_set_msg_type))
++			return -EINVAL;
++		bytes = get_unaligned_le32(req->buf + 16);
++		offset = get_unaligned_le32(req->buf + 20);
++		if ((bytes && offset < sizeof(rndis_set_msg_type) - 8) ||
++		    offset > length - 8 || bytes > length - 8 - offset)
++			return -EINVAL;
++		break;
++	default:
++		if (length < 12)
++			return -EINVAL;
++	}
++	cmd = kzalloc(sizeof(*cmd) + length + 16, GFP_ATOMIC);
++	if (!cmd)
++		return -ENOMEM;
++	memcpy(cmd->data, req->buf, length);
++	spin_lock_irqsave(&rndis->pam_lock, flags);
++	if (!rndis->pam_wanted || rndis->pam_pending ||
++	    rndis->pam_command_count >= 8) {
++		spin_unlock_irqrestore(&rndis->pam_lock, flags);
++		kfree(cmd);
++		return -EBUSY;
++	}
++	cmd->generation = rndis->pam_generation;
++	list_add_tail(&cmd->node, &rndis->pam_commands);
++	rndis->pam_command_count++;
++	spin_unlock_irqrestore(&rndis->pam_lock, flags);
++	schedule_work(&rndis->pam_work);
++	return 0;
++}
++#endif
++
+ /*-------------------------------------------------------------------------*/
+ 
+ /*
+@@ -442,6 +758,14 @@ static void rndis_command_complete(struct usb_ep *ep, struct usb_request *req)
+ 	struct f_rndis			*rndis = req->context;
+ 	int				status;
+ 
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	if (rndis->pam) {
++		status = rndis_pamu3_queue_command(rndis, req);
++		if (status)
++			usb_ep_set_halt(ep);
++		return;
++	}
++#endif
+ 	/* received RNDIS command from USB_CDC_SEND_ENCAPSULATED_COMMAND */
+ //	spin_lock(&dev->lock);
+ 	status = rndis_msg_parser(rndis->params, (u8 *) req->buf);
+@@ -547,6 +871,10 @@ static int rndis_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
+ 	} else if (intf == rndis->data_id) {
+ 		struct net_device	*net;
+ 
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++		if (rndis->pam)
++			return rndis_pamu3_set_alt(rndis);
++#endif
+ 		if (rndis->port.in_ep->enabled) {
+ 			DBG(cdev, "reset rndis\n");
+ 			gether_disconnect(&rndis->port);
+@@ -601,13 +929,25 @@ static void rndis_disable(struct usb_function *f)
+ 	struct f_rndis		*rndis = func_to_rndis(f);
+ 	struct usb_composite_dev *cdev = f->config->cdev;
+ 
+-	if (!rndis->notify->enabled)
++	if (!rndis->notify->enabled) {
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++		if (rndis->pam)
++			rndis_pamu3_disable(rndis);
++#endif
+ 		return;
++	}
+ 
+ 	DBG(cdev, "rndis deactivated\n");
+ 
+-	rndis_uninit(rndis->params);
+-	gether_disconnect(&rndis->port);
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	if (rndis->pam)
++		rndis_pamu3_disable(rndis);
++	else
++#endif
++	{
++		rndis_uninit(rndis->params);
++		gether_disconnect(&rndis->port);
++	}
+ 
+ 	usb_ep_disable(rndis->notify);
+ 	rndis->notify->desc = NULL;
+@@ -792,6 +1132,21 @@ rndis_bind(struct usb_configuration *c, struct usb_function *f)
+ 		f->os_desc_n = 1;
+ 
+ 	}
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	if (rndis->pam_optin) {
++		rndis->pam = sprd_pamu3_get(cdev->gadget->dev.parent);
++		if (IS_ERR(rndis->pam)) {
++			status = PTR_ERR(rndis->pam);
++			rndis->pam = NULL;
++			usb_free_all_descriptors(f);
++			return status;
++		}
++		rndis_set_param_dev(rndis->params, rndis_opts->net,
++				    &rndis->port.cdc_filter);
++		rndis->params->set_filter = rndis_pamu3_filter;
++		rndis->params->init_transfer = rndis_pamu3_init_transfer;
++	}
++#endif
+ 	rndis->notify_req = no_free_ptr(request);
+ 
+ 	rndis_opts->bind_count++;
+@@ -851,6 +1206,9 @@ USB_ETHER_CONFIGFS_ITEM_ATTR_U8_RW(rndis, subclass);
+ 
+ /* f_rndis_opts_protocol */
+ USB_ETHER_CONFIGFS_ITEM_ATTR_U8_RW(rndis, protocol);
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++USB_ETHER_CONFIGFS_ITEM_ATTR_U8_RW(rndis, pamu3);
++#endif
+ 
+ static struct configfs_attribute *rndis_attrs[] = {
+ 	&rndis_opts_attr_dev_addr,
+@@ -860,6 +1218,9 @@ static struct configfs_attribute *rndis_attrs[] = {
+ 	&rndis_opts_attr_class,
+ 	&rndis_opts_attr_subclass,
+ 	&rndis_opts_attr_protocol,
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	&rndis_opts_attr_pamu3,
++#endif
+ 	NULL,
+ };
+ 
+@@ -947,6 +1308,21 @@ static void rndis_unbind(struct usb_configuration *c, struct usb_function *f)
+ 	struct f_rndis_opts	*rndis_opts;
+ 
+ 	rndis_opts = container_of(f->fi, struct f_rndis_opts, func_inst);
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	if (rndis->pam) {
++		unsigned long flags;
++
++		spin_lock_irqsave(&c->cdev->lock, flags);
++		rndis_pamu3_disable(rndis);
++		spin_unlock_irqrestore(&c->cdev->lock, flags);
++		flush_work(&rndis->pam_work);
++		rndis->params->set_filter = NULL;
++		rndis->params->init_transfer = NULL;
++		if (sprd_pamu3_put(rndis->pam))
++			pr_err("PAM provider remains pinned after function unbind\n");
++		rndis->pam = NULL;
++	}
++#endif
+ 
+ 	kfree(f->os_desc_table);
+ 	f->os_desc_n = 0;
+@@ -980,6 +1356,17 @@ static struct usb_function *rndis_alloc(struct usb_function_instance *fi)
+ 	rndis->manufacturer = opts->manufacturer;
+ 
+ 	rndis->port.ioport = netdev_priv(opts->net);
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	rndis->pam_optin = !!opts->pamu3;
++	INIT_WORK(&rndis->pam_work, rndis_pamu3_work);
++	spin_lock_init(&rndis->pam_lock);
++	INIT_LIST_HEAD(&rndis->pam_commands);
++	rndis->pam_config.protocol = SPRD_PAMU3_RNDIS;
++	rndis->pam_config.max_packets = 1;
++	rndis->pam_config.max_transfer = SZ_16K;
++	ether_addr_copy(rndis->pam_config.host_mac, rndis->ethaddr);
++	ether_addr_copy(rndis->pam_config.dev_mac, opts->net->dev_addr);
++#endif
+ 	mutex_unlock(&opts->lock);
+ 	/* RNDIS activates when the host changes this filter */
+ 	rndis->port.cdc_filter = 0;
+diff --git a/drivers/usb/gadget/function/f_vserial.c b/drivers/usb/gadget/function/f_vserial.c
+new file mode 100644
+index 000000000..0a757c4c3
+--- /dev/null
++++ b/drivers/usb/gadget/function/f_vserial.c
+@@ -0,0 +1,668 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Spreadtrum vendor serial function, AP mainline adaptation.
++ * Wire descriptors and class 0x22 port-open handshake derive from the GPL
++ * BSP f_vserial.c at d834a127aa46356c63bd5a59bc6d86c66ea371be.
++ * The misc-device lifetime and request ownership are independently managed.
++ */
++#include <linux/completion.h>
++#include <linux/configfs.h>
++#include <linux/kref.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/poll.h>
++#include <linux/rwsem.h>
++#include <linux/sizes.h>
++#include <linux/slab.h>
++#include <linux/usb/composite.h>
++#include <linux/uaccess.h>
++
++#include "u_serial.h"
++
++#define VSER_SIZE SZ_16K
++#define VSER_TX_COUNT 4
++
++struct vser {
++	struct usb_function_instance instance;
++	struct usb_function function;
++	struct miscdevice misc;
++	struct kref ref;
++	struct rw_semaphore io_sem;
++	struct mutex read_lock, write_lock;
++	spinlock_t lock;
++	wait_queue_head_t wait;
++	struct completion rx_done;
++	struct usb_ep *in, *out;
++	struct usb_request *rx;
++	struct list_head tx_idle;
++	unsigned int tx_available;
++	atomic_t opens, allocated;
++	unsigned int interface;
++	u32 generation;
++	u32 rx_generation;
++	unsigned int rx_offset, rx_remaining;
++	bool bound, enabled, online, dead, tx_error, faulted;
++};
++
++static atomic_t vser_active = ATOMIC_INIT(0);
++
++static struct usb_interface_descriptor vser_intf = {
++	.bLength = sizeof(vser_intf),
++	.bDescriptorType = USB_DT_INTERFACE,
++	.bNumEndpoints = 2,
++	.bInterfaceClass = USB_CLASS_VENDOR_SPEC,
++};
++#define VSER_EP(name, direction, packet)                \
++	static struct usb_endpoint_descriptor name = {  \
++		.bLength = USB_DT_ENDPOINT_SIZE,        \
++		.bDescriptorType = USB_DT_ENDPOINT,     \
++		.bEndpointAddress = direction,          \
++		.bmAttributes = USB_ENDPOINT_XFER_BULK, \
++		.wMaxPacketSize = cpu_to_le16(packet),  \
++	}
++VSER_EP(vser_fs_in, USB_DIR_IN, 64);
++VSER_EP(vser_fs_out, USB_DIR_OUT, 64);
++VSER_EP(vser_hs_in, USB_DIR_IN, 512);
++VSER_EP(vser_hs_out, USB_DIR_OUT, 512);
++VSER_EP(vser_ss_in, USB_DIR_IN, 1024);
++VSER_EP(vser_ss_out, USB_DIR_OUT, 1024);
++static struct usb_ss_ep_comp_descriptor vser_ss_comp = {
++	.bLength = sizeof(vser_ss_comp),
++	.bDescriptorType = USB_DT_SS_ENDPOINT_COMP,
++};
++static struct usb_descriptor_header *vser_fs[] = {
++	(void *)&vser_intf,
++	(void *)&vser_fs_in,
++	(void *)&vser_fs_out,
++	NULL,
++};
++static struct usb_descriptor_header *vser_hs[] = {
++	(void *)&vser_intf,
++	(void *)&vser_hs_in,
++	(void *)&vser_hs_out,
++	NULL,
++};
++static struct usb_descriptor_header *vser_ss[] = {
++	(void *)&vser_intf,   (void *)&vser_ss_in,   (void *)&vser_ss_comp,
++	(void *)&vser_ss_out, (void *)&vser_ss_comp, NULL,
++};
++
++static struct vser *func_to_vser(struct usb_function *f)
++{
++	return container_of(f, struct vser, function);
++}
++
++static void vser_release_ref(struct kref *ref)
++{
++	struct vser *v = container_of(ref, struct vser, ref);
++
++	atomic_set(&vser_active, 0);
++	kfree(v);
++}
++
++static bool vser_ready(struct vser *v)
++{
++	return READ_ONCE(v->bound) && READ_ONCE(v->online) &&
++	       READ_ONCE(v->enabled) && !READ_ONCE(v->dead) &&
++	       !READ_ONCE(v->faulted);
++}
++
++static void vser_tx_put(struct vser *v, struct usb_request *req)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&v->lock, flags);
++	list_add_tail(&req->list, &v->tx_idle);
++	v->tx_available++;
++	spin_unlock_irqrestore(&v->lock, flags);
++	wake_up_all(&v->wait);
++}
++
++static struct usb_request *vser_tx_get(struct vser *v)
++{
++	struct usb_request *req = NULL;
++	unsigned long flags;
++
++	spin_lock_irqsave(&v->lock, flags);
++	if (!list_empty(&v->tx_idle)) {
++		req = list_first_entry(&v->tx_idle, struct usb_request, list);
++		list_del_init(&req->list);
++		v->tx_available--;
++	}
++	spin_unlock_irqrestore(&v->lock, flags);
++	return req;
++}
++
++static void vser_tx_complete(struct usb_ep *ep, struct usb_request *req)
++{
++	struct vser *v = req->context;
++
++	if (req->status)
++		WRITE_ONCE(v->tx_error, true);
++	vser_tx_put(v, req);
++}
++
++static void vser_rx_complete(struct usb_ep *ep, struct usb_request *req)
++{
++	struct vser *v = req->context;
++
++	complete(&v->rx_done);
++}
++
++/* Serialize queue publication against the transition to disabled. Completion
++ * is not invoked synchronously from usb_ep_queue(), as required by gadget API.
++ */
++static int vser_queue(struct vser *v, struct usb_ep *ep,
++		      struct usb_request *req, u32 generation)
++{
++	unsigned long flags;
++	int ret;
++
++	spin_lock_irqsave(&v->lock, flags);
++	ret = vser_ready(v) && v->generation == generation ?
++		      usb_ep_queue(ep, req, GFP_ATOMIC) :
++		      -ENOTCONN;
++	spin_unlock_irqrestore(&v->lock, flags);
++	return ret;
++}
++
++static int vser_wait_online(struct vser *v, struct file *file)
++{
++	int ret;
++
++	if (file->f_flags & O_NONBLOCK)
++		return vser_ready(v) ? 0 : -EAGAIN;
++	ret = wait_event_interruptible(v->wait, vser_ready(v) ||
++							READ_ONCE(v->dead) ||
++							READ_ONCE(v->faulted));
++	if (ret)
++		return ret;
++	return READ_ONCE(v->dead) ? -ENODEV : READ_ONCE(v->faulted) ? -EIO : 0;
++}
++
++static ssize_t vser_read(struct file *file, char __user *buf, size_t count,
++			 loff_t *pos)
++{
++	struct vser *v = file->private_data;
++	struct usb_request *req;
++	u32 generation;
++	int ret;
++
++	if (!count)
++		return 0;
++	if (count > VSER_SIZE)
++		return -EINVAL;
++	if (file->f_flags & O_NONBLOCK) {
++		if (!mutex_trylock(&v->read_lock))
++			return -EAGAIN;
++	} else {
++		ret = mutex_lock_interruptible(&v->read_lock);
++		if (ret)
++			return ret;
++	}
++	/* A completed USB packet may span many userspace stream reads. */
++	if (!v->rx_remaining) {
++		if (file->f_flags & O_NONBLOCK) {
++			ret = -EAGAIN;
++			goto unlock;
++		}
++		ret = vser_wait_online(v, file);
++		if (ret)
++			goto unlock;
++	}
++	down_read(&v->io_sem);
++	generation = READ_ONCE(v->generation);
++	if (v->rx_remaining) {
++		if (v->rx_generation != generation || !v->rx) {
++			v->rx_remaining = 0;
++			v->rx_offset = 0;
++			ret = -ENOTCONN;
++			goto release;
++		}
++		goto copy;
++	}
++	if (!vser_ready(v)) {
++		ret = -ENOTCONN;
++		goto release;
++	}
++	req = v->rx;
++retry:
++	reinit_completion(&v->rx_done);
++	req->length = ALIGN(count, v->out->maxpacket);
++	ret = vser_queue(v, v->out, req, generation);
++	if (ret)
++		goto release;
++	ret = wait_for_completion_interruptible(&v->rx_done);
++	if (ret) {
++		/* Do not reuse/free a request until its UDC ownership is returned. */
++		usb_ep_dequeue(v->out, req);
++		wait_for_completion(&v->rx_done);
++		/* Completion can win the signal/dequeue race. Deliver its bytes,
++		 * rather than silently dropping a successful USB transfer.
++		 */
++		if (req->status || !req->actual)
++			goto release;
++	}
++	if (req->status) {
++		ret = req->status;
++		goto release;
++	}
++	if (req->actual > req->length || req->actual > VSER_SIZE) {
++		ret = -EOVERFLOW;
++		goto release;
++	}
++	if (!req->actual)
++		goto retry;
++	v->rx_offset = 0;
++	v->rx_remaining = req->actual;
++	v->rx_generation = generation;
++copy:
++	if (READ_ONCE(v->generation) != v->rx_generation ||
++	    READ_ONCE(v->dead) || READ_ONCE(v->faulted)) {
++		v->rx_remaining = 0;
++		v->rx_offset = 0;
++		ret = -ENOTCONN;
++		goto release;
++	}
++	ret = min_t(size_t, count, v->rx_remaining);
++	if (copy_to_user(buf, v->rx->buf + v->rx_offset, ret)) {
++		ret = -EFAULT;
++	} else {
++		v->rx_offset += ret;
++		v->rx_remaining -= ret;
++	}
++release:
++	up_read(&v->io_sem);
++	if (v->rx_remaining)
++		wake_up_all(&v->wait);
++unlock:
++	mutex_unlock(&v->read_lock);
++	return ret;
++}
++
++static ssize_t vser_write(struct file *file, const char __user *buf,
++			  size_t count, loff_t *pos)
++{
++	struct vser *v = file->private_data;
++	struct usb_request *req;
++	size_t done = 0, amount;
++	u32 generation;
++	int ret;
++
++	if (!count)
++		return 0;
++	ret = mutex_lock_interruptible(&v->write_lock);
++	if (ret)
++		return ret;
++	ret = vser_wait_online(v, file);
++	if (ret)
++		goto unlock;
++	down_read(&v->io_sem);
++	generation = READ_ONCE(v->generation);
++	while (done < count) {
++		if (!vser_ready(v) || READ_ONCE(v->tx_error) ||
++		    generation != READ_ONCE(v->generation)) {
++			ret = -EIO;
++			break;
++		}
++		req = vser_tx_get(v);
++		if (!req) {
++			if (file->f_flags & O_NONBLOCK) {
++				ret = -EAGAIN;
++				break;
++			}
++			ret = wait_event_interruptible(
++				v->wait,
++				READ_ONCE(v->tx_available) || !vser_ready(v) ||
++					READ_ONCE(v->tx_error) ||
++					generation != READ_ONCE(v->generation));
++			if (ret)
++				break;
++			continue;
++		}
++		amount = min_t(size_t, count - done, VSER_SIZE);
++		if (copy_from_user(req->buf, buf + done, amount)) {
++			vser_tx_put(v, req);
++			ret = -EFAULT;
++			break;
++		}
++		req->length = amount;
++		ret = vser_queue(v, v->in, req, generation);
++		if (ret) {
++			vser_tx_put(v, req);
++			break;
++		}
++		done += amount;
++	}
++	up_read(&v->io_sem);
++unlock:
++	mutex_unlock(&v->write_lock);
++	return done ? done : ret;
++}
++
++static int vser_open(struct inode *inode, struct file *file)
++{
++	struct miscdevice *misc = file->private_data;
++	struct vser *v = container_of(misc, struct vser, misc);
++
++	if (READ_ONCE(v->dead))
++		return -ENODEV;
++	if (atomic_inc_return(&v->opens) > 2) {
++		atomic_dec(&v->opens);
++		return -EBUSY;
++	}
++	kref_get(&v->ref);
++	file->private_data = v;
++	return stream_open(inode, file);
++}
++
++static int vser_close(struct inode *inode, struct file *file)
++{
++	struct vser *v = file->private_data;
++
++	atomic_dec(&v->opens);
++	kref_put(&v->ref, vser_release_ref);
++	return 0;
++}
++
++static __poll_t vser_poll(struct file *file, poll_table *wait)
++{
++	struct vser *v = file->private_data;
++
++	poll_wait(file, &v->wait, wait);
++	if (READ_ONCE(v->dead))
++		return EPOLLHUP | EPOLLERR;
++	if (READ_ONCE(v->tx_error) || READ_ONCE(v->faulted))
++		return EPOLLERR;
++	return (vser_ready(v) && READ_ONCE(v->tx_available) ?
++			EPOLLOUT | EPOLLWRNORM :
++			0) |
++	       (READ_ONCE(v->rx_remaining) && READ_ONCE(v->rx_generation) ==
++						      READ_ONCE(v->generation) ?
++			EPOLLIN | EPOLLRDNORM :
++			0);
++}
++
++static const struct file_operations vser_fops = {
++	.owner = THIS_MODULE,
++	.open = vser_open,
++	.release = vser_close,
++	.read = vser_read,
++	.write = vser_write,
++	.poll = vser_poll,
++};
++
++static struct usb_request *vser_alloc_req(struct vser *v, struct usb_ep *ep,
++					  bool tx)
++{
++	struct usb_request *req = gs_alloc_req(ep, VSER_SIZE, GFP_KERNEL);
++
++	if (!req)
++		return NULL;
++	req->context = v;
++	req->complete = tx ? vser_tx_complete : vser_rx_complete;
++	INIT_LIST_HEAD(&req->list);
++	return req;
++}
++
++static void vser_free_req(struct usb_ep *ep, struct usb_request *req)
++{
++	if (req)
++		gs_free_req(ep, req);
++}
++
++static void vser_free_requests(struct vser *v)
++{
++	struct usb_request *req;
++
++	vser_free_req(v->out, v->rx);
++	v->rx = NULL;
++	while ((req = vser_tx_get(v)))
++		vser_free_req(v->in, req);
++}
++
++static void vser_disable(struct usb_function *f)
++{
++	struct vser *v = func_to_vser(f);
++	unsigned long flags;
++	bool enabled;
++
++	spin_lock_irqsave(&v->lock, flags);
++	enabled = v->enabled;
++	v->enabled = false;
++	v->online = false;
++	v->generation++;
++	spin_unlock_irqrestore(&v->lock, flags);
++	wake_up_all(&v->wait);
++	if (enabled) {
++		int out_ret = usb_ep_disable(v->out);
++		int in_ret = usb_ep_disable(v->in);
++
++		if (out_ret || in_ret) {
++			WRITE_ONCE(v->faulted, true);
++			pr_err("vser: endpoint drain failed (%d, %d); resources pinned\n",
++			       out_ret, in_ret);
++			wake_up_all(&v->wait);
++		}
++	}
++}
++
++static int vser_bind(struct usb_configuration *c, struct usb_function *f)
++{
++	struct vser *v = func_to_vser(f);
++	struct usb_request *req;
++	int ret, i;
++
++	if (READ_ONCE(v->faulted))
++		return -EIO;
++	ret = usb_interface_id(c, f);
++	if (ret < 0)
++		return ret;
++	v->interface = ret;
++	vser_intf.bInterfaceNumber = ret;
++	vser_fs_in.bEndpointAddress = USB_DIR_IN;
++	vser_fs_out.bEndpointAddress = USB_DIR_OUT;
++	v->in = usb_ep_autoconfig(c->cdev->gadget, &vser_fs_in);
++	v->out = usb_ep_autoconfig(c->cdev->gadget, &vser_fs_out);
++	if (!v->in || !v->out)
++		return -ENODEV;
++	vser_hs_in.bEndpointAddress = vser_ss_in.bEndpointAddress =
++		vser_fs_in.bEndpointAddress;
++	vser_hs_out.bEndpointAddress = vser_ss_out.bEndpointAddress =
++		vser_fs_out.bEndpointAddress;
++	ret = usb_assign_descriptors(f, vser_fs, vser_hs, vser_ss, vser_ss);
++	if (ret)
++		return ret;
++	v->rx = vser_alloc_req(v, v->out, false);
++	if (!v->rx)
++		goto nomem;
++	for (i = 0; i < VSER_TX_COUNT; i++) {
++		req = vser_alloc_req(v, v->in, true);
++		if (!req)
++			goto nomem;
++		vser_tx_put(v, req);
++	}
++	WRITE_ONCE(v->bound, true);
++	return 0;
++nomem:
++	vser_free_requests(v);
++	usb_free_all_descriptors(f);
++	return -ENOMEM;
++}
++
++static void vser_unbind(struct usb_configuration *c, struct usb_function *f)
++{
++	struct vser *v = func_to_vser(f);
++
++	WRITE_ONCE(v->bound, false);
++	vser_disable(f);
++	if (READ_ONCE(v->faulted)) {
++		/* No successful drain means no safe request retirement. */
++		get_device(&c->cdev->gadget->dev);
++		return;
++	}
++	/* disable returns queued requests; wait out existing user buffer accesses. */
++	down_write(&v->io_sem);
++	vser_free_requests(v);
++	usb_free_all_descriptors(f);
++	up_write(&v->io_sem);
++}
++
++static int vser_set_alt(struct usb_function *f, unsigned int intf,
++			unsigned int alt)
++{
++	struct vser *v = func_to_vser(f);
++	int ret;
++
++	if (intf != v->interface || alt)
++		return -EINVAL;
++	vser_disable(f);
++	if (READ_ONCE(v->faulted))
++		return -EIO;
++	ret = config_ep_by_speed(f->config->cdev->gadget, f, v->in);
++	if (ret)
++		return ret;
++	ret = config_ep_by_speed(f->config->cdev->gadget, f, v->out);
++	if (ret)
++		return ret;
++	ret = usb_ep_enable(v->in);
++	if (ret)
++		return ret;
++	ret = usb_ep_enable(v->out);
++	if (ret) {
++		int cleanup = usb_ep_disable(v->in);
++
++		if (cleanup) {
++			WRITE_ONCE(v->faulted, true);
++			pr_err("vser: endpoint-enable rollback failed: %d\n",
++			       cleanup);
++		}
++		return ret;
++	}
++	WRITE_ONCE(v->enabled, true);
++	return 0;
++}
++
++static int vser_setup(struct usb_function *f,
++		      const struct usb_ctrlrequest *ctrl)
++{
++	struct vser *v = func_to_vser(f);
++	struct usb_composite_dev *cdev = f->config->cdev;
++	unsigned long flags;
++	int ret;
++
++	if (ctrl->bRequestType !=
++		    (USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE) ||
++	    ctrl->bRequest != 0x22 ||
++	    le16_to_cpu(ctrl->wIndex) != v->interface ||
++	    le16_to_cpu(ctrl->wLength) || !READ_ONCE(v->enabled))
++		return -EOPNOTSUPP;
++	/* Vendor resize/test/IQ controls are unsupported, never successful no-ops. */
++	cdev->req->length = 0;
++	cdev->req->zero = 0;
++	ret = usb_ep_queue(cdev->gadget->ep0, cdev->req, GFP_ATOMIC);
++	if (ret)
++		return ret;
++	spin_lock_irqsave(&v->lock, flags);
++	v->online = (le16_to_cpu(ctrl->wValue) & 0xff) == 1;
++	if (v->online)
++		v->tx_error = false;
++	spin_unlock_irqrestore(&v->lock, flags);
++	wake_up_all(&v->wait);
++	return 0;
++}
++
++static void vser_free_func(struct usb_function *f)
++{
++	struct vser *v = func_to_vser(f);
++
++	if (READ_ONCE(v->faulted))
++		return; /* Explicit bounded quarantine; never release an uncertain DMA owner. */
++	atomic_set(&v->allocated, 0);
++	kref_put(&v->ref, vser_release_ref);
++}
++
++static void vser_free_instance(struct usb_function_instance *instance)
++{
++	struct vser *v = container_of(instance, struct vser, instance);
++
++	WRITE_ONCE(v->dead, true);
++	wake_up_all(&v->wait);
++	misc_deregister(&v->misc);
++	kref_put(&v->ref, vser_release_ref);
++}
++
++static void vser_item_release(struct config_item *item)
++{
++	struct vser *v = container_of(to_config_group(item), struct vser,
++				      instance.group);
++
++	usb_put_function_instance(&v->instance);
++}
++
++static struct configfs_item_operations vser_item_ops = {
++	.release = vser_item_release
++};
++static const struct config_item_type vser_type = {
++	.ct_item_ops = &vser_item_ops,
++	.ct_owner = THIS_MODULE,
++};
++
++static struct usb_function_instance *vser_alloc_instance(void)
++{
++	struct vser *v;
++	int ret;
++
++	if (atomic_cmpxchg(&vser_active, 0, 1))
++		return ERR_PTR(-EBUSY);
++	v = kzalloc_obj(*v, GFP_KERNEL);
++	if (!v) {
++		atomic_set(&vser_active, 0);
++		return ERR_PTR(-ENOMEM);
++	}
++	kref_init(&v->ref);
++	init_rwsem(&v->io_sem);
++	mutex_init(&v->read_lock);
++	mutex_init(&v->write_lock);
++	spin_lock_init(&v->lock);
++	init_waitqueue_head(&v->wait);
++	init_completion(&v->rx_done);
++	INIT_LIST_HEAD(&v->tx_idle);
++	atomic_set(&v->opens, 0);
++	atomic_set(&v->allocated, 0);
++	v->instance.free_func_inst = vser_free_instance;
++	v->misc.minor = MISC_DYNAMIC_MINOR;
++	v->misc.name = "vser";
++	v->misc.fops = &vser_fops;
++	v->misc.mode = 0600;
++	/* One captured vser.gs0; open files and fault quarantine retain singleton ownership. */
++	ret = misc_register(&v->misc);
++	if (ret) {
++		kref_put(&v->ref, vser_release_ref);
++		return ERR_PTR(ret);
++	}
++	config_group_init_type_name(&v->instance.group, "", &vser_type);
++	return &v->instance;
++}
++
++static struct usb_function *
++vser_alloc_function(struct usb_function_instance *instance)
++{
++	struct vser *v = container_of(instance, struct vser, instance);
++
++	if (atomic_cmpxchg(&v->allocated, 0, 1))
++		return ERR_PTR(-EBUSY);
++	kref_get(&v->ref);
++	v->function.name = "vser";
++	v->function.bind = vser_bind;
++	v->function.unbind = vser_unbind;
++	v->function.set_alt = vser_set_alt;
++	v->function.disable = vser_disable;
++	v->function.setup = vser_setup;
++	v->function.free_func = vser_free_func;
++	return &v->function;
++}
++DECLARE_USB_FUNCTION_INIT(vser, vser_alloc_instance, vser_alloc_function);
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("Spreadtrum vendor serial AP misc-device USB function");
+diff --git a/drivers/usb/gadget/function/rndis.c b/drivers/usb/gadget/function/rndis.c
+index a2fd239b7..f3e6c3319 100644
+--- a/drivers/usb/gadget/function/rndis.c
++++ b/drivers/usb/gadget/function/rndis.c
+@@ -513,6 +513,14 @@ static int gen_ndis_set_resp(struct rndis_params *params, u32 OID,
+ 		 *	PROMISCUOUS, DIRECTED,
+ 		 *	MULTICAST, ALL_MULTICAST, BROADCAST
+ 		 */
++		if (buf_len < sizeof(__le32) || !params->filter)
++			return -EINVAL;
++		if (params->set_filter) {
++			retval = params->set_filter(
++				params->v, (u16)get_unaligned_le32(buf));
++			if (retval)
++				return retval;
++		}
+ 		*params->filter = (u16)get_unaligned_le32(buf);
+ 		pr_debug("%s: RNDIS_OID_GEN_CURRENT_PACKET_FILTER %08x\n",
+ 			__func__, *params->filter);
+@@ -524,9 +532,11 @@ static int gen_ndis_set_resp(struct rndis_params *params, u32 OID,
+ 		retval = 0;
+ 		if (*params->filter) {
+ 			params->state = RNDIS_DATA_INITIALIZED;
+-			netif_carrier_on(params->dev);
+-			if (netif_running(params->dev))
+-				netif_wake_queue(params->dev);
++			if (!params->set_filter) {
++				netif_carrier_on(params->dev);
++				if (netif_running(params->dev))
++					netif_wake_queue(params->dev);
++			}
+ 		} else {
+ 			params->state = RNDIS_INITIALIZED;
+ 			netif_carrier_off(params->dev);
+@@ -569,7 +579,13 @@ static int rndis_init_response(struct rndis_params *params,
+ 	resp->MessageType = cpu_to_le32(RNDIS_MSG_INIT_C);
+ 	resp->MessageLength = cpu_to_le32(52);
+ 	resp->RequestID = buf->RequestID; /* Still LE in msg buffer */
+-	resp->Status = cpu_to_le32(RNDIS_STATUS_SUCCESS);
++	resp->Status = cpu_to_le32(
++		params->init_transfer &&
++				params->init_transfer(
++					params->v,
++					le32_to_cpu(buf->MaxTransferSize)) ?
++			RNDIS_STATUS_NOT_SUPPORTED :
++			RNDIS_STATUS_SUCCESS);
+ 	resp->MajorVersion = cpu_to_le32(RNDIS_MAJOR_VERSION);
+ 	resp->MinorVersion = cpu_to_le32(RNDIS_MINOR_VERSION);
+ 	resp->DeviceFlags = cpu_to_le32(RNDIS_DF_CONNECTIONLESS);
+@@ -825,6 +841,8 @@ int rndis_msg_parser(struct rndis_params *params, u8 *buf)
+ 	case RNDIS_MSG_HALT:
+ 		pr_debug("%s: RNDIS_MSG_HALT\n",
+ 			__func__);
++		if (params->set_filter && params->set_filter(params->v, 0))
++			return -EBUSY;
+ 		params->state = RNDIS_UNINITIALIZED;
+ 		if (params->dev) {
+ 			netif_carrier_off(params->dev);
+@@ -840,6 +858,8 @@ int rndis_msg_parser(struct rndis_params *params, u8 *buf)
+ 		return rndis_set_response(params, (rndis_set_msg_type *)buf);
+ 
+ 	case RNDIS_MSG_RESET:
++		if (params->set_filter && params->set_filter(params->v, 0))
++			return -EBUSY;
+ 		pr_debug("%s: RNDIS_MSG_RESET\n",
+ 			__func__);
+ 		return rndis_reset_response(params,
+diff --git a/drivers/usb/gadget/function/rndis.h b/drivers/usb/gadget/function/rndis.h
+index 6206b8b74..4a7b3b854 100644
+--- a/drivers/usb/gadget/function/rndis.h
++++ b/drivers/usb/gadget/function/rndis.h
+@@ -173,6 +173,9 @@ typedef struct rndis_params {
+ 	const char		*vendorDescr;
+ 	void			(*resp_avail)(void *v);
+ 	void			*v;
++	/* Optional transport callbacks; caller runs parser in process context. */
++	int (*set_filter)(void *v, u16 filter);
++	int (*init_transfer)(void *v, u32 max_transfer);
+ 	struct list_head	resp_queue;
+ 	spinlock_t		resp_lock;
+ } rndis_params;
+diff --git a/drivers/usb/gadget/function/u_ether.c b/drivers/usb/gadget/function/u_ether.c
+index 59d85d6a8..18b15503a 100644
+--- a/drivers/usb/gadget/function/u_ether.c
++++ b/drivers/usb/gadget/function/u_ether.c
+@@ -22,7 +22,9 @@
+ #include <linux/usb/composite.h>
+ 
+ #include "u_ether.h"
+-
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++#include <linux/sipa.h>
++#endif
+ 
+ /*
+  * This component encapsulates the Ethernet link glue needed to provide
+@@ -59,6 +61,12 @@ struct eth_dev {
+ 	spinlock_t		lock;
+ 	struct gether		*port_usb;
+ 
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	bool pamu3;
++	int pamu3_nic;
++	struct napi_struct pamu3_napi;
++	struct delayed_work pamu3_tx_retry;
++#endif
+ 	struct net_device	*net;
+ 	struct usb_gadget	*gadget;
+ 
+@@ -454,6 +462,163 @@ static int ether_wakeup_host(struct gether *port)
+ 	return ret;
+ }
+ 
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++/* SIPA closes and fences its RCU callback before this NAPI is deleted. */
++static int gether_pamu3_poll(struct napi_struct *napi, int budget)
++{
++	struct eth_dev *dev = container_of(napi, struct eth_dev, pamu3_napi);
++	struct sk_buff *skb;
++	int done = 0;
++
++	while (done < budget && READ_ONCE(dev->pamu3)) {
++		if (sipa_nic_rx(dev->pamu3_nic, &skb) || !skb)
++			break;
++		done++;
++		if (!netif_running(dev->net) || !pskb_may_pull(skb, ETH_HLEN)) {
++			dev_kfree_skb_any(skb);
++			dev->net->stats.rx_dropped++;
++			continue;
++		}
++		dev->net->stats.rx_packets++;
++		dev->net->stats.rx_bytes += skb->len;
++		skb->protocol = eth_type_trans(skb, dev->net);
++		skb->ip_summed = CHECKSUM_NONE;
++		napi_gro_receive(napi, skb);
++	}
++	/* napi_schedule records MISSED if RX arrives during completion. */
++	if (done < budget)
++		napi_complete_done(napi, done);
++	return done;
++}
++
++static void gether_pamu3_notify(void *priv, enum sipa_evt_type evt,
++				unsigned long data)
++{
++	struct eth_dev *dev = priv;
++
++	if (!READ_ONCE(dev->pamu3))
++		return;
++	if (evt == SIPA_RECEIVE)
++		napi_schedule(&dev->pamu3_napi);
++	else if (evt == SIPA_LEAVE_FLOWCTRL && netif_running(dev->net) &&
++		 netif_carrier_ok(dev->net))
++		netif_wake_queue(dev->net);
++}
++
++/* One-shot retry closes a grant-notification/stop-queue race. Unlike RX,
++ * TX resource acquisition can return EINPROGRESS before the queue is stopped.
++ */
++static void gether_pamu3_tx_retry(struct work_struct *work)
++{
++	struct eth_dev *dev = container_of(to_delayed_work(work),
++					   struct eth_dev, pamu3_tx_retry);
++
++	if (READ_ONCE(dev->pamu3) && netif_running(dev->net) &&
++	    netif_carrier_ok(dev->net))
++		netif_wake_queue(dev->net);
++}
++
++static netdev_tx_t gether_pamu3_xmit(struct eth_dev *dev, struct sk_buff *skb)
++{
++	unsigned int len = skb->len;
++	int ret;
++
++	ret = sipa_nic_tx(dev->pamu3_nic, SIPA_TERM_USB, -1, skb);
++	if (ret == -EAGAIN || ret == -EINPROGRESS) {
++		netif_stop_queue(dev->net);
++		schedule_delayed_work(&dev->pamu3_tx_retry,
++				      msecs_to_jiffies(1));
++		return NETDEV_TX_BUSY; /* SIPA did not take this skb. */
++	}
++	if (ret) {
++		dev->net->stats.tx_errors++;
++		dev_kfree_skb_any(skb);
++	} else {
++		dev->net->stats.tx_packets++;
++		dev->net->stats.tx_bytes += len;
++	}
++	return NETDEV_TX_OK;
++}
++
++int gether_pamu3_connect(struct gether *link)
++{
++	struct eth_dev *dev = link->ioport;
++	int ret;
++
++	if (!dev || READ_ONCE(dev->pamu3) || dev->port_usb)
++		return -EBUSY;
++	/* Reject the unsupported MTU before publishing the SIPA callback. */
++	if (dev->net->mtu > ETH_DATA_LEN)
++		return -EOPNOTSUPP;
++	netif_napi_add(dev->net, &dev->pamu3_napi, gether_pamu3_poll);
++	INIT_DELAYED_WORK(&dev->pamu3_tx_retry, gether_pamu3_tx_retry);
++	napi_enable(&dev->pamu3_napi);
++	ret = sipa_nic_open(SIPA_TERM_USB, -1, gether_pamu3_notify, dev);
++	if (ret < 0) {
++		napi_disable(&dev->pamu3_napi);
++		netif_napi_del(&dev->pamu3_napi);
++		return ret;
++	}
++	dev->pamu3_nic = ret;
++	spin_lock_irq(&dev->lock);
++	/* SIPA AP_ETH RX descriptors supply 1600-byte payload buffers. */
++	if (dev->net->mtu > ETH_DATA_LEN) {
++		spin_unlock_irq(&dev->lock);
++		sipa_nic_close(dev->pamu3_nic);
++		napi_disable(&dev->pamu3_napi);
++		netif_napi_del(&dev->pamu3_napi);
++		return -EOPNOTSUPP;
++	}
++	dev->port_usb = link;
++	WRITE_ONCE(dev->pamu3, true);
++	if (netif_running(dev->net)) {
++		if (link->open)
++			link->open(link);
++	} else if (link->close) {
++		link->close(link);
++	}
++	spin_unlock_irq(&dev->lock);
++	/* The successful RNDIS filter response publishes carrier after this. */
++	napi_schedule(&dev->pamu3_napi);
++	return 0;
++}
++EXPORT_SYMBOL_GPL(gether_pamu3_connect);
++
++void gether_pamu3_carrier(struct gether *link, bool on)
++{
++	struct eth_dev *dev = link->ioport;
++
++	if (on && READ_ONCE(dev->pamu3)) {
++		netif_carrier_on(dev->net);
++		if (netif_running(dev->net))
++			netif_wake_queue(dev->net);
++	} else {
++		netif_carrier_off(dev->net);
++		netif_stop_queue(dev->net);
++	}
++}
++EXPORT_SYMBOL_GPL(gether_pamu3_carrier);
++
++void gether_pamu3_disconnect(struct gether *link)
++{
++	struct eth_dev *dev = link->ioport;
++
++	if (!dev || !READ_ONCE(dev->pamu3))
++		return;
++	netif_carrier_off(dev->net);
++	netif_tx_disable(dev->net);
++	WRITE_ONCE(dev->pamu3, false);
++	sipa_nic_close(dev->pamu3_nic);
++	cancel_delayed_work_sync(&dev->pamu3_tx_retry);
++	napi_disable(&dev->pamu3_napi);
++	netif_napi_del(&dev->pamu3_napi);
++	spin_lock_irq(&dev->lock);
++	dev->port_usb = NULL;
++	spin_unlock_irq(&dev->lock);
++}
++EXPORT_SYMBOL_GPL(gether_pamu3_disconnect);
++#endif
++
+ static netdev_tx_t eth_start_xmit(struct sk_buff *skb,
+ 					struct net_device *net)
+ {
+@@ -512,6 +677,12 @@ static netdev_tx_t eth_start_xmit(struct sk_buff *skb,
+ 		/* ignores USB_CDC_PACKET_TYPE_DIRECTED */
+ 	}
+ 
++	/* Share the mainline suspend and CDC/RNDIS filter policy above. */
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	if (READ_ONCE(dev->pamu3))
++		return gether_pamu3_xmit(dev, skb);
++#endif
++
+ 	spin_lock_irqsave(&dev->req_lock, flags);
+ 	/*
+ 	 * this freelist can be empty if an interrupt triggered disconnect()
+@@ -620,6 +791,13 @@ static int eth_open(struct net_device *net)
+ 	struct gether	*link;
+ 
+ 	DBG(dev, "%s\n", __func__);
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	if (READ_ONCE(dev->pamu3)) {
++		if (netif_carrier_ok(net))
++			netif_start_queue(net);
++		return 0;
++	}
++#endif
+ 	if (netif_carrier_ok(dev->net))
+ 		eth_start(dev, GFP_KERNEL);
+ 
+@@ -645,6 +823,10 @@ static int eth_stop(struct net_device *net)
+ 		dev->net->stats.rx_errors, dev->net->stats.tx_errors
+ 		);
+ 
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	if (READ_ONCE(dev->pamu3))
++		return 0; /* function worker owns hardware stop and endpoint lifetime */
++#endif
+ 	/* ensure there are no more active requests */
+ 	spin_lock_irqsave(&dev->lock, flags);
+ 	if (dev->port_usb) {
+@@ -713,12 +895,35 @@ static int get_ether_addr_str(u8 dev_addr[ETH_ALEN], char *str, int len)
+ 	return 18;
+ }
+ 
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++static int gether_change_mtu(struct net_device *net, int mtu)
++{
++	struct eth_dev *dev = netdev_priv(net);
++	unsigned long flags;
++	int ret = 0;
++
++	/* net/core already checked min/max_mtu. Pair with PAM publication so a
++	 * concurrent MTU change cannot exceed its actual RX buffer geometry.
++	 */
++	spin_lock_irqsave(&dev->lock, flags);
++	if (dev->pamu3 && mtu > ETH_DATA_LEN)
++		ret = -EINVAL;
++	else
++		WRITE_ONCE(net->mtu, mtu);
++	spin_unlock_irqrestore(&dev->lock, flags);
++	return ret;
++}
++#endif
++
+ static const struct net_device_ops eth_netdev_ops = {
+-	.ndo_open		= eth_open,
+-	.ndo_stop		= eth_stop,
+-	.ndo_start_xmit		= eth_start_xmit,
+-	.ndo_set_mac_address 	= eth_mac_addr,
+-	.ndo_validate_addr	= eth_validate_addr,
++	.ndo_open = eth_open,
++	.ndo_stop = eth_stop,
++	.ndo_start_xmit = eth_start_xmit,
++	.ndo_set_mac_address = eth_mac_addr,
++	.ndo_validate_addr = eth_validate_addr,
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	.ndo_change_mtu = gether_change_mtu,
++#endif
+ };
+ 
+ static const struct device_type gadget_type = {
+@@ -1114,6 +1319,10 @@ void gether_cleanup(struct eth_dev *dev)
+ 	if (!dev)
+ 		return;
+ 
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++	if (READ_ONCE(dev->pamu3))
++		gether_pamu3_disconnect(dev->port_usb);
++#endif
+ 	unregister_netdev(dev->net);
+ 	flush_work(&dev->work);
+ 	free_netdev(dev->net);
+diff --git a/drivers/usb/gadget/function/u_ether.h b/drivers/usb/gadget/function/u_ether.h
+index c85a1cf3c..62bf6ca1d 100644
+--- a/drivers/usb/gadget/function/u_ether.h
++++ b/drivers/usb/gadget/function/u_ether.h
+@@ -37,6 +37,12 @@
+ 	MODULE_PARM_DESC(host_addr, "Host Ethernet Address")
+ 
+ struct eth_dev;
++struct gether;
++#if IS_ENABLED(CONFIG_SPRD_PAMU3)
++int gether_pamu3_connect(struct gether *link);
++void gether_pamu3_disconnect(struct gether *link);
++void gether_pamu3_carrier(struct gether *link, bool on);
++#endif
+ 
+ /*
+  * This represents the USB side of an "ethernet" link, managed by a USB
+diff --git a/drivers/usb/gadget/function/u_ncm.h b/drivers/usb/gadget/function/u_ncm.h
+index ce2f63586..e07704358 100644
+--- a/drivers/usb/gadget/function/u_ncm.h
++++ b/drivers/usb/gadget/function/u_ncm.h
+@@ -42,6 +42,7 @@ struct f_ncm_opts {
+ 	int				refcnt;
+ 
+ 	u16				max_segment_size;
++	bool pamu3;
+ };
+ 
+ #endif /* U_NCM_H */
+diff --git a/drivers/usb/gadget/function/u_rndis.h b/drivers/usb/gadget/function/u_rndis.h
+index 4e6461971..4037a462d 100644
+--- a/drivers/usb/gadget/function/u_rndis.h
++++ b/drivers/usb/gadget/function/u_rndis.h
+@@ -52,6 +52,7 @@ struct f_rndis_opts {
+ 	u8				class;
+ 	u8				subclass;
+ 	u8				protocol;
++	u8 pamu3;
+ 	struct mutex			lock;
+ 	int				refcnt;
+ };
+diff --git a/drivers/usb/misc/Kconfig b/drivers/usb/misc/Kconfig
+index 91b62acb5..75ea686d7 100644
+--- a/drivers/usb/misc/Kconfig
++++ b/drivers/usb/misc/Kconfig
+@@ -359,3 +359,17 @@ config USB_ONBOARD_DEV_USB5744
+ 	  during hub start-up configuration stage. It is must to enable this
+ 	  option on AMD Kria KR260 Robotics Starter Kit as this hub is
+ 	  connected to USB-SD converter which mounts the root filesystem.
++
++config SPRD_PAMU3
++	bool "UDX710 PAMU3 checked offload"
++	depends on ARM64 && OF && EXPERT && !OF_DYNAMIC
++	depends on USB_DWC3=y && (USB_DWC3_GADGET=y || USB_DWC3_DUAL_ROLE=y) && SPRD_SIPA=y
++	depends on COMMON_CLK && RESET_CONTROLLER
++	help
++	  Dedicated event1/2, ep2-OUT/ep3-IN ownership, real RM/FIFO enable
++	  and checked DMA teardown. Requires the SIPA checked PAM lifecycle.
++	  The provider implements the captured MBIM NTB16/IPS0 template;
++	  a mainline MBIM function/control-plane adapter is still required.
++	  RNDIS exposes an opt-in configfs pamu3 attribute and deferred USB
++	  lifecycle, with single-packet framing and the SIPA Ethernet backend.
++	  Unsupported IOMMU/nonidentity DMA and ECM framing are refused.
+diff --git a/drivers/usb/misc/Makefile b/drivers/usb/misc/Makefile
+index 494ab0377..ccf70dbbe 100644
+--- a/drivers/usb/misc/Makefile
++++ b/drivers/usb/misc/Makefile
+@@ -35,3 +35,5 @@ obj-$(CONFIG_USB_SISUSBVGA)		+= sisusbvga/
+ obj-$(CONFIG_USB_LINK_LAYER_TEST)	+= lvstest.o
+ obj-$(CONFIG_BRCM_USB_PINMAP)		+= brcmstb-usb-pinmap.o
+ obj-$(CONFIG_USB_ONBOARD_DEV)		+= onboard_usb_dev.o
++
++obj-$(CONFIG_SPRD_PAMU3) += sprd-pamu3.o
+diff --git a/drivers/usb/misc/sprd-pamu3.c b/drivers/usb/misc/sprd-pamu3.c
+new file mode 100644
+index 000000000..6b2fb5b8e
+--- /dev/null
++++ b/drivers/usb/misc/sprd-pamu3.c
+@@ -0,0 +1,1091 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* UDX710 PAMU3 resource/lifetime port. No vendor usb_phy pseudo-PHY ABI. */
++#include <linux/clk.h>
++#include <linux/completion.h>
++#include <linux/list.h>
++#include <linux/usb/gadget.h>
++#include <linux/dma-mapping.h>
++#include <linux/dma-direct.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/jiffies.h>
++#include <linux/iommu.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/of_platform.h>
++#include <linux/platform_device.h>
++#include <linux/reset.h>
++#include <linux/sipa.h>
++#include <linux/usb/sprd-pamu3.h>
++#include "sprd-pamu3.h"
++
++#define PAMU3_TX_BYTES (sizeof(struct pamu3_dwc3_trb) * PAMU3_TX_TRB_NUM * 2)
++#define PAMU3_RX_BYTES (sizeof(struct pamu3_dwc3_trb) * PAMU3_RX_TRB_NUM)
++#define PAMU3_DATA_BYTES (PAMU3_RX_TRBBUF_SIZE * PAMU3_RX_TRBBUF_NUM)
++
++/* Callers use both loop-index and direction expressions. These must have
++ * exactly the same register offsets as literal event-buffer indices.
++ */
++
++static LIST_HEAD(pamu3_devices);
++static DEFINE_MUTEX(pamu3_devices_lock);
++
++struct sprd_pamu3 {
++	struct device *dev;
++	struct device *controller;
++	struct device *sipa;
++	struct mutex lock;
++	spinlock_t hw_lock;
++	bool abort;
++	void __iomem *base;
++	struct clk *clk;
++	struct reset_control *reset;
++	struct dwc3_pamu3_resources dwc;
++	struct sipa_to_pam_info fifo;
++	void *tx_trbs, *rx_trbs, *header, *data;
++	dma_addr_t tx_dma, rx_dma, header_dma, data_dma;
++	u64 common_dma_mask;
++	bool clock_on, reset_held, attached, prepared, claimed;
++	bool rm_registered, dependency, requested, connected, stopping, running;
++	bool function_owned, foreign_active;
++	int rm_error;
++	struct completion grant;
++	struct sipa_rm_register_params rm;
++	struct usb_ep *out, *in;
++	struct usb_endpoint_descriptor out_desc, in_desc;
++	struct usb_ss_ep_comp_descriptor out_comp, in_comp;
++	struct list_head node;
++};
++
++static bool pamu3_address_valid(u64 addr, u64 bytes)
++{
++	return bytes && addr <= DMA_BIT_MASK(40) &&
++	       bytes - 1 <= DMA_BIT_MASK(40) - addr;
++}
++
++/* Equal masks are insufficient: both masters must interpret DMA addresses in
++ * the same translation domain. Different domains/ranges are refused.
++ */
++static bool pamu3_same_dma_domain(struct device *a, struct device *b)
++{
++	const struct bus_dma_region *ra = a->dma_range_map,
++				    *rb = b->dma_range_map;
++
++	/* The captured platform uses direct identity DMA. Shared IOVA domains
++	 * alone do not map PAM's accesses to the peers' MMIO apertures.
++	 */
++	if (iommu_get_domain_for_dev(a) || iommu_get_domain_for_dev(b) ||
++	    get_dma_ops(a) || get_dma_ops(b) ||
++	    dev_is_dma_coherent(a) != dev_is_dma_coherent(b))
++		return false;
++	if (!ra || !rb)
++		return !ra && !rb;
++	while (ra->size && rb->size) {
++		if (ra->cpu_start != ra->dma_start ||
++		    rb->cpu_start != rb->dma_start ||
++		    ra->cpu_start != rb->cpu_start ||
++		    ra->dma_start != rb->dma_start || ra->size != rb->size)
++			return false;
++		ra++;
++		rb++;
++	}
++	return !ra->size && !rb->size;
++}
++
++static void pamu3_write_addr(struct sprd_pamu3 *pam, u32 offset, u64 addr)
++{
++	writel(lower_32_bits(addr), pam->base + offset);
++	writel(upper_32_bits(addr), pam->base + offset + 4);
++}
++
++static void pamu3_free_buffers(struct sprd_pamu3 *pam)
++{
++	if (pam->data)
++		dma_free_coherent(pam->dev, PAMU3_DATA_BYTES, pam->data,
++				  pam->data_dma);
++	if (pam->header)
++		dma_free_coherent(pam->dev, PAMU3_RNDIS_HEADER_SIZE,
++				  pam->header, pam->header_dma);
++	if (pam->rx_trbs)
++		dma_free_coherent(pam->dev, PAMU3_RX_BYTES, pam->rx_trbs,
++				  pam->rx_dma);
++	if (pam->tx_trbs)
++		dma_free_coherent(pam->dev, PAMU3_TX_BYTES, pam->tx_trbs,
++				  pam->tx_dma);
++	pam->data = pam->header = pam->rx_trbs = pam->tx_trbs = NULL;
++}
++
++static int pamu3_alloc_buffers(struct sprd_pamu3 *pam)
++{
++	pam->tx_trbs = dma_alloc_coherent(pam->dev, PAMU3_TX_BYTES,
++					  &pam->tx_dma, GFP_KERNEL);
++	pam->rx_trbs = dma_alloc_coherent(pam->dev, PAMU3_RX_BYTES,
++					  &pam->rx_dma, GFP_KERNEL);
++	pam->header = dma_alloc_coherent(pam->dev, PAMU3_RNDIS_HEADER_SIZE,
++					 &pam->header_dma, GFP_KERNEL);
++	pam->data = dma_alloc_coherent(pam->dev, PAMU3_DATA_BYTES,
++				       &pam->data_dma, GFP_KERNEL);
++	if (!pam->tx_trbs || !pam->rx_trbs || !pam->header || !pam->data)
++		return -ENOMEM;
++	if (!pamu3_address_valid(pam->tx_dma, PAMU3_TX_BYTES) ||
++	    !pamu3_address_valid(pam->rx_dma, PAMU3_RX_BYTES) ||
++	    !pamu3_address_valid(pam->header_dma, PAMU3_RNDIS_HEADER_SIZE) ||
++	    !pamu3_address_valid(pam->data_dma, PAMU3_DATA_BYTES))
++		return -ERANGE;
++	return 0;
++}
++
++/* This microcode addresses controller command registers with 32-bit operands;
++ * coherent payload and event addresses have separate full 40-bit fields.
++ */
++static void pamu3_load_code(struct sprd_pamu3 *pam, bool in)
++{
++	u32 code[20] = { 0,	 0x8100, 0,	 0x8200, 0,	 0x9f00, 0,
++			 0x8f00, 0,	 0x8300, 0xcafe, 0xcafe, 0,	 0xa000,
++			 0xcafe, 0xcafe, 0,	 0xa000, 0xcafe, 0xcafe };
++	u32 endpoint = pam->dwc.regs_phys + REG_DWC3_DEP_BASE(in ? 3 : 2);
++	u32 iram = in ? PAM_U3_TXDBG_IRAM : PAM_U3_RXDBG_IRAM;
++	u32 entry = in ? PAM_U3_TXPCMDENTRY_ADDR0 : PAM_U3_RXPCMDENTRY_ADDR0;
++	unsigned int i;
++
++	code[6] = endpoint;
++	code[2] = endpoint + 4;
++	code[0] = endpoint + 8;
++	code[8] = code[12] = endpoint + 12;
++	code[16] = ((endpoint + 12) & PAMU3_MASK_TRIGHDRCNT) |
++		   REG_DWC3_GEVNTCOUNT(in ? 1 : 2);
++	for (i = 0; i < ARRAY_SIZE(code); i++)
++		writel(code[i], pam->base + iram + 4 * i);
++	writel(PAMU3_CMDENTER_ADDR0, pam->base + entry);
++	writel(PAMU3_CMDENTER_ADDR1, pam->base + entry + 4);
++}
++
++static int pamu3_program_resources(struct sprd_pamu3 *pam)
++{
++	struct pamu3_dwc3_trb *trb = pam->rx_trbs;
++	const struct sipa_pam_attrs *dl = &pam->fifo.dl_fifo,
++				    *ul = &pam->fifo.ul_fifo;
++	u64 regs = pam->dwc.regs_phys;
++	unsigned int i;
++	u32 value;
++
++	if (regs + REG_DWC3_DEP_BASE(3) + 15 > U32_MAX ||
++	    regs + REG_DWC3_DEP_BASE(3) + 15 > pam->common_dma_mask)
++		return -ERANGE;
++	if (!dl->fifo_depth || !ul->fifo_depth ||
++	    !pamu3_address_valid(dl->rx_fifo_base_addr,
++				 (u64)dl->fifo_depth * 16) ||
++	    !pamu3_address_valid(dl->tx_fifo_base_addr,
++				 (u64)dl->fifo_depth * 16) ||
++	    !pamu3_address_valid(ul->rx_fifo_base_addr,
++				 (u64)ul->fifo_depth * 16) ||
++	    !pamu3_address_valid(ul->tx_fifo_base_addr,
++				 (u64)ul->fifo_depth * 16) ||
++	    !pamu3_address_valid(dl->fifo_sts_addr, 4) ||
++	    !pamu3_address_valid(ul->fifo_sts_addr, 4) ||
++	    dl->rx_fifo_base_addr + (u64)dl->fifo_depth * 16 - 1 >
++		    pam->common_dma_mask ||
++	    dl->tx_fifo_base_addr + (u64)dl->fifo_depth * 16 - 1 >
++		    pam->common_dma_mask ||
++	    ul->rx_fifo_base_addr + (u64)ul->fifo_depth * 16 - 1 >
++		    pam->common_dma_mask ||
++	    ul->tx_fifo_base_addr + (u64)ul->fifo_depth * 16 - 1 >
++		    pam->common_dma_mask ||
++	    dl->fifo_sts_addr + 3 > pam->common_dma_mask ||
++	    ul->fifo_sts_addr + 3 > pam->common_dma_mask)
++		return -ERANGE;
++	for (i = 0; i < 2; i++) {
++		u32 offset = i ? PAM_U3_RXEVTBUFFER_ADDRL :
++				 PAM_U3_TXEVTBUFFER_ADDRL;
++		u64 address = regs + REG_DWC3_GEVNTSIZ(i + 1);
++
++		if (!pamu3_address_valid(pam->dwc.event_dma[i],
++					 pam->dwc.event_size[i]) ||
++		    pam->dwc.event_size[i] > PAMU3_MASK_EVTSZ ||
++		    (u64)pam->dwc.event_dma[i] + pam->dwc.event_size[i] - 1 >
++			    pam->common_dma_mask)
++			return -ERANGE;
++		pamu3_write_addr(pam,
++				 i ? PAM_U3_RXEVENTTBUFFER_ADDRL :
++				     PAM_U3_TXEVENTTBUFFER_ADDRL,
++				 pam->dwc.event_dma[i]);
++		writel(lower_32_bits(address), pam->base + offset);
++		writel(upper_32_bits(address) | (pam->dwc.event_size[i]
++						 << PAMU3_BITS_STARTEVTSZ),
++		       pam->base + offset + 4);
++		pamu3_write_addr(pam,
++				 i ? PAM_U3_RXEVTCOUNT_ADDRL :
++				     PAM_U3_TXEVTCOUNT_ADDRL,
++				 regs + REG_DWC3_GEVNTCOUNT(i + 1));
++	}
++	pamu3_write_addr(pam, PAM_U3_DLFIFOFILL_ADDRL, dl->tx_fifo_base_addr);
++	pamu3_write_addr(pam, PAM_U3_DLFIFOFREE_ADDRL, dl->rx_fifo_base_addr);
++	pamu3_write_addr(pam, PAM_U3_ULFIFOFILL_ADDRL, ul->rx_fifo_base_addr);
++	pamu3_write_addr(pam, PAM_U3_ULFIFOFREE_ADDRL, ul->tx_fifo_base_addr);
++	pamu3_write_addr(pam, PAM_U3_DLGETIPAFIFO_ADDRL, dl->fifo_sts_addr);
++	pamu3_write_addr(pam, PAM_U3_DLPUTIPAFIFO_ADDRL, dl->fifo_sts_addr);
++	pamu3_write_addr(pam, PAM_U3_ULGETIPAFIFO_ADDRL, ul->fifo_sts_addr);
++	pamu3_write_addr(pam, PAM_U3_ULPUTIPAFIFO_ADDRL, ul->fifo_sts_addr);
++	for (i = 0; i < PAMU3_RX_TRBBUF_NUM; i++) {
++		u64 address = pam->data_dma + i * PAMU3_RX_TRBBUF_SIZE;
++
++		trb[i].bpl = cpu_to_le32(lower_32_bits(address));
++		trb[i].bph = cpu_to_le32(upper_32_bits(address));
++		trb[i].size = cpu_to_le32(PAMU3_RX_TRBBUF_SIZE);
++		trb[i].ctrl = cpu_to_le32(PAMU3_TRB_CTRL_DEFVAL);
++		pamu3_write_addr(pam, PAM_U3_RXBUF0_ADDRL + 8 * i, address);
++		pamu3_write_addr(pam, PAM_U3_RXTRBBUF0_ADDRL + 8 * i,
++				 pam->rx_dma + i * sizeof(*trb));
++	}
++	value = readl(pam->base + PAM_U3_RXTRBBUF1_ADDRH) &
++		PAMU3_MASK_ADDR32_LSB;
++	writel(value | (PAMU3_RX_TRBBUF_SIZE << PAMU3_BIT_RXTRBBUFSIZE_SHIFT),
++	       pam->base + PAM_U3_RXTRBBUF1_ADDRH);
++	for (i = 0; i < PAMU3_TX_TRBBUF_NUM; i++)
++		pamu3_write_addr(pam, PAM_U3_TXTRBBUF0_ADDRL + 8 * i,
++				 pam->tx_dma +
++					 i * sizeof(*trb) * PAMU3_TX_TRB_NUM);
++	pamu3_write_addr(pam, PAM_U3_HEADER_ENDBASE_ADDRL, pam->header_dma);
++	writel(PAM_U3_MBIM_DEFNTH, pam->base + PAM_U3_MBIM_NCM_NTH);
++	writel(PAM_U3_MBIM_DEFNDP, pam->base + PAM_U3_MBIM_NCM_NDP);
++	pamu3_load_code(pam, true);
++	pamu3_load_code(pam, false);
++	dma_wmb();
++	/* No PAM_EN/USB_EN/TX_START/RX_START is asserted by preparation. */
++	return 0;
++}
++
++static int pamu3_release_resources(struct sprd_pamu3 *pam)
++{
++	int ret;
++
++	if (pam->claimed) {
++		ret = dwc3_pamu3_release(pam->controller, pam->dev);
++		if (ret)
++			return ret;
++		pam->claimed = false;
++		if (pam->out) {
++			pam->out->desc = NULL;
++			pam->out->comp_desc = NULL;
++			pam->in->desc = NULL;
++			pam->in->comp_desc = NULL;
++		}
++	}
++	if (pam->attached) {
++		ret = dwc3_pamu3_detach(pam->controller, pam->dev);
++		if (ret)
++			return ret;
++		pam->attached = false;
++	}
++	pamu3_free_buffers(pam);
++	if (pam->reset_held) {
++		ret = reset_control_rearm(pam->reset);
++		if (ret)
++			return ret;
++		pam->reset_held = false;
++	}
++	if (pam->clock_on) {
++		spin_lock_irq(&pam->hw_lock);
++		pam->clock_on = false;
++		spin_unlock_irq(&pam->hw_lock);
++		clk_disable_unprepare(pam->clk);
++	}
++	pam->prepared = false;
++	return 0;
++}
++
++int sprd_pamu3_prepare(struct device *dev)
++{
++	struct sprd_pamu3 *pam = dev_get_drvdata(dev);
++	int ret, cleanup;
++
++	if (!pam)
++		return -ENODEV;
++	if (WARN_ON_ONCE(in_interrupt()))
++		return -EWOULDBLOCK;
++	mutex_lock(&pam->lock);
++	if (pam->prepared || pam->attached || pam->reset_held) {
++		ret = -EBUSY;
++		goto out;
++	}
++	ret = clk_prepare_enable(pam->clk);
++	if (ret)
++		goto out;
++	spin_lock_irq(&pam->hw_lock);
++	pam->clock_on = true;
++	spin_unlock_irq(&pam->hw_lock);
++	ret = dwc3_pamu3_attach(pam->controller, pam->dev, &pam->dwc);
++	if (ret)
++		goto fail;
++	pam->attached = true;
++	if (!pamu3_same_dma_domain(pam->dev, pam->dwc.dma_dev) ||
++	    !pamu3_same_dma_domain(pam->dev, pam->sipa)) {
++		ret = -EXDEV;
++		goto fail;
++	}
++	if (readl(pam->base + PAM_U3_CTL0) &
++	    (PAMU3_CTL0_BIT_USB_EN | PAMU3_CTL0_BIT_PAM_EN)) {
++		/* Existing DMA is not ours to tear down. Keep supplier/reset/clock
++		 * references pinned until a successful explicit stop/drain.
++		 */
++		pam->foreign_active = true;
++		ret = -EBUSY;
++		goto out;
++	}
++	/* The controller is now pinned and no foreign PAM DMA is active.
++	 * Reset PAM's internal state on every prepare, without resetting USB1.
++	 * A shared USB1/PAM trigger alone is a no-op while the PHY holds it;
++	 * that left RX unable to issue STARTTRANSFER after a successful stop.
++	 */
++	ret = reset_control_reset(pam->reset);
++	if (ret)
++		goto fail;
++	pam->reset_held = true;
++	pam->common_dma_mask = min_t(u64, DMA_BIT_MASK(40),
++				     min(dma_get_mask(pam->dev),
++					 min(dma_get_mask(pam->dwc.dma_dev),
++					     dma_get_mask(pam->sipa))));
++	ret = dma_set_mask_and_coherent(pam->dev, pam->common_dma_mask);
++	if (ret)
++		goto fail;
++	ret = sipa_get_ep_info(SIPA_EP_USB, &pam->fifo);
++	if (ret)
++		goto fail;
++	ret = pamu3_alloc_buffers(pam);
++	if (ret)
++		goto fail;
++	ret = pamu3_program_resources(pam);
++	if (ret)
++		goto fail;
++	pam->prepared = true;
++	goto out;
++fail:
++	cleanup = pamu3_release_resources(pam);
++	if (cleanup)
++		dev_err(dev, "PAM prepare cleanup remains pinned: %d\n",
++			cleanup);
++out:
++	mutex_unlock(&pam->lock);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(sprd_pamu3_prepare);
++
++/* No reverse DT edge is needed: provider lookup follows its existing
++ * PAM -> DWC3 link. Returned device reference belongs to the caller.
++ */
++struct device *sprd_pamu3_get(struct device *controller)
++{
++	struct sprd_pamu3 *pam;
++	struct device *dev = ERR_PTR(-EPROBE_DEFER);
++
++	mutex_lock(&pamu3_devices_lock);
++	list_for_each_entry(pam, &pamu3_devices, node) {
++		if (pam->controller == controller) {
++			if (pam->function_owned)
++				dev = ERR_PTR(-EBUSY);
++			else {
++				pam->function_owned = true;
++				dev = get_device(pam->dev);
++			}
++			break;
++		}
++	}
++	mutex_unlock(&pamu3_devices_lock);
++	return dev;
++}
++EXPORT_SYMBOL_GPL(sprd_pamu3_get);
++
++int sprd_pamu3_put(struct device *dev)
++{
++	struct sprd_pamu3 *pam = dev_get_drvdata(dev);
++	int ret = 0;
++
++	mutex_lock(&pamu3_devices_lock);
++	mutex_lock(&pam->lock);
++	if (pam->attached || pam->claimed || pam->connected || pam->requested ||
++	    pam->reset_held || pam->clock_on || pam->rm_registered ||
++	    pam->dependency)
++		ret = -EBUSY; /* failed drain keeps the provider unavailable */
++	else
++		pam->function_owned = false;
++	mutex_unlock(&pam->lock);
++	mutex_unlock(&pamu3_devices_lock);
++	put_device(dev);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(sprd_pamu3_put);
++
++static void pamu3_rm_notify(void *data, enum sipa_rm_event event,
++			    unsigned long unused)
++{
++	struct sprd_pamu3 *pam = data;
++
++	if (event == SIPA_RM_EVT_GRANTED)
++		complete(&pam->grant);
++}
++
++static int pamu3_rm_get(struct sprd_pamu3 *pam)
++{
++	unsigned long deadline;
++	long done;
++	int ret, release_ret;
++
++	if (!pam->rm_registered) {
++		pam->rm.user_data = pam;
++		pam->rm.notify_cb = pamu3_rm_notify;
++		ret = sipa_rm_register(SIPA_RM_RES_CONS_USB, &pam->rm);
++		if (ret)
++			return ret;
++		pam->rm_registered = true;
++	}
++	if (pam->rm_error)
++		return pam->rm_error;
++	if (!pam->dependency) {
++		ret = sipa_rm_enable_usb_tether();
++		if (ret)
++			return ret;
++		pam->dependency = true;
++	}
++	if (pam->requested)
++		return -EBUSY;
++	reinit_completion(&pam->grant);
++	/* The legacy consumer increments ref_count even on a producer's hard
++	 * request error. register above proves this consumer exists.
++	 */
++	pam->requested = true;
++	ret = sipa_rm_request_resource(SIPA_RM_RES_CONS_USB);
++	if (ret && ret != -EINPROGRESS)
++		return ret;
++	if (ret == -EINPROGRESS) {
++		/* The caller waits before pullup or after acknowledging endpoint
++		 * activation. Wait for the real firmware grant without holding
++		 * EP0, and let any USB disable cancel within 100 ms.
++		 */
++		deadline = jiffies + msecs_to_jiffies(30000);
++		for (;;) {
++			if (READ_ONCE(pam->abort))
++				return -ECANCELED;
++			if (time_after_eq(jiffies, deadline))
++				return -ETIMEDOUT;
++			done = wait_for_completion_interruptible_timeout(
++				&pam->grant, msecs_to_jiffies(100));
++			if (done < 0)
++				return (int)done;
++			if (done)
++				break;
++		}
++	}
++	if (READ_ONCE(pam->abort))
++		return -ECANCELED;
++	/* Completion events have no generation tag. A fresh counted query
++	 * confirms the current graph is granted; the original lease stays held.
++	 */
++	ret = sipa_rm_request_resource(SIPA_RM_RES_CONS_USB);
++	release_ret = sipa_rm_release_resource(SIPA_RM_RES_CONS_USB);
++	if (release_ret && release_ret != -EINPROGRESS) {
++		pam->rm_error = release_ret;
++		return release_ret;
++	}
++	return ret;
++}
++
++static int pamu3_rm_put(struct sprd_pamu3 *pam)
++{
++	int ret;
++
++	if (pam->rm_error)
++		return pam->rm_error;
++	if (pam->requested) {
++		ret = sipa_rm_release_resource(SIPA_RM_RES_CONS_USB);
++		/* Registered static consumer: release consumed this reference even
++		 * on a hard producer error.  Never retry and decrement another's.
++		 */
++		pam->requested = false;
++		if (ret && ret != -EINPROGRESS) {
++			pam->rm_error = ret;
++			return ret;
++		}
++	}
++	/* CP/PCIe and IPA edges are shared topology, not this function's lease. */
++	pam->dependency = false;
++	if (pam->rm_registered) {
++		ret = sipa_rm_deregister(SIPA_RM_RES_CONS_USB, &pam->rm);
++		if (ret)
++			return ret;
++		pam->rm_registered = false;
++	}
++	return 0;
++}
++
++/* Configfs bind runs before the controller pullup, so this cold-boot
++ * firmware dependency can settle without consuming the host's EP0 timeout.
++ * This is a real, temporary consumer lease, not a synthetic ready flag.
++ * Release it before returning; normal activation owns its own lease.
++ */
++int sprd_pamu3_wait_ready(struct device *dev)
++{
++	struct sprd_pamu3 *pam = dev_get_drvdata(dev);
++	int ret, cleanup;
++
++	if (!pam || in_interrupt())
++		return -EINVAL;
++	mutex_lock(&pam->lock);
++	if (!pam->function_owned || pam->attached || pam->prepared ||
++	    pam->claimed || pam->connected || pam->requested || pam->stopping ||
++	    pam->reset_held || pam->clock_on || pam->rm_registered ||
++	    pam->dependency) {
++		ret = -EBUSY;
++		goto unlock;
++	}
++	/* No endpoint or worker exists yet; a previous clean unbind may have
++	 * left the cancellation flag set.
++	 */
++	WRITE_ONCE(pam->abort, false);
++	ret = pamu3_rm_get(pam);
++	cleanup = pamu3_rm_put(pam);
++	if (cleanup) {
++		dev_err(dev, "prebind resource cleanup failed: %d\n", cleanup);
++		ret = cleanup;
++	}
++	if (!ret)
++		dev_info(dev, "network resource ready before USB bind\n");
++unlock:
++	mutex_unlock(&pam->lock);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(sprd_pamu3_wait_ready);
++
++/* Separate endpoint ownership from traffic enable. Called by the function's
++ * process-context SET_INTERFACE/SET_CONFIGURATION worker, never under the UDC
++ * spinlock. Descriptor copies remain alive even if a failed drain pins PAM.
++ */
++int sprd_pamu3_arm(struct device *dev, struct usb_ep *out, struct usb_ep *in)
++{
++	struct sprd_pamu3 *pam = dev_get_drvdata(dev);
++	int ret;
++
++	if (!pam || !out || !in || !out->desc || !in->desc)
++		return -EINVAL;
++	if (in_interrupt())
++		return -EWOULDBLOCK;
++	mutex_lock(&pam->lock);
++	if (!pam->prepared || pam->claimed) {
++		ret = -EBUSY;
++		goto unlock;
++	}
++	if (!usb_endpoint_xfer_bulk(out->desc) ||
++	    !usb_endpoint_xfer_bulk(in->desc) ||
++	    usb_endpoint_num(out->desc) != 1 ||
++	    usb_endpoint_num(in->desc) != 1 || usb_endpoint_dir_in(out->desc) ||
++	    !usb_endpoint_dir_in(in->desc)) {
++		ret = -EINVAL;
++		goto unlock;
++	}
++	ret = dwc3_pamu3_claim(pam->controller, dev, out, in);
++	if (ret)
++		goto unlock;
++	pam->claimed = true;
++	spin_lock_irq(&pam->hw_lock);
++	pam->abort = false;
++	spin_unlock_irq(&pam->hw_lock);
++	pam->out = out;
++	pam->in = in;
++	pam->out_desc = *out->desc;
++	pam->in_desc = *in->desc;
++	out->desc = &pam->out_desc;
++	in->desc = &pam->in_desc;
++	if (out->comp_desc) {
++		pam->out_comp = *out->comp_desc;
++		out->comp_desc = &pam->out_comp;
++	}
++	if (in->comp_desc) {
++		pam->in_comp = *in->comp_desc;
++		in->comp_desc = &pam->in_comp;
++	}
++	ret = usb_ep_enable(in);
++	if (!ret)
++		ret = usb_ep_enable(out);
++	/* On failure retain ownership for stop(), which is also the rollback
++	 * entry point. No ordinary queue/disable may race this pair.
++	 */
++unlock:
++	mutex_unlock(&pam->lock);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(sprd_pamu3_arm);
++
++static int pamu3_program_framing(struct sprd_pamu3 *pam,
++				 const struct sprd_pamu3_config *cfg)
++{
++	u32 value;
++
++	if (!cfg || !cfg->max_packets || cfg->max_packets > MAX_PACKET_NUM ||
++	    cfg->max_transfer != PAMU3_RX_TRBBUF_SIZE || cfg->netid > U8_MAX)
++		return -EINVAL;
++	switch (cfg->protocol) {
++	case SPRD_PAMU3_NCM_NTB16:
++		/* The BSP names mode 1 MBIM and mode 2 NCM, but wire captures
++		 * establish that they select NTH16 and NTH32 respectively. NCM16
++		 * therefore uses mode 1 with the NCM signatures and Ethernet IPA
++		 * routing; MBIM keeps its separate raw-IP routing selection.
++		 */
++		if (cfg->nth_signature != 0x484d434e ||
++		    cfg->ndp_signature != 0x304d434e)
++			return -EOPNOTSUPP;
++		value = PAMU3_PROTOCOL_MBIM << PAMU3_CTL0_SHIFT_PROTOCOL;
++		break;
++	case SPRD_PAMU3_MBIM_NTB16:
++		/* Captured NTB16 framing template: NCMH + IPS0.
++		 * NTB32, DSS and multiple sessions need different templates.
++		 */
++		if (cfg->nth_signature != PAM_U3_MBIM_DEFNTH ||
++		    cfg->ndp_signature != PAM_U3_MBIM_DEFNDP)
++			return -EOPNOTSUPP;
++		value = PAMU3_PROTOCOL_MBIM << PAMU3_CTL0_SHIFT_PROTOCOL;
++		break;
++	case SPRD_PAMU3_RNDIS:
++		/* VN007 AP start 84942b0 uses protocol 0 with the same DMA/ring
++		 * template. It does not require invented MAC or length-register
++		 * writes; the PAM consumes/generates the RNDIS Ethernet framing.
++		 */
++		value = PAMU3_PROTOCOL_RNDIS << PAMU3_CTL0_SHIFT_PROTOCOL;
++		break;
++	default:
++		/* Protocol NULL is not established as CDC ECM. */
++		return -EOPNOTSUPP;
++	}
++	writel(value, pam->base + PAM_U3_CTL0); /* ORCA project bit = 0 */
++	if ((readl(pam->base + PAM_U3_CTL0) & PAMU3_CTL0_MASK_PROTOCOL) !=
++	    value)
++		return -EIO;
++	/* Reference RNDIS and MBIM setup both retain these reset templates. */
++	writel(cfg->protocol == SPRD_PAMU3_NCM_NTB16 ? cfg->nth_signature :
++						       PAM_U3_MBIM_DEFNTH,
++	       pam->base + PAM_U3_MBIM_NCM_NTH);
++	writel(cfg->protocol == SPRD_PAMU3_NCM_NTB16 ? cfg->ndp_signature :
++						       PAM_U3_MBIM_DEFNDP,
++	       pam->base + PAM_U3_MBIM_NCM_NDP);
++	value = readl(pam->base + PAM_U3_SRC_MACH) & PAMU3_MASK_SRCMAC_ADDRH;
++	writel(value | (cfg->max_packets << MAX_PACKET_NUM_SHIFT_BIT),
++	       pam->base + PAM_U3_SRC_MACH);
++	value = readl(pam->base + PAM_U3_UL_NODE_HEADER);
++	value &= ~(PAMU3_MASK_NETID | PAMU3_MASK_ULNODE_SRC);
++	value |= cfg->netid | (SIPA_TERM_USB << PAMU3_SHIFT_ULNODE_SRC);
++	writel(value, pam->base + PAM_U3_UL_NODE_HEADER);
++	writel(readl(pam->base + PAM_U3_TRB_HEADER) | PAMU3_TRB_LAST,
++	       pam->base + PAM_U3_TRB_HEADER);
++	return 0;
++}
++
++int sprd_pamu3_start(struct device *dev, const struct sprd_pamu3_config *cfg)
++{
++	struct sprd_pamu3 *pam = dev_get_drvdata(dev);
++	struct sipa_connect_params params = { .id = SIPA_EP_USB };
++	u32 value, depth;
++	int ret;
++
++	if (!pam || !cfg)
++		return -EINVAL;
++	if (in_interrupt())
++		return -EWOULDBLOCK;
++	mutex_lock(&pam->lock);
++	if (!pam->prepared || !pam->claimed || !pam->out->enabled ||
++	    !pam->in->enabled || pam->running || pam->connected ||
++	    pam->stopping) {
++		ret = -EBUSY;
++		goto unlock;
++	}
++	ret = pamu3_program_framing(pam, cfg);
++	if (ret)
++		goto unlock;
++	ret = pamu3_rm_get(pam);
++	if (ret)
++		goto unlock;
++	params.usb_format = cfg->protocol == SPRD_PAMU3_MBIM_NTB16 ?
++				    SIPA_USB_MBIM :
++				    SIPA_USB_RNDIS;
++	depth = pam->fifo.dl_fifo.fifo_depth;
++	params.send_param.tx_intr_threshold = PAM_U3_MAX_DLPKTS_DEF;
++	params.send_param.tx_intr_delay_us = 5;
++	params.send_param.flow_ctrl_irq_mode = 2;
++	params.recv_param.tx_intr_threshold = PAM_U3_MAX_ULPKTS_DEF;
++	params.recv_param.tx_intr_delay_us = 5;
++	params.recv_param.tx_enter_flowctrl_watermark = depth - depth / 4;
++	params.recv_param.tx_leave_flowctrl_watermark = depth / 2;
++	params.recv_param.flow_ctrl_cfg = 1;
++	/* Treat connect as potentially partially effective until checked stop.
++	 * The SIPA checked lifecycle patch is a required dependency.
++	 */
++	ret = sipa_pam_connect(&params);
++	pam->connected = !ret || ret == -EUCLEAN;
++	if (ret)
++		goto unlock;
++	spin_lock_irq(&pam->hw_lock);
++	if (pam->abort) {
++		spin_unlock_irq(&pam->hw_lock);
++		ret = -ECANCELED;
++		goto unlock;
++	}
++	dma_wmb();
++	writel(0, pam->base + PAM_U3_INR_EN); /* polling; no unhandled IRQ */
++	value = readl(pam->base + PAM_U3_CTL0) | PAMU3_CTL0_BIT_PAM_EN;
++	writel(value, pam->base + PAM_U3_CTL0);
++	value |= PAMU3_CTL0_BIT_RX_START | PAMU3_CTL0_BIT_TX_START;
++	writel(value, pam->base + PAM_U3_CTL0);
++	writel(value | PAMU3_CTL0_BIT_USB_EN, pam->base + PAM_U3_CTL0);
++	pam->running = true;
++	spin_unlock_irq(&pam->hw_lock);
++	ret = 0;
++unlock:
++	mutex_unlock(&pam->lock);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(sprd_pamu3_start);
++
++/* Request the hardware RELEASE handshake immediately on USB disable/reset.
++ * Keep the micro-engines running: clearing START before RELEASE prevents DONE.
++ * DMA buffers, endpoints and clocks remain owned until the worker verifies
++ * DONE and idle. hw_lock fences clock-off and a racing enable transaction.
++ */
++void sprd_pamu3_quiesce_atomic(struct device *dev)
++{
++	struct sprd_pamu3 *pam = dev_get_drvdata(dev);
++	unsigned long flags;
++	u32 value;
++
++	if (!pam)
++		return;
++	spin_lock_irqsave(&pam->hw_lock, flags);
++	pam->abort = true;
++	if (pam->clock_on && READ_ONCE(pam->claimed) && !pam->foreign_active) {
++		value = readl(pam->base + PAM_U3_CTL0);
++		value = (value & ~PAMU3_CTL0_BITS_STOPMODE) | BIT(3) |
++			PAMU3_CTL0_BIT_RELEASE;
++		writel(value, pam->base + PAM_U3_CTL0);
++	}
++	spin_unlock_irqrestore(&pam->hw_lock, flags);
++}
++EXPORT_SYMBOL_GPL(sprd_pamu3_quiesce_atomic);
++
++/* A closed host cannot consume the final NTB. End both external DMA
++ * engines before returning those nodes through SIPA's normal completion path.
++ * Allocations and grants remain owned on every error.
++ */
++static int pamu3_abort_locked(struct sprd_pamu3 *pam)
++{
++	u32 value;
++	int ret, status;
++
++	if (pam->foreign_active || !pam->clock_on || !pam->claimed)
++		return -EBUSY;
++	if (pam->running) {
++		spin_lock_irq(&pam->hw_lock);
++		pam->abort = true;
++		value = readl(pam->base + PAM_U3_CTL0);
++		value = (value & ~PAMU3_CTL0_BITS_STOPMODE) | BIT(3) |
++			PAMU3_CTL0_BIT_RELEASE;
++		writel(value, pam->base + PAM_U3_CTL0);
++		spin_unlock_irq(&pam->hw_lock);
++		ret = readl_poll_timeout(
++			pam->base + PAM_U3_CTL1, value,
++			!(value & (PAMU3_CTL1_TXHWBUSY | PAMU3_CTL1_RXHWBUSY)),
++			10, 100000);
++		if (ret)
++			return ret;
++		spin_lock_irq(&pam->hw_lock);
++		value = readl(pam->base + PAM_U3_CTL0);
++		value &= ~(PAMU3_CTL0_BIT_USB_EN | PAMU3_CTL0_BIT_PAM_EN |
++			   PAMU3_CTL0_BIT_TX_START | PAMU3_CTL0_BIT_RX_START);
++		writel(value, pam->base + PAM_U3_CTL0);
++		spin_unlock_irq(&pam->hw_lock);
++		ret = dwc3_pamu3_drain(pam->controller, pam->dev);
++		if (ret)
++			return ret;
++		if (pam->reset_held) {
++			ret = reset_control_rearm(pam->reset);
++			if (ret)
++				return ret;
++			pam->reset_held = false;
++		}
++		ret = reset_control_reset(pam->reset);
++		if (ret)
++			return ret;
++		pam->reset_held = true;
++		/* Reset leaves HWBUSY at its uninitialized default, 0x300.
++		 * The independently reset master is stopped; do not wait for an
++		 * initialized running-engine status after reset has completed.
++		 */
++		pam->running = false;
++	}
++	if (readl(pam->base + PAM_U3_CTL0) &
++	    (PAMU3_CTL0_BIT_PAM_EN | PAMU3_CTL0_BIT_USB_EN))
++		return -EIO;
++	if (!pam->connected)
++		return 0;
++	ret = sipa_disconnect(SIPA_EP_USB, SIPA_DISCONNECT_RECLAIM);
++	if (ret)
++		return ret;
++	ret = read_poll_timeout(sipa_disconnect, status, status != -EAGAIN,
++				1000, 500000, false, SIPA_EP_USB,
++				SIPA_DISCONNECT_START);
++	if (ret || status)
++		return ret ?: status;
++	pam->stopping = true;
++	dev_info(pam->dev,
++		 "Aborted USB traffic returned through SIPA completion\n");
++	return 0;
++}
++
++static int pamu3_pause_locked(struct sprd_pamu3 *pam)
++{
++	u32 value;
++	int ret;
++
++	if (pam->foreign_active)
++		return -EBUSY; /* unknown DMA must not be stopped or reclaimed as ours */
++	if (pam->connected && !pam->stopping) {
++		int status;
++
++		/* Fence new AP submissions and first allow normal completion. A
++		 * peer disconnect may strand a partial NTB; cancel its DMA before
++		 * reclaiming descriptors, then verify the ownership ledger again.
++		 */
++		ret = read_poll_timeout(sipa_disconnect, status,
++					status != -EAGAIN, 1000, 500000, false,
++					SIPA_EP_USB, SIPA_DISCONNECT_START);
++		if (ret == -ETIMEDOUT && status == -EAGAIN) {
++			ret = pamu3_abort_locked(pam);
++			if (ret)
++				return ret;
++		} else if (ret || status) {
++			return ret ?: status;
++		}
++		pam->stopping = true;
++	}
++	if (pam->clock_on) {
++		value = readl(pam->base + PAM_U3_CTL0);
++		if (value & (PAMU3_CTL0_BIT_USB_EN | PAMU3_CTL0_BIT_PAM_EN)) {
++			/* On ORCA, STOPMODE=1 is required to acknowledge RELEASE after
++			 * the host closes the bulk interface. Mode 0 remained idle with
++			 * DONE clear; selecting mode 1 returned DONE on real hardware.
++			 * Keep USB_EN/START until DONE, then verify both engines idle
++			 * and drain DWC3 before retiring any DMA allocation.
++			 */
++			value = (value & ~PAMU3_CTL0_BITS_STOPMODE) | BIT(3);
++			writel(value | PAMU3_CTL0_BIT_RELEASE,
++			       pam->base + PAM_U3_CTL0);
++			ret = readl_poll_timeout(pam->base + PAM_U3_CTL0, value,
++						 value & PAMU3_CTL0_BIT_DONE,
++						 10, 500000);
++			if (ret) {
++				ret = pamu3_abort_locked(pam);
++				if (ret)
++					return ret;
++				value = readl(pam->base + PAM_U3_CTL0);
++			}
++			value &= ~(PAMU3_CTL0_BIT_USB_EN |
++				   PAMU3_CTL0_BIT_PAM_EN |
++				   PAMU3_CTL0_BIT_RELEASE |
++				   PAMU3_CTL0_BIT_TX_START |
++				   PAMU3_CTL0_BIT_RX_START);
++			writel(value, pam->base + PAM_U3_CTL0);
++		}
++		if (pam->running) {
++			ret = readl_poll_timeout(
++				pam->base + PAM_U3_CTL1, value,
++				!(value &
++				  (PAMU3_CTL1_TXHWBUSY | PAMU3_CTL1_RXHWBUSY)),
++				10, 500000);
++			if (ret)
++				return ret;
++		}
++		writel(0, pam->base + PAM_U3_INR_EN);
++	}
++	if (pam->claimed) {
++		ret = dwc3_pamu3_drain(pam->controller, pam->dev);
++		if (ret)
++			return ret;
++	}
++	/* END is legal only now: the external DMA master is proven idle. */
++	if (pam->connected) {
++		ret = sipa_disconnect(SIPA_EP_USB, SIPA_DISCONNECT_END);
++		if (ret)
++			return ret;
++		pam->connected = false;
++		pam->stopping = false;
++	}
++	pam->running = false;
++	return pamu3_rm_put(pam);
++}
++
++int sprd_pamu3_pause(struct device *dev)
++{
++	struct sprd_pamu3 *pam = dev_get_drvdata(dev);
++	int ret;
++
++	if (!pam)
++		return -ENODEV;
++	if (in_interrupt())
++		return -EWOULDBLOCK;
++	mutex_lock(&pam->lock);
++	ret = pamu3_pause_locked(pam);
++	mutex_unlock(&pam->lock);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(sprd_pamu3_pause);
++
++int sprd_pamu3_stop(struct device *dev)
++{
++	struct sprd_pamu3 *pam = dev_get_drvdata(dev);
++	int ret;
++
++	if (!pam)
++		return -ENODEV;
++	if (in_interrupt())
++		return -EWOULDBLOCK;
++	mutex_lock(&pam->lock);
++	ret = pamu3_pause_locked(pam);
++	if (!ret)
++		ret = pamu3_release_resources(pam);
++	/* Any error preserves every not-yet-proven-safe resource. */
++	mutex_unlock(&pam->lock);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(sprd_pamu3_stop);
++
++static void pamu3_put_device(void *data)
++{
++	put_device(data);
++}
++
++static int sprd_pamu3_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct platform_device *controller;
++	struct sprd_pamu3 *pam;
++	struct device_node *np;
++	struct resource *res;
++	int ret;
++
++	pam = devm_kzalloc(dev, sizeof(*pam), GFP_KERNEL);
++	if (!pam)
++		return -ENOMEM;
++	pam->dev = dev;
++	mutex_init(&pam->lock);
++	spin_lock_init(&pam->hw_lock);
++	init_completion(&pam->grant);
++	INIT_LIST_HEAD(&pam->node);
++	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
++					   "pamu3_glb_regs");
++	if (!res || resource_size(res) < PAM_U3_RXDBG_IRAM + 20 * sizeof(u32))
++		return -EINVAL;
++	pam->base = devm_ioremap_resource(dev, res);
++	if (IS_ERR(pam->base))
++		return PTR_ERR(pam->base);
++	pam->clk = devm_clk_get(dev, "pamu3_clk");
++	if (IS_ERR(pam->clk))
++		return PTR_ERR(pam->clk);
++	pam->reset = devm_reset_control_get_shared(dev, "pamu3");
++	if (IS_ERR(pam->reset))
++		return PTR_ERR(pam->reset);
++	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(40));
++	if (ret)
++		return ret;
++	np = of_parse_phandle(dev->of_node, "sprd,dwc3", 0);
++	if (!np)
++		return -EINVAL;
++	if (!of_device_is_compatible(np, "snps,dwc3")) {
++		of_node_put(np);
++		return -EINVAL;
++	}
++	controller = of_find_device_by_node(np);
++	of_node_put(np);
++	if (!controller)
++		return -EPROBE_DEFER;
++	pam->controller = &controller->dev;
++	ret = devm_add_action_or_reset(dev, pamu3_put_device, pam->controller);
++	if (ret)
++		return ret;
++	if (!dev_get_drvdata(pam->controller))
++		return -EPROBE_DEFER;
++	pam->sipa = sipa_get_pdev();
++	if (!pam->sipa)
++		return -EPROBE_DEFER;
++	get_device(pam->sipa);
++	ret = devm_add_action_or_reset(dev, pamu3_put_device, pam->sipa);
++	if (ret)
++		return ret;
++	if (!device_link_add(dev, pam->controller,
++			     DL_FLAG_AUTOREMOVE_CONSUMER) ||
++	    !device_link_add(dev, pam->sipa, DL_FLAG_AUTOREMOVE_CONSUMER))
++		return -ENOMEM;
++	platform_set_drvdata(pdev, pam);
++	mutex_lock(&pamu3_devices_lock);
++	list_add_tail(&pam->node, &pamu3_devices);
++	mutex_unlock(&pamu3_devices_lock);
++	return 0;
++}
++
++static void sprd_pamu3_remove(struct platform_device *pdev)
++{
++	struct sprd_pamu3 *pam = platform_get_drvdata(pdev);
++	int ret;
++
++	mutex_lock(&pamu3_devices_lock);
++	list_del(&pam->node);
++	mutex_unlock(&pamu3_devices_lock);
++	ret = sprd_pamu3_stop(&pdev->dev);
++
++	if (ret)
++		dev_err(&pdev->dev,
++			"unsupported forced removal after PAM drain failure (%d); devres cannot preserve the retained DMA ownership\n",
++			ret);
++}
++
++static ssize_t offload_state_show(struct device *dev,
++				  struct device_attribute *attr, char *buf)
++{
++	struct sprd_pamu3 *pam = dev_get_drvdata(dev);
++	u32 ctl0 = 0;
++	ssize_t len;
++
++	mutex_lock(&pam->lock);
++	/* Never access the register window while its clock is disabled. */
++	if (pam->clock_on)
++		ctl0 = readl(pam->base + PAM_U3_CTL0);
++	len = sysfs_emit(
++		buf,
++		"clock=%u prepared=%u claimed=%u running=%u connected=%u requested=%u ctl0=0x%08x\n",
++		pam->clock_on, pam->prepared, pam->claimed, pam->running,
++		pam->connected, pam->requested, ctl0);
++	mutex_unlock(&pam->lock);
++	return len;
++}
++static DEVICE_ATTR_RO(offload_state);
++
++static struct attribute *pamu3_attrs[] = {
++	&dev_attr_offload_state.attr,
++	NULL,
++};
++ATTRIBUTE_GROUPS(pamu3);
++
++static const struct of_device_id sprd_pamu3_match[] = {
++	{ .compatible = "sprd,orca-pamu3" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, sprd_pamu3_match);
++
++static struct platform_driver sprd_pamu3_driver = {
++	.probe = sprd_pamu3_probe,
++	.remove = sprd_pamu3_remove,
++	.driver = {
++		.name = "sprd-pamu3",
++		.of_match_table = sprd_pamu3_match,
++		.suppress_bind_attrs = true,
++		.dev_groups = pamu3_groups,
++	},
++};
++module_platform_driver(sprd_pamu3_driver);
++MODULE_DESCRIPTION("UDX710 PAMU3 checked resources and DWC3 ownership boundary");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/usb/misc/sprd-pamu3.h b/drivers/usb/misc/sprd-pamu3.h
+new file mode 100644
+index 000000000..8073c0e09
+--- /dev/null
++++ b/drivers/usb/misc/sprd-pamu3.h
+@@ -0,0 +1,244 @@
++#ifndef _PAM_USB3_H_
++#define _PAM_USB3_H_
++
++#include <linux/bitops.h>
++
++/* pam u3 registers */
++#define PAM_U3_CTL0 0x0000
++#define PAM_U3_SRC_MACH 0x0004
++#define PAM_U3_SRC_MACL 0x0008
++#define PAM_U3_DST_MACH 0x000c
++#define PAM_U3_DST_MACL 0x0010
++#define PAM_U3_RNDIS_DATA_OFFSET 0x0014
++#define PAM_U3_RNDIS_DATA_LENGTH 0x0018
++#define PAM_U3_RNDIS_ODATA_OFFSET 0x001c
++#define PAM_U3_RNDIS_ODATA_LENGTH 0x0020
++#define PAM_U3_RNDIS_NUMODATAINFO 0x0024
++#define PAM_U3_RNDIS_PERPACKOFFSET 0x0028
++#define PAM_U3_RNDIS_PERPACKLENGTH 0x002c
++#define PAM_U3_RNDIS_VCHANDLE 0x0030
++#define PAM_U3_TXEVENTTBUFFER_ADDRL 0x0040
++#define PAM_U3_TXEVENTTBUFFER_ADDRH 0x0044
++#define PAM_U3_RXEVENTTBUFFER_ADDRL 0x0048
++#define PAM_U3_RXEVENTTBUFFER_ADDRH 0x004c
++#define PAM_U3_DLFIFOFILL_ADDRL 0x0050
++#define PAM_U3_DLFIFOFILL_ADDRH 0x0054
++#define PAM_U3_DLFIFOFREE_ADDRL 0x0058
++#define PAM_U3_DLFIFOFREE_ADDRH 0x005c
++#define PAM_U3_ULFIFOFILL_ADDRL 0x0060
++#define PAM_U3_ULFIFOFILL_ADDRH 0x0064
++#define PAM_U3_ULFIFOFREE_ADDRL 0x0068
++#define PAM_U3_ULFIFOFREE_ADDRH 0x006c
++#define PAM_U3_TXTRBBUF0_ADDRL 0x0070
++#define PAM_U3_TXTRBBUF0_ADDRH 0x0074
++#define PAM_U3_TXTRBBUF1_ADDRL 0x0078
++#define PAM_U3_TXTRBBUF1_ADDRH 0x007c
++#define PAM_U3_RXTRBBUF0_ADDRL 0x0080
++#define PAM_U3_RXTRBBUF0_ADDRH 0x0084
++#define PAM_U3_RXTRBBUF1_ADDRL 0x0088
++#define PAM_U3_RXTRBBUF1_ADDRH 0x008c
++#define PAM_U3_RXTRBBUF2_ADDRL 0x0090
++#define PAM_U3_RXTRBBUF2_ADDRH 0x0094
++#define PAM_U3_RXTRBBUF3_ADDRL 0x0098
++#define PAM_U3_RXTRBBUF3_ADDRH 0x009c
++#define PAM_U3_TXPROIRAM_ADDRL 0x00a0
++#define PAM_U3_TXPROIRAM_ADDRH 0x00a4
++#define PAM_U3_RXPROIRAM_ADDRL 0x00a8
++#define PAM_U3_RXPROIRAM_ADDRH 0x00ac
++#define PAM_U3_TXPCMDENTRY_ADDR0 0x00b0
++#define PAM_U3_TXPCMDENTRY_ADDR1 0x00b4
++#define PAM_U3_RXPCMDENTRY_ADDR0 0x00b8
++#define PAM_U3_RXPCMDENTRY_ADDR1 0x00bc
++#define PAM_U3_TXEVTBUFFER_ADDRL 0x00c0
++#define PAM_U3_TXEVTBUFFER_ADDRH 0x00c4
++#define PAM_U3_RXEVTBUFFER_ADDRL 0x00c8
++#define PAM_U3_RXEVTBUFFER_ADDRH 0x00cc
++#define PAM_U3_TXEVTCOUNT_ADDRL 0x00d0
++#define PAM_U3_TXEVTCOUNT_ADDRH 0x00d4
++#define PAM_U3_RXEVTCOUNT_ADDRL 0x00d8
++#define PAM_U3_RXEVTCOUNT_ADDRH 0x00dc
++#define PAM_U3_CTL1 0x00e0
++#define PAM_U3_INR_EN 0x00e4
++#define PAM_U3_INR_CLR 0x00e8
++#define PAM_U3_RXBUF0_ADDRL 0x00f0
++#define PAM_U3_RXBUF0_ADDRH 0x00f4
++#define PAM_U3_RXBUF1_ADDRL 0x00f8
++#define PAM_U3_RXBUF1_ADDRH 0x00fc
++#define PAM_U3_RXBUF2_ADDRL 0x0100
++#define PAM_U3_RXBUF2_ADDRH 0x0104
++#define PAM_U3_RXBUF3_ADDRL 0x0108
++#define PAM_U3_RXBUF3_ADDRH 0x010c
++#define PAM_U3_DLGETIPAFIFO_ADDRL 0x0110
++#define PAM_U3_DLGETIPAFIFO_ADDRH 0x0114
++#define PAM_U3_DLPUTIPAFIFO_ADDRL 0x0118
++#define PAM_U3_DLPUTIPAFIFO_ADDRH 0x011c
++#define PAM_U3_ULGETIPAFIFO_ADDRL 0x0120
++#define PAM_U3_ULGETIPAFIFO_ADDRH 0x0124
++#define PAM_U3_ULPUTIPAFIFO_ADDRL 0x0128
++#define PAM_U3_ULPUTIPAFIFO_ADDRH 0x012c
++#define PAM_U3_HEADER_ENDBASE_ADDRL 0x0130
++#define PAM_U3_HEADER_ENDBASE_ADDRH 0x0134
++#define PAM_U3_TRB_HEADER 0x0138
++#define PAM_U3_TRB_HEADER_SID 0x013c
++#define PAM_U3_UL_NODE_HEADER 0x0140
++#define PAM_U3_UL_NODE_ERRCODE 0x0144
++#define PAM_U3_DL_GETPUT_COMMONFIFO 0x0148
++#define PAM_U3_UL_GETPUT_COMMONFIFO 0x014c
++#define PAM_U3_MBIM_NCM_NTH 0x0150
++#define PAM_U3_MBIM_NCM_NDP 0x0154
++#define PAM_U3_AXI_WR_CHANPRIO 0x0158
++#define PAM_U3_AXI_RD_CHANPRIO 0x015c
++#define PAM_U3_GETPUT_OFFSET 0x0160
++#define PAM_U3_RX_CTRL_DEBUG 0x0164
++#define PAM_U3_RX_PRO_DEC_DEBUG 0x0168
++#define PAM_U3_TRB_GEN_DEBUG 0x016c
++#define PAM_U3_TX_PRO_GEN_DEBUG 0x0170
++#define PAM_U3_AXI_OS 0x0174
++#define PAM_U3_SOF_DST_NODE_OFFSET 0x0178
++#define PAM_U3_ID_CONFIG 0x017c
++#define PAM_U3_DDRMAP_OFFSETH 0x0180
++#define PAM_U3_DDRMAP_OFFSETL 0x0184
++#define PAM_U3_BUFFER01_COUNT 0x0188
++#define PAM_U3_BUFFER23_COUNT 0x018c
++
++#define PAM_U3_TX_REG(n) (0x0400 + ((n) * 4))
++#define PAM_U3_TXDBG_INSTRUC_ADDRL 0x0440
++#define PAM_U3_TXDBG_INSTRUC_ADDRH 0x0444
++#define PAM_U3_TXDBG_STATE 0x0448
++#define PAM_U3_TXDBG_BUFLEN 0x044c
++#define PAM_U3_TXDBG_LINK_ADDRL 0x0450
++#define PAM_U3_TXDBG_LINK_ADDRH 0x0454
++#define PAM_U3_DUMMY_REG1 0x0460
++#define PAM_U3_TXDBG_IRAM 0x0500
++
++#define PAM_U3_RX_REG(n) (0x0900 + ((n) * 4))
++#define PAM_U3_RXDBG_INSTRUC_ADDRL 0x0940
++#define PAM_U3_RXDBG_INSTRUC_ADDRH 0x0944
++#define PAM_U3_RXDBG_STATE 0x0948
++#define PAM_U3_RXDBG_BUFLEN 0x094c
++#define PAM_U3_RXDBG_LINK_ADDRL 0x0950
++#define PAM_U3_RXDBG_LINK_ADDRH 0x0954
++#define PAM_U3_DUMMY_REG2 0x0958
++#define PAM_U3_RXDBG_IRAM 0x0a00
++
++/*bitmap for PAM_U3_CTL0 */
++#define PAMU3_CTL0_BIT_USB_EN BIT(0)
++#define PAMU3_CTL0_BIT_PAM_EN BIT(1)
++#define PAMU3_CTL0_BIT_RELEASE BIT(2)
++#define PAMU3_CTL0_BITS_STOPMODE GENMASK(4, 3)
++#define PAMU3_CTL0_BIT_DONE BIT(8)
++
++#define PAMU3_CTL0_MASK_PROTOCOL GENMASK(6, 5)
++#define PAMU3_CTL0_SHIFT_PROTOCOL 5
++#define PAMU3_PROTOCOL_RNDIS 0x00
++#define PAMU3_PROTOCOL_MBIM 0x01
++#define PAMU3_PROTOCOL_NCM 0x02
++#define PAMU3_PROTOCOL_NULL 0x03
++
++#define PAMU3_CTL0_BIT_PROJECT BIT(7)
++#define PAMU3_CTL0_SHIFT_PROJECT 7
++#define PAMU3_PROJECT_ORCA 0x00
++#define PAMU3_PROJECT_ROC1 0x01
++
++#define PAMU3_CTL0_BIT_TX_START BIT(9)
++#define PAMU3_CTL0_BIT_RX_START BIT(10)
++
++#define PAMU3_CTL0_MASK_RTL_VER GENMASK(31, 20)
++
++/* bitmap for PAM_U3_SRC_MACH */
++#define PAMU3_MASK_SRCMAC_ADDRH GENMASK(15, 0)
++#define PAMU3_MASK_MAXIPCNT GENMASK(23, 16)
++#define MAX_PACKET_NUM 7
++#define MAX_PACKET_NUM_SHIFT_BIT 16
++
++/* bitmap for PAM_U3_DST_MACH */
++#define PAMU3_MASK_DSTMAC_ADDRH GENMASK(15, 0)
++#define PAMU3_MASK_TRIGHDRCNT GENMASK(31, 16)
++
++/* bitmap for the highest byte of 40 bit-wide address */
++#define PAMU3_BITS_LOWADDR32 32
++#define PAMU3_MASK_LOWADDR32 GENMASK(31, 0)
++#define PAMU3_MASK_ADDR32_LSB GENMASK(7, 0)
++
++/* bitmap for event size */
++#define PAMU3_BITS_STARTEVTSZ 8
++#define PAMU3_MASK_EVTSZ GENMASK(15, 0)
++
++/* bitmap for PAM_U3_CTL1 */
++#define PAMU3_CTL1_TXSWREQ BIT(0)
++#define PAMU3_CTL1_TXSWRDY BIT(1)
++#define PAMU3_CTL1_RXSWREQ BIT(2)
++#define PAMU3_CTL1_RXSWRDY BIT(3)
++#define PAMU3_CTL1_TXCHKEN BIT(4)
++#define PAMU3_CTL1_RXCHKEN BIT(5)
++#define PAMU3_CTL1_TXDMAPRI BIT(6)
++#define PAMU3_CTL1_RXDMAPRI BIT(7)
++#define PAMU3_CTL1_TXHWBUSY BIT(8)
++#define PAMU3_CTL1_RXHWBUSY BIT(9)
++
++/* bitmap for PAM_U3_INR_EN and STS */
++#define PAMU3_INTSTS_TXWDGTMOUT BIT(0)
++#define PAMU3_INTSTS_RXWDGTMOUT BIT(1)
++#define PAMU3_INTSTS_TXEPINT BIT(2)
++#define PAMU3_INTSTS_RXEPINT BIT(3)
++#define PAMU3_INTSTS_TXCMDERR BIT(4)
++#define PAMU3_INTSTS_RXCMDERR BIT(5)
++#define PAMU3_SHIFT_INTSTS 16
++
++/* bitmap for PAM_U3_INR_CLR */
++#define PAMU3_INTCLR_TXWDGTMOUT BIT(0)
++#define PAMU3_INTCLR_RXWDGTMOUT BIT(1)
++#define PAMU3_INTCLR_TXEPINT BIT(2)
++#define PAMU3_INTCLR_RXEPINT BIT(3)
++#define PAMU3_INTCLR_TXCMDERR BIT(4)
++#define PAMU3_INTCLR_RXCMDERR BIT(5)
++
++/* PAM_U3_TRB_HEADER */
++#define PAMU3_TRB_LAST 0x100
++
++/*bitmap for PAM_U3_UL_NODE_HEADER */
++#define PAMU3_MASK_NETID GENMASK(7, 0)
++#define PAMU3_SHIFT_ULNODE_SRC 8
++#define PAMU3_MASK_ULNODE_SRC GENMASK(12, 8)
++#define PAMU3_SHIFT_ULNODE_DST 13
++#define PAMU3_MASK_ULNODE_DST GENMASK(17, 13)
++
++/* DWC3 regs */
++#define REG_DWC3_GEVNTADRLO(n) (0xc400 + ((n) * 0x10))
++#define REG_DWC3_GEVNTADRHI(n) (0xc404 + ((n) * 0x10))
++#define REG_DWC3_GEVNTSIZ(n) (0xc408 + ((n) * 0x10))
++#define REG_DWC3_GEVNTCOUNT(n) (0xc40c + ((n) * 0x10))
++#define REG_DWC3_DEP_BASE(n) (0xc800 + ((n) * 0x10))
++
++/* TRB for PAM_U3 */
++#define PAMU3_RX_TRB_NUM 4
++#define PAMU3_TX_TRB_NUM 32
++#define PAMU3_RX_TRBBUF_NUM 4
++#define PAMU3_TX_TRBBUF_NUM 2
++#define PAMU3_TRB_CTRL_DEFVAL 0x803
++#define PAMU3_RX_TRBBUF_SIZE 0x4000
++#define PAMU3_RNDIS_HEADER_SIZE 1024
++
++#define PAMU3_BIT_RXTRBBUFSIZE_SHIFT 8
++#define PAMU3_MASK_RXTRBBUFSIZE_LSB GENMASK(7, 0)
++
++/* MBIM */
++#define PAM_U3_MBIM_DEFNTH 0x484d434e
++#define PAM_U3_MBIM_DEFNDP 0x00535049
++
++/* CMD ENTRY */
++#define PAMU3_CMDENTER_ADDR0 0xa080600
++#define PAMU3_CMDENTER_ADDR1 0xe0c0b1a
++
++/* Packets per transfer default */
++#define PAM_U3_MAX_DLPKTS_DEF 10
++#define PAM_U3_MAX_ULPKTS_DEF 1
++
++struct pamu3_dwc3_trb {
++	u32 bpl;
++	u32 bph;
++	u32 size;
++	u32 ctrl;
++} __packed;
++
++#endif /* _PAM_USB3_H_ */
+diff --git a/include/linux/usb/composite.h b/include/linux/usb/composite.h
+index c18041faf..af9622a30 100644
+--- a/include/linux/usb/composite.h
++++ b/include/linux/usb/composite.h
+@@ -419,6 +419,15 @@ extern void usb_composite_unregister(struct usb_composite_driver *driver);
+ 		       usb_composite_unregister)
+ 
+ extern void usb_composite_setup_continue(struct usb_composite_dev *cdev);
++/* Opt-in deferred status transaction. defer is called with cdev->lock held by
++ * set_alt; complete is process-context and rejects a superseded SETUP/reset.
++ */
++int usb_composite_setup_defer_checked(struct usb_composite_dev *cdev,
++				      u32 *token);
++int usb_composite_setup_continue_checked(struct usb_composite_dev *cdev,
++					 u32 setup_generation,
++					 const u32 *function_generation,
++					 u32 expected_generation, int status);
+ extern int composite_dev_prepare(struct usb_composite_driver *composite,
+ 		struct usb_composite_dev *cdev);
+ extern int composite_os_desc_req_prepare(struct usb_composite_dev *cdev,
+@@ -495,6 +504,8 @@ struct usb_composite_dev {
+ 	 * data/status stages till delayed_status is zero.
+ 	 */
+ 	int				delayed_status;
++	u32 setup_generation;
++	bool checked_setup_pending;
+ 
+ 	/* protects deactivations and delayed_status counts*/
+ 	spinlock_t			lock;
+diff --git a/include/linux/usb/sprd-pamu3.h b/include/linux/usb/sprd-pamu3.h
+new file mode 100644
+index 000000000..9f35a3848
+--- /dev/null
++++ b/include/linux/usb/sprd-pamu3.h
+@@ -0,0 +1,59 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _LINUX_USB_SPRD_PAMU3_H
++#define _LINUX_USB_SPRD_PAMU3_H
++
++#include <linux/types.h>
++
++struct device;
++struct usb_ep;
++
++/* DWC3 owns these coherent allocations. Valid only between attach/detach. */
++struct dwc3_pamu3_resources {
++	struct device *dma_dev;
++	phys_addr_t regs_phys;
++	dma_addr_t event_dma[2]; /* event 1 = ep3 IN, event 2 = ep2 OUT */
++	u32 event_size[2];
++	u32 generation;
++};
++
++/* Process context. attach pins runtime PM; caller must establish a device link. */
++int dwc3_pamu3_attach(struct device *controller, struct device *owner,
++		      struct dwc3_pamu3_resources *resources);
++int dwc3_pamu3_detach(struct device *controller, struct device *owner);
++/* Claim both disabled, request-free endpoints before the USB function enables
++ * them. Only physical ep2 OUT and ep3 IN are accepted. Software queue is then
++ * prohibited. Release is legal only after PAM and SIPA are stopped/drained.
++ */
++int dwc3_pamu3_claim(struct device *controller, struct device *owner,
++		     struct usb_ep *out, struct usb_ep *in);
++int dwc3_pamu3_drain(struct device *controller, struct device *owner);
++int dwc3_pamu3_release(struct device *controller, struct device *owner);
++
++enum sprd_pamu3_protocol {
++	SPRD_PAMU3_RNDIS,
++	SPRD_PAMU3_MBIM_NTB16,
++	SPRD_PAMU3_NCM_NTB16,
++};
++
++struct sprd_pamu3_config {
++	enum sprd_pamu3_protocol protocol;
++	u32 max_transfer, max_packets, netid;
++	u32 nth_signature, ndp_signature;
++	u8 host_mac[6], dev_mac[6];
++};
++
++/* Exclusive function lease; put drops the device reference even on error. */
++struct device *sprd_pamu3_get(struct device *controller);
++int sprd_pamu3_put(struct device *dev);
++/* Before controller pullup, acquire/wait/release a real network resource. */
++int sprd_pamu3_wait_ready(struct device *dev);
++int sprd_pamu3_arm(struct device *dev, struct usb_ep *out, struct usb_ep *in);
++int sprd_pamu3_pause(struct device *dev);
++void sprd_pamu3_quiesce_atomic(struct device *dev);
++/* Preparation allocates and programs disabled hardware; it is not a start. */
++int sprd_pamu3_prepare(struct device *dev);
++int sprd_pamu3_start(struct device *dev,
++		     const struct sprd_pamu3_config *config);
++int sprd_pamu3_stop(struct device *dev);
++
++#endif

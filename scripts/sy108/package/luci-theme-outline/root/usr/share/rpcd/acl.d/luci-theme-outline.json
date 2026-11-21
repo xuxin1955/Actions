@@ -1,0 +1,25 @@
+{
+  "luci-theme-outline": {
+    "description": "Grant access to the Outline theme's appearance, branding and package settings",
+    "read": {
+      "uci": ["outline"],
+      "ubus": {
+        "luci.outline": ["get_state", "job_status", "brand_list"]
+      }
+    },
+    "write": {
+      "uci": ["outline"],
+      "ubus": {
+        "luci.outline": [
+          "activate",
+          "job_start",
+          "brand_upload",
+          "set_auto_update"
+        ]
+      },
+      "file": {
+        "/tmp/outline-brand.upload": ["write"]
+      }
+    }
+  }
+}

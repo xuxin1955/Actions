@@ -1,0 +1,5 @@
+#!/bin/sh
+# Restored rc.d entries must not hide this boot's confirmation service.
+[ -f /etc/udx-openwrt-root ] || exit 0
+/etc/init.d/udx-boot-confirm enable
+/etc/init.d/udx-boot-confirm start
