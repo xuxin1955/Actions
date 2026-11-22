@@ -1,27 +1,37 @@
 #!/bin/sh
-# Confirm this boot once the ordinary management services are usable.
-# A silent failure here costs the whole 180 s trial budget and a watchdog
-# reset, so every retry now reports the first unmet condition instead of
-# discarding stderr. Failures are also mirrored to /dev/kmsg by
-# `udx-boot-state accept`, which survives a broken syslog.
+# Confirm this boot once the gadget is on the bus.
+# The gate in udx-boot-state now blocks only on the USB side, so the first
+# attempt runs immediately instead of waiting five seconds. Every verdict is
+# also written to /dev/kmsg: syslog may still be missing at this point and a
+# silent failure costs the whole 180 s trial budget.
 tries=0
 last=
-while [ "$tries" -lt 24 ]; do
-	sleep 5
+kmsg() {
+	[ -w /dev/kmsg ] || return 0
+	printf '<4>udx-boot: %s\n' "$*" > /dev/kmsg 2>/dev/null || true
+}
+while [ "$tries" -lt 36 ]; do
 	if out=$(/usr/libexec/udx-boot-state accept 2>&1); then
 		logger -t udx-boot -p daemon.notice "boot accepted after $((tries * 5))s"
+		kmsg "accepted after $((tries * 5))s: ${out:-ready}"
 		exit 0
 	fi
 	tries=$((tries + 1))
-	[ "$out" = "$last" ] || logger -t udx-boot -p daemon.warn "boot accept: ${out:-unknown}"
+	if [ "$out" != "$last" ]; then
+		logger -t udx-boot -p daemon.warn "boot accept: ${out:-unknown}"
+		kmsg "accept pending: ${out:-unknown}"
+	fi
 	last=$out
 	# Every 30 s also dump the fine-grained management stage, because
-	# boot_accept only knows that the management gate failed, not which
-	# listener/service/DHCP check inside it failed.
+	# boot_accept only knows that a hard gate failed, not which DHCP or
+	# listener check inside it is still behind.
 	if [ $((tries % 6)) -eq 0 ]; then
-		/usr/libexec/udx-boot-state management-ready 2>&1 |
-			logger -t udx-boot -p daemon.warn
+		detail=$(/usr/libexec/udx-boot-state management-ready 2>&1)
+		logger -t udx-boot -p daemon.warn "$detail"
+		kmsg "$detail"
 	fi
+	sleep 5
 done
 logger -t sy108 'Boot confirmation failed; watchdog Recovery fallback remains active'
+kmsg 'boot confirmation failed; recovery fallback remains active'
 exit 1

@@ -363,13 +363,21 @@ static int management_network_ready(void)
 	return -1;
 }
 
+#define BOOT_DEGRADED_LISTENER	0x1u
+#define BOOT_DEGRADED_NETWORK	0x2u
+
 /* The boot gate used to collapse five distinct checks into one opaque
  * failure, which made a 180 s trial fallback impossible to diagnose from a
- * serial console. Each early return now names the check that failed.
+ * serial console. Each check now names itself, and only the two checks that
+ * prove the gadget is actually on the bus can still fail the trial. Listener
+ * and DHCP readiness are reported as "degraded" instead: on a headless unit
+ * an unfinished dnsmasq pool used to burn the whole 180 s budget and reset a
+ * perfectly usable USB link.
  */
-static int boot_management_ready(const char **reason)
+static int boot_management_ready(const char **reason, unsigned *degraded)
 {
 	char value[512];
+	*degraded = 0;
 	/* Logical gadget readiness is independent of a connected host or SIM.
 	 * All run files are from this boot; require the live UDC binding too. */
 	*reason = "udc";
@@ -387,14 +395,27 @@ static int boot_management_ready(const char **reason)
 	    strncmp(value, "profile=", 8) ||
 	    value[8] == '\n' || value[8] == '\0')
 		return -1;
+	/* Hard requirements end here: the gadget is bound and the applied record
+	 * proves the whole creation path ran. The checks below only decide how
+	 * fast a connected host gets an address, so they must never abort the
+	 * trial on their own. */
 	*reason = "listener";
-	if (!management_listener(22) &&
-	    !(management_listener(80) && management_listener(443)))
-		return -1;
+	{
+		/* management_listener() returns 0 when the loopback port accepts a
+		 * connection. The v5 rewrite of this gate added a negation while
+		 * splitting it into named checks, which inverted the result: a
+		 * healthy dropbear made the gate fail on every boot, so the trial
+		 * budget always expired even though the USB link was working.
+		 * Keep the original polarity and downgrade instead of aborting. */
+		int ssh = management_listener(22) == 0;
+		int web = management_listener(80) == 0 && management_listener(443) == 0;
+		if (!ssh && !web)
+			*degraded |= BOOT_DEGRADED_LISTENER;
+	}
 	*reason = "network";
 	if (management_network_ready())
-		return -1;
-	*reason = "ready";
+		*degraded |= BOOT_DEGRADED_NETWORK;
+	*reason = *degraded ? "degraded" : "ready";
 	return 0;
 }
 
@@ -403,9 +424,10 @@ static int boot_accept(char *why, size_t cap)
 	struct volume misc = {.fd = -1};
 	struct udx_root_layout layout;
 	unsigned char *data = NULL;
-	char boot[40], value[64];
+	char boot[40], value[64], detail[64] = "";
 	const char *failure = "boot-accept-health";
 	const char *reason = "";
+	unsigned degraded = 0;
 	int result = -1;
 	if (text("/etc/udx-openwrt-root", value, sizeof(value)) ||
 	    strcmp(value, "OpenWrt production root\n") ||
@@ -414,8 +436,13 @@ static int boot_accept(char *why, size_t cap)
 	    boot_id(boot) || udx_root_check(0, 1, &layout) || live_runtime(boot))
 		goto out;
 	failure = "boot-accept-management";
-	if (boot_management_ready(&reason))
+	if (boot_management_ready(&reason, &degraded))
 		goto out;
+	if (degraded)
+		snprintf(detail, sizeof(detail), "%s%s%s",
+			 degraded & BOOT_DEGRADED_LISTENER ? "listener" : "",
+			 degraded == (BOOT_DEGRADED_LISTENER | BOOT_DEGRADED_NETWORK) ? "," : "",
+			 degraded & BOOT_DEGRADED_NETWORK ? "network" : "");
 	failure = "boot-accept-misc";
 	if (find_volume("misc", UDX_MISC_ENV_BYTES, &misc))
 		goto out;
@@ -446,7 +473,10 @@ out:
 	free(data);
 	if (misc.fd >= 0)
 		close(misc.fd);
-	snprintf(why, cap, "%s%s%s", failure, *reason ? ":" : "", reason);
+	if (!result && degraded)
+		snprintf(why, cap, "boot-accept-degraded:%s", detail);
+	else
+		snprintf(why, cap, "%s%s%s", failure, *reason ? ":" : "", reason);
 	return result;
 }
 

@@ -245,6 +245,14 @@ g_console_reason() {
 
 g_preflight() {
 	g_validate || return $?
+	# dwc3 probes asynchronously and a cold boot can reach this service before
+	# 29100000.usb exists. Wait instead of failing the only management path:
+	# a unit that skips the gadget has neither the NIC nor the console.
+	local waited=0
+	while [ ! -d "$UDX_UDC_CLASS/$UDX_UDC" ] && [ "$waited" -lt 15 ]; do
+		sleep 1
+		waited=$((waited + 1))
+	done
 	[ -d "$UDX_UDC_CLASS/$UDX_UDC" ] || { g_error 'expected Device controller 29100000.usb is absent'; return 1; }
 	[ -d "$UDX_CF" ] || { g_error 'configfs usb_gadget is unavailable'; return 1; }
 	# The maintenance console is best-effort. A missing console password or
