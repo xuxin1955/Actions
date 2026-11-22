@@ -174,10 +174,7 @@ g_boot_mark() {
 
 g_load_config() {
 	PROFILE=$(uci -q get udx-usb.main.profile) || return 1
-	ACM=$(uci -q get udx-usb.main.acm) || ACM=
-	# The maintenance console is on by default. An explicit '0' is still
-	# honoured; only a missing or empty option falls back to enabled.
-	[ -n "$ACM" ] || ACM=1
+	ACM=$(uci -q get udx-usb.main.acm) || ACM=0
 	SERIAL=$(uci -q get udx-usb.main.serial) || SERIAL=auto
 	VID=$(uci -q get udx-usb.main.vid) || return 1
 	DEV_MAC=$(uci -q get udx-usb.main.dev_mac) || DEV_MAC=auto
@@ -195,16 +192,12 @@ g_profile() {
 	case "$PROFILE" in
 		ncm) FUNCTIONS=ncm; PID=0x0105; PAMU3=1 ;;
 		ncm-software) FUNCTIONS=ncm; PID=0x0105; PAMU3=0 ;;
-		ecm) FUNCTIONS=ecm; PID=0x0106; PAMU3=0 ;;
-		rndis) FUNCTIONS=rndis; PID=0x0107; PAMU3=0 ;;
-		*) g_error 'profile must be ncm, ncm-software, ecm or rndis'; return 64 ;;
+		*) g_error 'profile must be ncm or ncm-software'; return 64 ;;
 	esac
 	case "$ACM" in
 		0) ;;
 		1) PID=$(printf '0x%04x' "$((PID + 16))") ;;
-		# The console is optional and must never take the management NIC
-		# down: an unusable value is treated as "not requested".
-		*) g_error "acm='$ACM' is invalid; continuing without the console"; ACM=0 ;;
+		*) g_error 'acm must be 0 or 1'; return 64 ;;
 	esac
 }
 
@@ -245,19 +238,12 @@ g_console_reason() {
 
 g_preflight() {
 	g_validate || return $?
-	# dwc3 probes asynchronously and a cold boot can reach this service before
-	# 29100000.usb exists. Wait instead of failing the only management path:
-	# a unit that skips the gadget has neither the NIC nor the console.
-	local waited=0
-	while [ ! -d "$UDX_UDC_CLASS/$UDX_UDC" ] && [ "$waited" -lt 15 ]; do
-		sleep 1
-		waited=$((waited + 1))
-	done
 	[ -d "$UDX_UDC_CLASS/$UDX_UDC" ] || { g_error 'expected Device controller 29100000.usb is absent'; return 1; }
 	[ -d "$UDX_CF" ] || { g_error 'configfs usb_gadget is unavailable'; return 1; }
-	# The maintenance console is best-effort. A missing console password or
-	# login helper must never keep the management NIC off the bus: the NIC is
-	# the only path the boot trial watches, the ACM port is not.
+	if [ "$ACM" = 1 ]; then
+		local reason
+		reason=$(g_console_reason) || { g_error "ACM disabled: $reason"; return 1; }
+	fi
 	local other owner
 	for other in "$UDX_CF"/*/UDC; do
 		[ -e "$other" ] || continue
@@ -278,48 +264,22 @@ g_lock() {
 }
 
 g_net_function() {
-	local kind=$1 dir=$UDX_G/functions/$kind.usb0
+	local dir=$UDX_G/functions/ncm.usb0
 	g_mkdir "$dir" || return 1
-	# Every profile keeps the uncm%d name so board.json, the usbmgmt bridge and
-	# the firewall zone stay valid across profile switches.
 	g_write "$dir/ifname" 'uncm%d' || return 1
 	g_write "$dir/dev_addr" "$DEV_MAC" || return 1
 	g_write "$dir/host_addr" "$HOST_MAC" || return 1
-	case "$kind" in
-		ncm)
-			g_write "$dir/max_segment_size" 1514 || return 1
-			g_write "$dir/pamu3" "$PAMU3" || return 1
-			# Windows UsbNcm.sys matches MS_COMP_WINNCM. WINUSB would select
-			# Winusb.sys and would not expose this function as a network adapter.
-			g_write "$dir/os_desc/interface.ncm/compatible_id" WINNCM || return 1
-			g_write "$dir/os_desc/interface.ncm/sub_compatible_id" '' || return 1
-			;;
-		ecm)
-			# CDC-ECM needs no MS OS descriptor: Linux/macOS/Android bind it
-			# from the standard CDC descriptors. Windows 10 has no inbox ECM
-			# driver, use the ncm or rndis profile there instead.
-			;;
-		rndis)
-			# Windows has no usable class-triple match here: rndis.inf binds
-			# only USB\MS_COMP_RNDIS, and that hardware id exists solely when
-			# the MS OS descriptor is advertised. Without it the unit shows up
-			# as an unknown "RNDIS" node and a manual driver pick times out.
-			# Keep the UDC bound even if the kernel lacks the node: a bound
-			# gadget is diagnosable, an unbound one looks like a dead port.
-			if [ -d "$dir/os_desc/interface.rndis" ]; then
-				g_write "$dir/os_desc/interface.rndis/compatible_id" RNDIS || return 1
-				g_write "$dir/os_desc/interface.rndis/sub_compatible_id" 5162001 || return 1
-			else
-				g_error 'rndis function exposes no MS OS descriptor node; Windows will not bind'
-			fi
-			;;
-		*) g_error "unsupported network function $kind"; return 64 ;;
-	esac
-	g_link "$dir" "$UDX_G/configs/c.1/$kind.usb0"
+	g_write "$dir/max_segment_size" 1514 || return 1
+	g_write "$dir/pamu3" "$PAMU3" || return 1
+	# Windows UsbNcm.sys matches MS_COMP_WINNCM. WINUSB would select
+	# Winusb.sys and would not expose this function as a network adapter.
+	g_write "$dir/os_desc/interface.ncm/compatible_id" WINNCM || return 1
+	g_write "$dir/os_desc/interface.ncm/sub_compatible_id" '' || return 1
+	g_link "$dir" "$UDX_G/configs/c.1/ncm.usb0"
 }
 
 g_create() {
-	local kind actual expected os_desc
+	local kind actual expected
 	g_boot_mark "event=identity source=${IDENTITY_SOURCE:-uci-explicit} reason=${IDENTITY_REASON:-none}"
 	[ "${IDENTITY_SOURCE:-}" != diagnostic-fallback ] || g_error "factory serial unavailable ($IDENTITY_REASON); using generic diagnostic identity"
 	[ ! -e "$UDX_G" ] || return 1
@@ -347,51 +307,17 @@ g_create() {
 	g_mkdir "$UDX_G/configs/c.1/strings/0x409" || return 1
 	g_write "$UDX_G/configs/c.1/strings/0x409/configuration" "$PROFILE management" || return 1
 	for kind in $FUNCTIONS; do g_net_function "$kind" || return 1; done
-	# MS OS descriptors are what give Windows the USB\MS_COMP_* hardware id.
-	# NCM needs WINNCM, RNDIS needs RNDIS; ECM advertises plain CDC and must
-	# not point at an interface it does not have.
-	case "$FUNCTIONS" in
-	ncm|rndis)
-		# MS OS descriptors are the only source of the USB\MS_COMP_* hardware
-		# id; without them Windows cannot bind rndis.inf or WinNcm.sys at all.
-		# The UDC must not depend on this: a gadget that enumerates without
-		# the descriptor is still diagnosable, an unbound one is a dead port.
-		os_desc=ok
-		g_write "$UDX_G/os_desc/use" 1 || os_desc=failed
-		g_write "$UDX_G/os_desc/b_vendor_code" 0xcd || os_desc=failed
-		g_write "$UDX_G/os_desc/qw_sign" MSFT100 || os_desc=failed
-		if [ "$os_desc" = ok ]; then
-			g_link "$UDX_G/configs/c.1" "$UDX_G/os_desc/c.1" || os_desc=failed
-		fi
-		if [ "$os_desc" = ok ] &&
-		   [ "$(g_read "$UDX_G/os_desc/use")" = 1 ] &&
-		   [ -L "$UDX_G/os_desc/c.1" ]; then
-			g_boot_mark 'event=os-desc-ready'
-		else
-			g_error 'MS OS descriptor incomplete; Windows will not bind this interface'
-		fi
-		;;
-	esac
+	g_write "$UDX_G/os_desc/use" 1 || return 1
+	g_write "$UDX_G/os_desc/b_vendor_code" 0xcd || return 1
+	g_write "$UDX_G/os_desc/qw_sign" MSFT100 || return 1
+	g_link "$UDX_G/configs/c.1" "$UDX_G/os_desc/c.1" || return 1
 	if [ "$ACM" = 1 ]; then
-		if g_mkdir "$UDX_G/functions/acm.maint" &&
-		   [ "$(g_read "$UDX_G/functions/acm.maint/port_num")" = 0 ] &&
-		   { [ ! -e "$UDX_G/functions/acm.maint/console" ] ||
-		     g_write "$UDX_G/functions/acm.maint/console" 0; } &&
-		   g_link "$UDX_G/functions/acm.maint" "$UDX_G/configs/c.1/acm.maint"; then
-			:
-		else
-			# Console is optional, the NIC is not. Roll the half-built
-			# function back, restore the base PID and bind the NIC alone.
-			g_error 'ACM unavailable; continuing without the maintenance console'
-			[ ! -L "$UDX_G/configs/c.1/acm.maint" ] || g_unlink "$UDX_G/configs/c.1/acm.maint" || true
-			[ ! -d "$UDX_G/functions/acm.maint" ] || g_rmdir "$UDX_G/functions/acm.maint" || true
-			ACM=0
-			# The NIC is already built. Failing to undo the optional
-			# console must not tear the working gadget down again.
-			g_profile || g_error 'could not recompute the base identity'
-			g_write "$UDX_G/idProduct" "$PID" ||
-				g_error 'could not restore the base product id'
+		g_mkdir "$UDX_G/functions/acm.maint" || return 1
+		[ "$(g_read "$UDX_G/functions/acm.maint/port_num")" = 0 ] || { g_error 'ttyGS0 is already allocated'; return 1; }
+		if [ -e "$UDX_G/functions/acm.maint/console" ]; then
+			g_write "$UDX_G/functions/acm.maint/console" 0 || return 1
 		fi
+		g_link "$UDX_G/functions/acm.maint" "$UDX_G/configs/c.1/acm.maint" || return 1
 	fi
 	g_affinity_apply || g_error 'CPU affinity unavailable; retaining default scheduling'
 	g_boot_mark 'event=udc-bind-begin'
@@ -416,24 +342,13 @@ g_destroy() {
 		"$UDX_UDC") g_write "$UDX_G/UDC" '' || return 1;;
 		*) g_error 'owned gadget is bound to an unexpected controller'; return 1;;
 	esac
-	local funcs=${FUNCTIONS:-}
-	[ -n "$funcs" ] || funcs=$(cd "$UDX_G/functions" 2>/dev/null && ls -d *.usb0 2>/dev/null | sed 's/\.usb0$//') || funcs=ncm
-	for path in "$UDX_G/os_desc/c.1" "$UDX_G/configs/c.1/acm.maint"; do
-		[ ! -L "$path" ] || g_unlink "$path" || return 1
-	done
-	for kind in $funcs; do
-		path="$UDX_G/configs/c.1/$kind.usb0"
+	for path in "$UDX_G/os_desc/c.1" "$UDX_G/configs/c.1/acm.maint" \
+		"$UDX_G/configs/c.1/ncm.usb0"; do
 		[ ! -L "$path" ] || g_unlink "$path" || return 1
 	done
 	for path in "$UDX_G/configs/c.1/strings/0x409" "$UDX_G/configs/c.1" \
-		"$UDX_G/functions/acm.maint"; do
-		[ ! -d "$path" ] || g_rmdir "$path" || return 1
-	done
-	for kind in $funcs; do
-		path="$UDX_G/functions/$kind.usb0"
-		[ ! -d "$path" ] || g_rmdir "$path" || return 1
-	done
-	for path in "$UDX_G/strings/0x409"; do
+		"$UDX_G/functions/acm.maint" "$UDX_G/functions/ncm.usb0" \
+		"$UDX_G/strings/0x409"; do
 		[ ! -d "$path" ] || g_rmdir "$path" || return 1
 	done
 	g_rmdir "$UDX_G" || return 1
@@ -486,10 +401,6 @@ g_status() {
 	[ ! -f "$UDX_UDC_CLASS/$UDX_UDC/state" ] || state=$(g_read "$UDX_UDC_CLASS/$UDX_UDC/state")
 	[ ! -f "$UDX_UDC_CLASS/$UDX_UDC/current_speed" ] || speed=$(g_read "$UDX_UDC_CLASS/$UDX_UDC/current_speed")
 	printf 'udc=%s\nstate=%s\nspeed=%s\n' "${bound:-none}" "$state" "$speed"
-	# Windows only binds rndis.inf/WinNcm.sys when these two are true; expose
-	# them so a field report can be judged without digging through configfs.
-	[ ! -f "$UDX_G/os_desc/use" ] || printf 'os_desc_use=%s\n' "$(g_read "$UDX_G/os_desc/use")"
-	[ ! -L "$UDX_G/os_desc/c.1" ] || printf 'os_desc_config=%s\n' "$(readlink "$UDX_G/os_desc/c.1")"
 	reason=$(g_console_reason) || true
 	printf 'console_auth=%s\n' "$reason"
 	[ ! -f "$UDX_RUN/pending" ] || { printf 'pending='; cat "$UDX_RUN/pending"; }

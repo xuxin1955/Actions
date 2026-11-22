@@ -326,39 +326,6 @@ jobs:
         rm -f main-boot.bin sha256sums.txt
         echo "--- 最终发布文件"; ls -l
 
-    - name: Append download acceleration
-      if: always() && !cancelled() && env.UPLOAD_RELEASE == 'true'
-      env:
-        MIRROR: https://gh-proxy.com/
-        TAG: ${{ steps.tag.outputs.release_tag }}
-      run: |
-        [ -f release.txt ] || exit 0
-        FILES=$(find firmware -maxdepth 1 -type f -iname '*.bin' -printf '%f\n' 2>/dev/null | sort)
-        [ -n "$FILES" ] || exit 0
-        {
-          echo ""; echo "<details>"; echo "<summary>固件下载 · 点击大小直接下载（国内加速）</summary>"; echo ""
-          echo "> 蓝色数字是文件大小，点它直接开始下载。"
-          echo ">"
-          echo "> 点击后可能需要等待几秒才开始下载，请耐心等待，不要重复点击。"
-          echo ""
-          echo "| 文件 | 说明 | 大小 |"; echo "|---|---|---|"
-        } >> release.txt
-        printf '%s\n' "$FILES" | while IFS= read -r n; do
-          [ -n "$n" ] || continue
-          f="firmware/$n"
-          sz=$(LC_ALL=C du -h "$f" | cut -f1)
-          case "$n" in
-            sysupgrade.bin) desc="系统固件 sysupgrade" ;;
-            recovery.bin)   desc="恢复固件 recovery" ;;
-            uboot-*.bin)    desc="U-Boot ${n#uboot-}" ;;
-            *)              desc="固件" ;;
-          esac
-          u="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${n}"
-          echo "| \`$n\` | $desc | [${sz}](${MIRROR}${u}) |" >> release.txt
-        done
-        { echo ""; echo "原始地址见下方 Assets 列表。"; echo ""; echo "</details>"; } >> release.txt
-        cat release.txt
-
     - name: Upload to release
       if: always() && !cancelled() && env.UPLOAD_RELEASE == 'true' && hashFiles('firmware/*.bin') != ''
       uses: ncipollo/release-action@main

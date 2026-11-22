@@ -38,5 +38,9 @@ define Package/udx-cpnv/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/bin/udx-cpnvd $(1)/usr/sbin/
 	$(CP) ./files/. $(1)/
 	$(INSTALL_CONF) $(CURDIR)/src/cpnv/halo/halo-private.bin $(CURDIR)/src/cpnv/halo/halo-verification.bin $(1)/etc/udx-cpnv-warm/
+	chmod 600 $(1)/etc/udx-cpnv-warm/profile \
+		$(1)/etc/udx-cpnv-warm/halo-private.bin \
+		$(1)/etc/udx-cpnv-warm/halo-verification.bin \
+		$(1)/etc/udx-refnotify/owner-policy
 endef
 $(eval $(call BuildPackage,udx-cpnv))

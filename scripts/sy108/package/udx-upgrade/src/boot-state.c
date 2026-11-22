@@ -366,14 +366,6 @@ static int management_network_ready(void)
 #define BOOT_DEGRADED_LISTENER	0x1u
 #define BOOT_DEGRADED_NETWORK	0x2u
 
-/* The boot gate used to collapse five distinct checks into one opaque
- * failure, which made a 180 s trial fallback impossible to diagnose from a
- * serial console. Each check now names itself, and only the two checks that
- * prove the gadget is actually on the bus can still fail the trial. Listener
- * and DHCP readiness are reported as "degraded" instead: on a headless unit
- * an unfinished dnsmasq pool used to burn the whole 180 s budget and reset a
- * perfectly usable USB link.
- */
 static int boot_management_ready(const char **reason, unsigned *degraded)
 {
 	char value[512];
@@ -385,28 +377,12 @@ static int boot_management_ready(const char **reason, unsigned *degraded)
 	    strcmp(value, "29100000.usb\n"))
 		return -1;
 	*reason = "profile";
-	/* Do not duplicate g_profile()'s list of names here. The previous copy
-	 * only knew ncm/ncm-software while /etc/config/udx-usb ships
-	 * profile='rndis', so every unit booting the default profile failed this
-	 * gate, burned the 180 s trial budget and fell back to Recovery. The
-	 * record is written only after a successful bind, so a non-empty profile
-	 * field is enough to prove the normal creation path completed. */
 	if (text("/run/udx-usb/applied", value, sizeof(value)) ||
 	    strncmp(value, "profile=", 8) ||
 	    value[8] == '\n' || value[8] == '\0')
 		return -1;
-	/* Hard requirements end here: the gadget is bound and the applied record
-	 * proves the whole creation path ran. The checks below only decide how
-	 * fast a connected host gets an address, so they must never abort the
-	 * trial on their own. */
 	*reason = "listener";
 	{
-		/* management_listener() returns 0 when the loopback port accepts a
-		 * connection. The v5 rewrite of this gate added a negation while
-		 * splitting it into named checks, which inverted the result: a
-		 * healthy dropbear made the gate fail on every boot, so the trial
-		 * budget always expired even though the USB link was working.
-		 * Keep the original polarity and downgrade instead of aborting. */
 		int ssh = management_listener(22) == 0;
 		int web = management_listener(80) == 0 && management_listener(443) == 0;
 		if (!ssh && !web)
@@ -480,10 +456,6 @@ out:
 	return result;
 }
 
-/* A failed acceptance is the only interesting event on a headless unit:
- * syslog may be unavailable or rotated away by the time it is read, so the
- * one-line verdict also goes to the kernel ring buffer.
- */
 static void announce(const char *why)
 {
 	int fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC | O_NOFOLLOW);

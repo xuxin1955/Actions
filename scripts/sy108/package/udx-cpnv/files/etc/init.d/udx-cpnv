@@ -3,14 +3,19 @@ START=14
 STOP=15
 USE_PROCD=1
 start_service() {
-	[ -r /etc/udx-cpnv-warm/halo-private.bin ] || return 1
+	[ -r /etc/udx-cpnv-warm/halo-private.bin ] || {
+		logger -p daemon.err -t udx-cpnv 'halo-private.bin missing; service not started'
+		return 1
+	}
+	chmod 600 /etc/udx-cpnv-warm/profile \
+		/etc/udx-cpnv-warm/halo-private.bin \
+		/etc/udx-cpnv-warm/halo-verification.bin \
+		/etc/udx-refnotify/owner-policy 2>/dev/null || true
 	procd_open_instance
 	procd_set_param command /usr/sbin/udx-cpnvd --serve
 	procd_set_param stdout 1
 	procd_set_param stderr 1
-	# Let the worker finish within the existing 60-second NV transaction budget.
 	procd_set_param term_timeout 65
-	# A failed NV/CP transaction is not an automatic cold-load retry.
 	procd_close_instance
 }
 stop_service() {
