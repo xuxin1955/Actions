@@ -1,0 +1,15 @@
+--- a/package/network/services/dnsmasq/files/dnsmasq.init
++++ b/package/network/services/dnsmasq/files/dnsmasq.init
+@@ -1293,6 +1293,12 @@
+ 		[ -n "$instance_netdev" ] && procd_set_param netdev $instance_netdev
+ 
+ 	procd_add_jail dnsmasq ubus log
++	local jail_namespace
++	json_set_namespace procd jail_namespace
++	json_select jail
++	json_add_string pidfile "/var/run/dnsmasq-ujail.${cfg}.pid"
++	json_select ..
++	json_set_namespace "$jail_namespace"
+ 	procd_set_param capabilities /etc/capabilities/dnsmasq.json
+ 	procd_add_jail_mount $CONFIGFILE $DHCPBOGUSHOSTNAMEFILE $DHCPSCRIPT $DHCPSCRIPT_DEPENDS
+ 	procd_add_jail_mount $EXTRA_MOUNT $RFC6761FILE $TRUSTANCHORSFILE
