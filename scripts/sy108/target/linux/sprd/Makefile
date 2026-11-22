@@ -11,5 +11,5 @@ include $(INCLUDE_DIR)/target.mk
 ifeq ($(CONFIG_SY108_RECOVERY),y)
 LINUX_KCONFIG_LIST += $(PLATFORM_SUBDIR)/config-recovery
 endif
-DEFAULT_PACKAGES += udx-usb udx-runtime udx-upgrade
+DEFAULT_PACKAGES += udx-usb udx-runtime udx-upgrade android-tools-adbd
 $(eval $(call BuildTarget))
