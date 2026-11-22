@@ -55,7 +55,7 @@ struct runtime {
 	char rtc[MAX_PATH], board[MAX_PATH], pmsys[MAX_PATH], boot[64];
 	int recovery, production, boot_policy;
 	unsigned ready_stage;
-	int watchdog_fd, closing, core_error, cpnv_error;
+	int watchdog_fd, closing, core_error, cpnv_error, cpnv_misses;
 	struct ubus_auto_conn bus;
 	struct ubus_object object;
 	struct uloop_fd signal;
@@ -201,8 +201,15 @@ static int runtime_cpnv_query(struct runtime *r)
 		return -ECONNREFUSED;
 	uint32_t id;
 	int ret = ubus_lookup_id(ctx, "udx.cpnv", &id);
-	if (!ret)
-		ret = ubus_invoke(ctx, id, "status", NULL, cpnv_status, &r->cpnv, 500);
+	if (ret) {
+		/* cpnv 服务尚未注册（其 START 顺序晚于 runtime）：
+		 * 这是开机早期的正常过渡态，不是基带故障。返回 -EAGAIN
+		 * 让上层显示 starting，避免误报 degraded。 */
+		ubus_free(ctx);
+		r->cpnv.healthy = 0;
+		return -EAGAIN;
+	}
+	ret = ubus_invoke(ctx, id, "status", NULL, cpnv_status, &r->cpnv, 500);
 	ubus_free(ctx);
 	ret = ret ? -EIO : r->cpnv.error;
 	if (!ret && r->production && strcmp(r->cpnv.storage, "ubi"))
@@ -210,6 +217,18 @@ static int runtime_cpnv_query(struct runtime *r)
 	if (ret)
 		r->cpnv.healthy = 0;
 	return ret;
+}
+
+/* baseband 状态文案：-EAGAIN 表示 cpnv 服务尚未注册（开机早期正常过渡），
+ * 与真正查询失败的 degraded 区分开；超过 60 秒仍未注册则升级为 absent，
+ * 因为那意味着 cpnvd 没起来、modem 不可能被拉起。 */
+static const char *cpnv_state(const struct runtime *r)
+{
+	if (r->recovery)
+		return "disabled";
+	if (r->cpnv_error == -EAGAIN)
+		return r->cpnv_misses >= 12 ? "absent" : "starting";
+	return r->cpnv.healthy ? "ready" : "degraded";
 }
 
 static int root_health(struct runtime *r)
@@ -622,10 +641,7 @@ static void runtime_describe(struct runtime *r, struct blob_buf *b)
 	blobmsg_add_u32(b, "owner", getpid());
 	blobmsg_add_string(b, "core", r->core_error ? "failed" : "ready");
 	blobmsg_add_u32(b, "core_error", r->core_error);
-	blobmsg_add_string(b, "baseband",
-			   r->recovery	     ? "disabled"
-			   : r->cpnv.healthy ? "ready"
-					     : "degraded");
+	blobmsg_add_string(b, "baseband", cpnv_state(r));
 	blobmsg_add_u32(b, "cpnv_error", r->cpnv_error);
 	blobmsg_add_u32(b, "renewals", r->renewals);
 	blobmsg_add_u64(b, "last_renew_ms", r->last_renew);
@@ -756,10 +772,22 @@ static void runtime_tick(struct uloop_timeout *timer)
 			r->cpnv_error = runtime_cpnv_query(r);
 			if (r->cpnv_error)
 				r->cpnv.healthy = 0;
+			/* -EAGAIN 表示 udx.cpnv 还没有注册。开机早期这是正常的
+			 * 过渡态，但若持续 60 秒仍未出现，说明 cpnvd 根本没起来，
+			 * modem 也永远不会 power up。单独报一条，避免被
+			 * baseband=starting 的安静过渡掩盖。 */
+			if (r->cpnv_error == -EAGAIN) {
+				if (++r->cpnv_misses == 12)
+					runtime_log(LOG_ERR,
+						    "udx-runtime: cpnv service absent for 60s; "
+						    "modem has not been started\n");
+			} else
+				r->cpnv_misses = 0;
 			if (before != r->cpnv_error)
-				runtime_log(r->cpnv_error ? LOG_WARNING : LOG_INFO,
+				runtime_log(r->cpnv_error && r->cpnv_error != -EAGAIN
+						    ? LOG_WARNING : LOG_INFO,
 					    "udx-runtime: baseband=%s error=%d\n",
-					    r->cpnv.healthy ? "ready" : "degraded", r->cpnv_error);
+					    cpnv_state(r), r->cpnv_error);
 			r->last_health = milliseconds();
 			r->next_health = r->last_health + QUERY_MS;
 		}
@@ -851,13 +879,9 @@ static int run_owner(void)
 	r.next_health = r.last_health + QUERY_MS;
 	if ((ret = watchdog_open(&r)) || (ret = watchdog_feed(&r)))
 		goto fail;
-	runtime_log(r.cpnv_error ? LOG_WARNING : LOG_INFO,
+	runtime_log(r.cpnv_error && r.cpnv_error != -EAGAIN ? LOG_WARNING : LOG_INFO,
 		    "udx-runtime: opened PMIC watchdog pid=%ld baseband=%s error=%d\n",
-		    (long)getpid(),
-		    r.recovery	     ? "disabled"
-		    : r.cpnv.healthy ? "ready"
-				     : "degraded",
-		    r.cpnv_error);
+		    (long)getpid(), cpnv_state(&r), r.cpnv_error);
 	if ((ret = board_event(&r)))
 		goto fail;
 	r.object = (struct ubus_object){.name = "udx.runtime",

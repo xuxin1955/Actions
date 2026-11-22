@@ -1,10 +1,27 @@
 #!/bin/sh
-# Confirm this boot after the ordinary management services become usable.
+# Confirm this boot once the ordinary management services are usable.
+# A silent failure here costs the whole 180 s trial budget and a watchdog
+# reset, so every retry now reports the first unmet condition instead of
+# discarding stderr. Failures are also mirrored to /dev/kmsg by
+# `udx-boot-state accept`, which survives a broken syslog.
 tries=0
+last=
 while [ "$tries" -lt 24 ]; do
 	sleep 5
-	/usr/libexec/udx-boot-state accept 2>/dev/null && exit 0
+	if out=$(/usr/libexec/udx-boot-state accept 2>&1); then
+		logger -t udx-boot -p daemon.notice "boot accepted after $((tries * 5))s"
+		exit 0
+	fi
 	tries=$((tries + 1))
+	[ "$out" = "$last" ] || logger -t udx-boot -p daemon.warn "boot accept: ${out:-unknown}"
+	last=$out
+	# Every 30 s also dump the fine-grained management stage, because
+	# boot_accept only knows that the management gate failed, not which
+	# listener/service/DHCP check inside it failed.
+	if [ $((tries % 6)) -eq 0 ]; then
+		/usr/libexec/udx-boot-state management-ready 2>&1 |
+			logger -t udx-boot -p daemon.warn
+	fi
 done
 logger -t sy108 'Boot confirmation failed; watchdog Recovery fallback remains active'
 exit 1

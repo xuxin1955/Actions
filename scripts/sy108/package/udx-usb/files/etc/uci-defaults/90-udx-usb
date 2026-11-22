@@ -8,6 +8,13 @@ if [ "$(uci -q get udx-usb.main.profile_initialized)" != 1 ]; then
 	uci -q set udx-usb.main.profile_initialized='1'
 	uci -q commit udx-usb
 fi
+# /etc/config/udx-usb is a conffile: an upgrade keeps the old file, so a
+# missing acm option would otherwise leave the console off forever. Seed it
+# once here; the value is user-editable afterwards.
+if ! uci -q get udx-usb.main.acm >/dev/null; then
+	uci -q set udx-usb.main.acm='1'
+	uci -q commit udx-usb
+fi
 
 g_load_config
 g_validate

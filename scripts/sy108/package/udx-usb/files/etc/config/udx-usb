@@ -1,7 +1,7 @@
 config gadget 'main'
 	option enabled '1'
 	option profile 'rndis'
-	option acm '0'
+	option acm '1'
 	# auto derives from this unit's bootloader-provided factory product serial.
 	# A concrete value is an explicit per-field override, including legacy values.
 	option serial 'auto'

@@ -90,8 +90,11 @@ case "${1:-}" in
 		[ ! -f "$UDX_RUN/applied" ] || cp "$UDX_RUN/applied" "$previous" || exit 1
 		g_console_stop && g_destroy || exit $?
 		if g_create && g_state_save; then
-			uci set "udx-usb.main.profile=$PROFILE" && uci set "udx-usb.main.acm=$ACM" &&
-			uci commit udx-usb || { g_error 'active profile changed but saving the boot preference failed'; exit 1; }
+			# Store the operator's request, not the post-degradation value:
+			# a console that could not be built this time is retried on the
+			# next boot instead of being silently disabled for good.
+			uci set "udx-usb.main.profile=$PROFILE" && uci set "udx-usb.main.acm=$requested_acm" &&
+				uci commit udx-usb || { g_error 'active profile changed but saving the boot preference failed'; exit 1; }
 			g_network_ready
 			rm -f "$previous"
 		else
