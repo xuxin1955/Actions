@@ -403,6 +403,11 @@ return view.extend({
             'class' : 'cbi-input-checkbox',
             'checked' : (usbMain['acm'] === '1') ? 'checked' : null
         });
+        var usbAdb = E('input', {
+            'type' : 'checkbox',
+            'class' : 'cbi-input-checkbox',
+            'checked' : (usbMain['adb'] === '1') ? 'checked' : null
+        });
         function usbRefreshHint() {
             var sel = usbModes.filter(function(m) { return m[0] === usbSelect.value; })[0];
             usbHint.textContent = sel ? sel[2] : '';
@@ -415,7 +420,7 @@ return view.extend({
                 if (!confirm(_('Switch the USB network mode to %s? The device reboots and the USB link drops for about a minute.').format(usbSelect.value)))
                     return;
                 return udx.notify(function() {
-                    return udx.usb(usbSelect.value, !!usbAcm.checked);
+                    return udx.usb(usbSelect.value, !!usbAcm.checked, !!usbAdb.checked);
                 });
             })
         }, [ _('Apply and reboot') ]);
@@ -432,6 +437,13 @@ return view.extend({
                     usbAcm,
                     E('span', {style : 'margin-left:8px'}, [ _('Adds a second serial channel for debug console access.') ])
                 ])
+            ]),
+            E('div', {class : 'cbi-value'}, [
+                E('label', {class : 'cbi-value-title'}, [ _('ADB debugging') ]),
+                E('div', {class : 'cbi-value-field'}, [
+                    usbAdb,
+                    E('span', {style : 'margin-left:8px'}, [ _('Expose an Android ADB interface for debugging.') ])
+                ])
             ])
         ]));
         var usb = udx.table(_('USB status'), [
@@ -445,6 +457,13 @@ return view.extend({
                 _('ACM console'),
                 function(d) {
                     var r = (d.usb || {}).acm;
+                    return r == null ? null : r === '1';
+                }
+            ],
+            [
+                _('ADB debugging'),
+                function(d) {
+                    var r = (d.usb || {}).adb;
                     return r == null ? null : r === '1';
                 }
             ],

@@ -1,0 +1,22 @@
+#!/bin/sh /etc/rc.common
+
+START=80
+STOP=99
+
+USE_PROCD=1
+PROG=/usr/bin/adbd
+OOM_ADJ=-17
+
+start_service() {
+	procd_open_instance
+	procd_set_param oom_score_adj $OOM_ADJ
+	[ -n $ADB_TRANSPORT_PORT ] && {
+		procd_set_param env ADB_TRANSPORT_PORT="$ADB_TRANSPORT_PORT"
+	}
+	procd_set_param command $PROG -D
+	procd_close_instance
+}
+
+shutdown() {
+	killall adbd
+}

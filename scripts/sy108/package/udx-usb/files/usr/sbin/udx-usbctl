@@ -5,13 +5,18 @@ case "${1:-status}" in
 	status) g_status; exit 0;;
 	start) exec /usr/libexec/udx-usb-gadget start;;
 	switch)
-		[ "$#" -ge 2 ] && [ "$#" -le 3 ] || exit 64
+		[ "$#" -ge 2 ] && [ "$#" -le 4 ] || exit 64
 		g_load_config || exit 1
 		PROFILE=$2
 		case "${3:-keep}" in keep) ;; acm) ACM=1;; no-acm) ACM=0;; *) exit 64;; esac
+		ADBARG= ADBJSON=
+		if [ "$#" = 4 ]; then
+			case "$4" in adb) ADB=1;; no-adb) ADB=0;; *) exit 64;; esac
+			ADBARG=" $4" ADBJSON=",\"$4\""
+		fi
 		g_profile && g_lock || exit $?
-		request="switch $PROFILE $ACM"
-		command="[\"/usr/libexec/udx-usb-gadget\",\"apply\",\"switch\",\"$PROFILE\",\"$ACM\"]"
+		request="switch $PROFILE $ACM$ADBARG"
+		command="[\"/usr/libexec/udx-usb-gadget\",\"apply\",\"switch\",\"$PROFILE\",\"$ACM\"$ADBJSON]"
 		;;
 	reset)
 		[ "$#" = 1 ] || exit 64
@@ -25,14 +30,13 @@ case "${1:-status}" in
 		command='["/usr/libexec/udx-usb-gadget","apply","stop"]'
 		;;
 	cancel-pending)
-		# Cannot cancel a running mutation: g_lock refuses while apply owns it.
 		g_lock || exit $?
 		ubus call service delete '{"name":"udx-usb-apply"}' >/dev/null 2>&1 || true
 		rm -f "$UDX_RUN/pending"
 		exit 0
 		;;
 	*)
-		echo 'usage: udx-usbctl status | start | switch {ncm|ncm-software|ecm|rndis} [acm|no-acm] | reset | stop | cancel-pending' >&2
+		echo 'usage: udx-usbctl status | start | switch {ncm|ncm-software|rndis|rndis-software|ecm} [acm|no-acm] [adb|no-adb] | reset | stop | cancel-pending' >&2
 		exit 64;;
 esac
 if [ "$request" = reset ] && [ -f "$UDX_RUN/pending" ] && [ "$(g_read "$UDX_RUN/pending")" = reset ]; then
@@ -41,11 +45,7 @@ if [ "$request" = reset ] && [ -f "$UDX_RUN/pending" ] && [ "$(g_read "$UDX_RUN/
 fi
 [ ! -e "$UDX_RUN/pending" ] || { g_error 'a request is queued; inspect status or cancel-pending'; exit 75; }
 printf '%s\n' "$request" > "$UDX_RUN/pending" || exit 1
-# procd owns the operation independently of the SSH/ACM connection it changes.
-# No respawn: a failed profile is never retried in a re-enumeration loop.
 ubus call service delete '{"name":"udx-usb-apply"}' >/dev/null 2>&1 || true
-# stdout capture injects libsetlbf.so, which splits shell printf writes to
-# configfs attributes. This worker reports errors on stderr; leave stdout alone.
 if ! ubus call service add "{\"name\":\"udx-usb-apply\",\"instances\":{\"apply\":{\"command\":$command,\"stderr\":true}}}" >/dev/null; then
 	rm -f "$UDX_RUN/pending"
 	exit 1

@@ -1,13 +1,6 @@
 #!/bin/sh
-# Only dedicated USB sections are created; an existing root-builder policy wins.
-# No modification of LAN/WLAN/WAN or their routing.
 set -e
 . /usr/lib/udx-usb/gadget.sh
-if ! uci -q get udx-usb.main.acm >/dev/null; then
-	uci -q set udx-usb.main.acm='1'
-	uci -q commit udx-usb
-fi
-
 g_load_config
 g_validate
 if ! uci -q get network.usbmgmt >/dev/null; then
@@ -37,7 +30,6 @@ if [ -z "$usb_section" ]; then
 	uci set "network.$usb_section.stp=0"
 	uci set "network.$usb_section.macaddr=$DEV_MAC"
 fi
-# An existing concrete bridge address is a user/root-builder override.
 if ! uci -q get "network.$usb_section.macaddr" >/dev/null; then
 	uci set "network.$usb_section.macaddr=$DEV_MAC"
 fi
@@ -59,7 +51,6 @@ if ! uci -q get dhcp.usbmgmt >/dev/null; then
 	uci set dhcp.usbmgmt.leasetime=1h
 	uci set dhcp.usbmgmt.ignore=0
 	uci set dhcp.usbmgmt.force=1
-	# Empty options suppress dnsmasq's implicit router and DNS advertisements.
 	uci add_list dhcp.usbmgmt.dhcp_option=3
 	uci add_list dhcp.usbmgmt.dhcp_option=6
 	uci set dhcp.usbmgmt.ra=disabled

@@ -1,0 +1,66 @@
+diff --git a/core/adbd/usb_linux_client.c b/core/adbd/usb_linux_client.c
+index a981e96..96dec38 100644
+--- a/core/adbd/usb_linux_client.c
++++ b/core/adbd/usb_linux_client.c
+@@ -320,27 +320,32 @@ err:
+     return;
+ }
+ 
++static int g_ffs_kick_pending;
++
+ static void *usb_ffs_open_thread(void *x)
+ {
+     struct usb_handle *usb = (struct usb_handle *)x;
+ 
+-    while (1) {
+-        // wait until the USB device needs opening
+-        adb_mutex_lock(&usb->lock);
+-        while (usb->control != -1)
+-            adb_cond_wait(&usb->notify, &usb->lock);
+-        adb_mutex_unlock(&usb->lock);
++    while (usb->control < 0) {
++        init_functionfs(usb);
++
++        if (usb->control >= 0)
++            break;
+ 
+-        while (1) {
+-            init_functionfs(usb);
++        adb_sleep_ms(1000);
++    }
+ 
+-            if (usb->control >= 0)
+-                break;
++    D("[ usb_thread - registering device ]\n");
++    register_usb_transport(usb, 0, 0, 1);
+ 
+-            adb_sleep_ms(1000);
+-        }
++    for (;;) {
++        adb_mutex_lock(&usb->lock);
++        while (!g_ffs_kick_pending)
++            adb_cond_wait(&usb->notify, &usb->lock);
++        g_ffs_kick_pending = 0;
++        adb_mutex_unlock(&usb->lock);
+ 
+-        D("[ usb_thread - registering device ]\n");
++        adb_sleep_ms(100);
+         register_usb_transport(usb, 0, 0, 1);
+     }
+ 
+@@ -430,13 +435,9 @@ static void usb_ffs_kick(usb_handle *h)
+     if (err < 0)
+         D("[ kick: sink (fd=%d) clear halt failed (%d) ]", h->bulk_out, errno);
+ 
++    /* don't close ep0 here: closing it unregisters the gadget from the UDC */
+     adb_mutex_lock(&h->lock);
+-    adb_close(h->control);
+-    adb_close(h->bulk_out);
+-    adb_close(h->bulk_in);
+-    h->control = h->bulk_out = h->bulk_in = -1;
+-
+-    // notify usb_ffs_open_thread that we are disconnected
++    g_ffs_kick_pending++;
+     adb_cond_signal(&h->notify);
+     adb_mutex_unlock(&h->lock);
+ }

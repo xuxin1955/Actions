@@ -717,3 +717,9 @@ msgstr "DDR 由固件自动调频，此处仅显示监测数据。"
 
 msgid "Apply CPU frequency settings"
 msgstr "应用 CPU 频率设置"
+
+msgid "ADB debugging"
+msgstr "ADB 调试"
+
+msgid "Expose an Android ADB interface for debugging."
+msgstr "暴露一个 Android ADB 调试接口。"

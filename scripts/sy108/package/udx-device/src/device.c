@@ -26,7 +26,7 @@
 static const char *method_description =
     "{\"frequency_status\":{},\"frequency_apply\":{\"cpu_governor\":\"\",\"cpu_min_khz\":0,"
     "\"cpu_max_khz\":0},"
-    "\"status\":{},\"usb\":{\"profile\":\"\",\"acm\":false}}";
+    "\"status\":{},\"usb\":{\"profile\":\"\",\"acm\":false,\"adb\":false}}";
 
 static char *read_file(const char *name, size_t maximum)
 {
@@ -340,13 +340,16 @@ static J *usb_request(J *arguments)
 {
 	const char *profile = str(arguments, "profile");
 	J *acm = get(arguments, "acm");
+	J *adb = get(arguments, "adb");
 	if (!usb_profile_supported(profile) ||
-	    !json_object_is_type(acm, json_type_boolean)) {
+	    !json_object_is_type(acm, json_type_boolean) ||
+	    !json_object_is_type(adb, json_type_boolean)) {
 		errorf(CELL_INVALID, "Invalid USB profile");
 		return NULL;
 	}
 	const char *argv[] = {"/usr/sbin/udx-usbctl", "switch", profile,
-			      json_object_get_boolean(acm) ? "acm" : "no-acm", NULL};
+			      json_object_get_boolean(acm) ? "acm" : "no-acm",
+			      json_object_get_boolean(adb) ? "adb" : "no-adb", NULL};
 	char *output = NULL;
 	int rc = command_run(argv, NULL, 8000, 65536, &output);
 	if (rc < 0)

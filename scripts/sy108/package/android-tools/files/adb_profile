@@ -1,0 +1,3 @@
+#!/bin/sh
+. /etc/profile
+alias ls='ls --color=no'

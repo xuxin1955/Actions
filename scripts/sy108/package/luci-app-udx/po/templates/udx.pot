@@ -716,3 +716,9 @@ msgstr ""
 
 msgid "Apply CPU frequency settings"
 msgstr ""
+
+msgid "ADB debugging"
+msgstr ""
+
+msgid "Expose an Android ADB interface for debugging."
+msgstr ""

@@ -1,13 +1,9 @@
 config gadget 'main'
 	option enabled '1'
 	option profile 'ncm'
-	option acm '1'
-	# auto derives from this unit's bootloader-provided factory product serial.
-	# A concrete value is an explicit per-field override, including legacy values.
+	option acm '0'
+	option adb '1'
 	option serial 'auto'
-	option vid '0x1d6b'
+	option vid '0x18d1'
 	option dev_mac 'auto'
 	option host_mac 'auto'
-	# Recovers the management link when the gadget keeps renegotiating with
-	# the host.  Set to 0 to keep the link exactly as the platform leaves it.
-	option watchdog '1'

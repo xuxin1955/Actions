@@ -1,6 +1,4 @@
 #!/bin/sh
-# Shared implementation; tests source this library and replace only filesystem
-# primitives. Production entry points always use the fixed paths below.
 UDX_UDC=29100000.usb
 UDX_CF=/sys/kernel/config/usb_gadget
 UDX_G=$UDX_CF/udx-usb
@@ -11,6 +9,7 @@ UDX_SHADOW=/etc/shadow
 UDX_IDENTITY_CMDLINE=/proc/cmdline
 UDX_AFFINITY_PROC=/proc
 UDX_AFFINITY_SYS=/sys
+UDX_ADB_FFS=/dev/usb-ffs/adb
 
 g_error() { echo "udx-usb: $*" >&2; }
 g_read() { cat "$1"; }
@@ -20,8 +19,6 @@ g_rmdir() { rmdir "$1"; }
 g_link() { ln -s "$1" "$2"; }
 g_unlink() { rm "$1"; }
 
-# Keep the AP Ethernet consumer and completion paths on CPU1, and its
-# receive-buffer refill on CPU0. No application or modem thread is pinned.
 g_affinity_task() {
 	local pid=$1 name=$2
 	[ "$(cat "$UDX_AFFINITY_PROC/$pid/comm" 2>/dev/null)" = "$name" ] &&
@@ -137,7 +134,6 @@ g_identity_mac() {
 	d=${rest%"${rest#??}"}; rest=${rest#??}
 	e=${rest%"${rest#??}"}; rest=${rest#??}
 	f=${rest%"${rest#??}"}
-	# Local unicast, preserving the existing device/host role bits.
 	printf '%02x:%s:%s:%s:%s:%02x\n' "$(((0x$a & 252) | 2))" "$b" "$c" "$d" "$e" "$(((0x$f & 252) | role))"
 }
 
@@ -156,7 +152,6 @@ g_identity_defaults() {
 	IDENTITY_SOURCE=factory-serial IDENTITY_REASON=none
 }
 
-# /proc/uptime is monotonic and does not depend on RTC/NTP or logd.
 g_boot_clock() {
 	local value rest fraction
 	read -r value rest < /proc/uptime || return 1
@@ -175,6 +170,8 @@ g_boot_mark() {
 g_load_config() {
 	PROFILE=$(uci -q get udx-usb.main.profile) || return 1
 	ACM=$(uci -q get udx-usb.main.acm) || ACM=0
+	ADB=$(uci -q get udx-usb.main.adb)
+	[ -n "$ADB" ] || ADB=1
 	SERIAL=$(uci -q get udx-usb.main.serial) || SERIAL=auto
 	VID=$(uci -q get udx-usb.main.vid) || return 1
 	DEV_MAC=$(uci -q get udx-usb.main.dev_mac) || DEV_MAC=auto
@@ -190,14 +187,22 @@ g_load_config() {
 
 g_profile() {
 	case "$PROFILE" in
-		ncm) FUNCTIONS=ncm; PID=0x0105; PAMU3=1 ;;
-		ncm-software) FUNCTIONS=ncm; PID=0x0105; PAMU3=0 ;;
-		*) g_error 'profile must be ncm or ncm-software'; return 64 ;;
+		ncm) FUNC=ncm.usb0; PROTO=ncm; PID=0x0105; PAMU3=1 ;;
+		ncm-software) FUNC=ncm.usb0; PROTO=ncm; PID=0x0105; PAMU3=0 ;;
+		rndis) FUNC=rndis.usb0; PROTO=rndis; PID=0x0106; PAMU3=1 ;;
+		rndis-software) FUNC=rndis.usb0; PROTO=rndis; PID=0x0106; PAMU3=0 ;;
+		ecm) FUNC=ecm.usb0; PROTO=ecm; PID=0x0107; PAMU3=0 ;;
+		*) g_error 'profile must be ncm, ncm-software, rndis, rndis-software or ecm'; return 64 ;;
 	esac
 	case "$ACM" in
 		0) ;;
 		1) PID=$(printf '0x%04x' "$((PID + 16))") ;;
 		*) g_error 'acm must be 0 or 1'; return 64 ;;
+	esac
+	case "$ADB" in
+		0) ;;
+		1) PID=0x4ee4 ;;
+		*) g_error 'adb must be 0 or 1'; return 64 ;;
 	esac
 }
 
@@ -256,6 +261,20 @@ g_preflight() {
 	fi
 }
 
+g_adb_ready() {
+	mkdir -p "$UDX_ADB_FFS" || return 1
+	if ! grep -qs " $UDX_ADB_FFS " /proc/mounts; then
+		mount -t functionfs -o no_disconnect adb "$UDX_ADB_FFS" || return 1
+	fi
+	/etc/init.d/adbd restart >/dev/null 2>&1 || return 1
+	local i=0
+	while [ $i -lt 10 ] && [ ! -e "$UDX_ADB_FFS/ep1" ]; do
+		i=$((i + 1))
+		sleep 1
+	done
+	[ -e "$UDX_ADB_FFS/ep1" ] || { g_error 'adbd endpoints not ready'; return 1; }
+}
+
 g_lock() {
 	mkdir -p "$UDX_RUN" || return 1
 	umask 077
@@ -264,26 +283,34 @@ g_lock() {
 }
 
 g_net_function() {
-	local dir=$UDX_G/functions/ncm.usb0
+	local dir=$UDX_G/functions/$FUNC
 	g_mkdir "$dir" || return 1
 	g_write "$dir/ifname" 'uncm%d' || return 1
 	g_write "$dir/dev_addr" "$DEV_MAC" || return 1
 	g_write "$dir/host_addr" "$HOST_MAC" || return 1
-	g_write "$dir/max_segment_size" 1514 || return 1
-	g_write "$dir/pamu3" "$PAMU3" || return 1
-	# Windows UsbNcm.sys matches MS_COMP_WINNCM. WINUSB would select
-	# Winusb.sys and would not expose this function as a network adapter.
-	g_write "$dir/os_desc/interface.ncm/compatible_id" WINNCM || return 1
-	g_write "$dir/os_desc/interface.ncm/sub_compatible_id" '' || return 1
-	g_link "$dir" "$UDX_G/configs/c.1/ncm.usb0"
+	case "$PROTO" in
+		ncm)
+			g_write "$dir/max_segment_size" 1514 || return 1
+			g_write "$dir/pamu3" "$PAMU3" || return 1
+			g_write "$dir/os_desc/interface.ncm/compatible_id" WINNCM || return 1
+			g_write "$dir/os_desc/interface.ncm/sub_compatible_id" '' || return 1
+			;;
+		rndis)
+			g_write "$dir/pamu3" "$PAMU3" || return 1
+			g_write "$dir/os_desc/interface.rndis/compatible_id" RNDIS || return 1
+			g_write "$dir/os_desc/interface.rndis/sub_compatible_id" 5162001 || return 1
+			;;
+		ecm)
+			;;
+	esac
+	g_link "$dir" "$UDX_G/configs/c.1/$FUNC"
 }
 
 g_create() {
-	local kind actual expected
+	local actual expected
 	g_boot_mark "event=identity source=${IDENTITY_SOURCE:-uci-explicit} reason=${IDENTITY_REASON:-none}"
 	[ "${IDENTITY_SOURCE:-}" != diagnostic-fallback ] || g_error "factory serial unavailable ($IDENTITY_REASON); using generic diagnostic identity"
 	[ ! -e "$UDX_G" ] || return 1
-	# Refuse conflicting names before changing the intended gadget.
 	for expected in uncm0; do
 		[ ! -e "$UDX_NET_CLASS/$expected" ] || { g_error "interface $expected already exists"; return 1; }
 	done
@@ -306,11 +333,13 @@ g_create() {
 	g_write "$UDX_G/configs/c.1/MaxPower" 500 || return 1
 	g_mkdir "$UDX_G/configs/c.1/strings/0x409" || return 1
 	g_write "$UDX_G/configs/c.1/strings/0x409/configuration" "$PROFILE management" || return 1
-	for kind in $FUNCTIONS; do g_net_function "$kind" || return 1; done
-	g_write "$UDX_G/os_desc/use" 1 || return 1
-	g_write "$UDX_G/os_desc/b_vendor_code" 0xcd || return 1
-	g_write "$UDX_G/os_desc/qw_sign" MSFT100 || return 1
-	g_link "$UDX_G/configs/c.1" "$UDX_G/os_desc/c.1" || return 1
+	g_net_function || return 1
+	if [ "$PROTO" != ecm ]; then
+		g_write "$UDX_G/os_desc/use" 1 || return 1
+		g_write "$UDX_G/os_desc/b_vendor_code" 0xcd || return 1
+		g_write "$UDX_G/os_desc/qw_sign" MSFT100 || return 1
+		g_link "$UDX_G/configs/c.1" "$UDX_G/os_desc/c.1" || return 1
+	fi
 	if [ "$ACM" = 1 ]; then
 		g_mkdir "$UDX_G/functions/acm.maint" || return 1
 		[ "$(g_read "$UDX_G/functions/acm.maint/port_num")" = 0 ] || { g_error 'ttyGS0 is already allocated'; return 1; }
@@ -319,17 +348,19 @@ g_create() {
 		fi
 		g_link "$UDX_G/functions/acm.maint" "$UDX_G/configs/c.1/acm.maint" || return 1
 	fi
+	if [ "$ADB" = 1 ] && [ -x /usr/bin/adbd ]; then
+		g_mkdir "$UDX_G/functions/ffs.adb" || return 1
+		g_link "$UDX_G/functions/ffs.adb" "$UDX_G/configs/c.1/adb" || return 1
+		g_adb_ready || return 1
+	fi
 	g_affinity_apply || g_error 'CPU affinity unavailable; retaining default scheduling'
 	g_boot_mark 'event=udc-bind-begin'
-	# Bind once after the complete, deterministic descriptor tree exists.
 	g_write "$UDX_G/UDC" "$UDX_UDC" || return 1
 	[ "$(g_read "$UDX_G/UDC")" = "$UDX_UDC" ] || return 1
 	g_boot_mark 'event=udc-bind-done'
-	for kind in $FUNCTIONS; do
-		expected=uncm0
-		actual=$(g_read "$UDX_G/functions/$kind.usb0/ifname") || return 1
-		[ "$actual" = "$expected" ] || { g_error "unexpected interface $actual"; return 1; }
-	done
+	expected=uncm0
+	actual=$(g_read "$UDX_G/functions/$FUNC/ifname") || return 1
+	[ "$actual" = "$expected" ] || { g_error "unexpected interface $actual"; return 1; }
 }
 
 g_destroy() {
@@ -343,14 +374,20 @@ g_destroy() {
 		*) g_error 'owned gadget is bound to an unexpected controller'; return 1;;
 	esac
 	for path in "$UDX_G/os_desc/c.1" "$UDX_G/configs/c.1/acm.maint" \
-		"$UDX_G/configs/c.1/ncm.usb0"; do
+		"$UDX_G/configs/c.1/adb" "$UDX_G"/configs/c.1/*.usb0; do
 		[ ! -L "$path" ] || g_unlink "$path" || return 1
 	done
 	for path in "$UDX_G/configs/c.1/strings/0x409" "$UDX_G/configs/c.1" \
-		"$UDX_G/functions/acm.maint" "$UDX_G/functions/ncm.usb0" \
-		"$UDX_G/strings/0x409"; do
+		"$UDX_G/functions/acm.maint" "$UDX_G/functions/ffs.adb" \
+		"$UDX_G"/functions/*.usb0 "$UDX_G/strings/0x409"; do
 		[ ! -d "$path" ] || g_rmdir "$path" || return 1
 	done
+	if [ "$ADB" = 1 ]; then
+		/etc/init.d/adbd stop >/dev/null 2>&1 || true
+		if grep -qs " $UDX_ADB_FFS " /proc/mounts; then
+			umount "$UDX_ADB_FFS" 2>/dev/null || true
+		fi
+	fi
 	g_rmdir "$UDX_G" || return 1
 	g_affinity_restore || g_error 'could not restore all CPU affinities'
 	rm -f "$UDX_RUN/owned" "$UDX_RUN/applied"
@@ -358,7 +395,7 @@ g_destroy() {
 
 g_state_save() {
 	{
-		printf 'profile=%s\nacm=%s\nserial=%s\nvid=%s\n' "$PROFILE" "$ACM" "$SERIAL" "$VID"
+		printf 'profile=%s\nacm=%s\nadb=%s\nserial=%s\nvid=%s\n' "$PROFILE" "$ACM" "$ADB" "$SERIAL" "$VID"
 		printf 'dev_mac=%s\nhost_mac=%s\n' \
 			"$DEV_MAC" "$HOST_MAC"
 		printf 'identity_source=%s\nidentity_reason=%s\n' "${IDENTITY_SOURCE:-uci-explicit}" "${IDENTITY_REASON:-none}"
@@ -369,9 +406,10 @@ g_state_load() {
 	local key value
 	[ -f "$1" ] || return 1
 	IDENTITY_SOURCE=uci-explicit IDENTITY_REASON=none
+	ADB=1
 	while IFS='=' read -r key value; do
 		case "$key" in
-			profile) PROFILE=$value;; acm) ACM=$value;; serial) SERIAL=$value;; vid) VID=$value;;
+			profile) PROFILE=$value;; acm) ACM=$value;; adb) ADB=$value;; serial) SERIAL=$value;; vid) VID=$value;;
 			dev_mac) DEV_MAC=$value;; host_mac) HOST_MAC=$value;;
 			identity_source) IDENTITY_SOURCE=$value;; identity_reason) IDENTITY_REASON=$value;;
 			*) return 1;;
@@ -380,7 +418,6 @@ g_state_load() {
 	g_validate
 }
 
-# Called under the same control lock as profile changes and teardown.
 g_reset() {
 	[ -d "$UDX_G" ] || return 0
 	[ "$(g_read "$UDX_G/UDC")" = "$UDX_UDC" ] || {
@@ -389,7 +426,6 @@ g_reset() {
 	local result=0
 	g_write "$UDX_UDC_CLASS/$UDX_UDC/soft_connect" disconnect || result=1
 	sleep 0.5 || result=1
-	# Preserve one connect attempt even if the disconnect reported an error.
 	g_write "$UDX_UDC_CLASS/$UDX_UDC/soft_connect" connect || result=1
 	return "$result"
 }

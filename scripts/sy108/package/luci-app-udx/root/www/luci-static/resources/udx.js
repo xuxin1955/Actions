@@ -25,7 +25,7 @@ var wan6RPC = rpc.declare({object: 'network.interface.wan6', method: 'status', e
 var usbRPC = rpc.declare({
     object : 'udx',
     method : 'usb',
-    params : [ 'profile', 'acm' ],
+    params : [ 'profile', 'acm', 'adb' ],
     expect : {'' : {}},
     reject : true
 });
@@ -278,8 +278,8 @@ function watch(load, update, initial) {
     }, 5);
     return error;
 }
-function usb(profile, acm) {
-    return usbRPC(profile, acm).then(function(r) {
+function usb(profile, acm, adb) {
+    return usbRPC(profile, acm, adb).then(function(r) {
         if (!r.accepted)
             throw failure(r);
         var end = Date.now() + 300000;
@@ -288,6 +288,7 @@ function usb(profile, acm) {
                 function(d) {
                     var u = d.usb || {};
                     if (!u.pending && u.profile === profile && u.acm === (acm ? '1' : '0') &&
+                        u.adb === (adb ? '1' : '0') &&
                         (u.result === '0' || u.result === 0))
                         return u;
                     if (!u.pending && u.result != null && String(u.result) !== '0')
