@@ -1,5 +1,4 @@
 #!/bin/sh
-# MSM8916 eMMC sysupgrade - kernel (Android boot image) + rootfs (squashfs)
 
 PART_NAME=firmware
 REQUIRE_IMAGE_METADATA=1
@@ -95,6 +94,13 @@ platform_do_upgrade() {
 }
 
 platform_pre_upgrade() {
-    rm -fr /overlay/upper/* /overlay/upper/.* 2>/dev/null
-    [ -f "$UPGRADE_BACKUP" ] && cp -f "$UPGRADE_BACKUP" "/overlay/upper/$BACKUP_FILE" 2>/dev/null
+    mkdir -p /overlay/upper 2>/dev/null
+
+    if [ -n "$UPGRADE_BACKUP" ] && [ -f "$UPGRADE_BACKUP" ]; then
+        echo "pre_upgrade: keeping config+packages, skip upper wipe"
+        cp -f "$UPGRADE_BACKUP" "/overlay/upper/$BACKUP_FILE" 2>/dev/null
+    else
+        echo "pre_upgrade: not keeping config, wiping upper"
+        rm -fr /overlay/upper/* /overlay/upper/.* 2>/dev/null
+    fi
 }
