@@ -57,7 +57,6 @@ jobs:
         printf 'Acquire::http::Timeout "60";\nAcquire::https::Timeout "60";\nAcquire::Retries "3";\n' | sudo tee /etc/apt/apt.conf.d/99timeout
         PKGS=$(curl -fsSL --retry 3 --max-time 60 https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt | tr ' ' '\n' | grep -vE '^(gcc-multilib|g\+\+-multilib|libc6-dev-i386)$' | tr '\n' ' ')
         [ -n "$PKGS" ] || { echo "::error::依赖列表拉取失败"; exit 1; }
-        sudo -E apt-get -y update
         sudo -E apt-get -y install --no-install-recommends $PKGS || {
           sudo -E apt-get -y update
           sudo -E apt-get -y install --no-install-recommends $PKGS
