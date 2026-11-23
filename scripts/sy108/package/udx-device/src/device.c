@@ -261,7 +261,7 @@ static J *sysfs_array(const char *pattern, int kind)
 static J *storage_status(void)
 {
 	J *out = json_object_new_array();
-	char *raw = read_file("/proc/mounts", 65536), *save = NULL;
+	char *raw = read_file("/proc/self/mounts", 65536), *save = NULL;
 	if (!raw)
 		return out;
 	for (char *line = strtok_r(raw, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {

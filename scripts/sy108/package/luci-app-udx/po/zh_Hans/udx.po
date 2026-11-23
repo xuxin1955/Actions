@@ -3,6 +3,12 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: zh_CN\n"
 
+msgid "ADB unavailable; switched to ACM + NCM mode"
+msgstr "ADB 不可用；已自动切换到 ACM + NCM 模式"
+
+msgid "ACM unavailable; USB network is running without it"
+msgstr "ACM 不可用；USB 网络已在无 ACM 情况下运行"
+
 msgid "4G LTE only"
 msgstr "仅 4G LTE"
 

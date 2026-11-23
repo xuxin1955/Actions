@@ -424,8 +424,11 @@ char *controller_sim(struct controller *c)
 	const char *state = json_object_get_string(json_object_array_get_idx(row, 0));
 	char *result = state ? strdup(state) : NULL;
 	json_object_put(row);
-	if (!result)
+	if (!result) {
 		errorf(CELL_INVALID, "SIM state is missing");
+	} else {
+		json_object_object_del(c->status, "sim_error");
+	}
 	return result;
 }
 

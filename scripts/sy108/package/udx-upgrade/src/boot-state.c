@@ -363,35 +363,37 @@ static int management_network_ready(void)
 	return -1;
 }
 
-#define BOOT_DEGRADED_LISTENER	0x1u
-#define BOOT_DEGRADED_NETWORK	0x2u
+/* /run/udx-usb/applied starts with the active profile line. Keep every gadget
+ * profile the daemon supports readable here, otherwise an ECM/RNDIS boot would
+ * be treated as an unmanaged gadget and block the boot trial confirmation. */
+static int usb_profile_line(const char *value)
+{
+	static const char *const profiles[] = {"ncm", "ncm-software", "ecm", "rndis",
+						"rndis-software"};
 
-static int boot_management_ready(const char **reason, unsigned *degraded)
+	if (strncmp(value, "profile=", 8))
+		return 0;
+	value += 8;
+	for (size_t i = 0; i < sizeof(profiles) / sizeof(*profiles); i++) {
+		size_t len = strlen(profiles[i]);
+		if (!strncmp(value, profiles[i], len) && value[len] == '\n')
+			return 1;
+	}
+	return 0;
+}
+
+static int boot_management_ready(void)
 {
 	char value[512];
-	*degraded = 0;
 	/* Logical gadget readiness is independent of a connected host or SIM.
 	 * All run files are from this boot; require the live UDC binding too. */
-	*reason = "udc";
 	if (text("/sys/kernel/config/usb_gadget/udx-usb/UDC", value, sizeof(value)) ||
-	    strcmp(value, "29100000.usb\n"))
+	    strcmp(value, "29100000.usb\n") || text("/run/udx-usb/applied", value, sizeof(value)) ||
+	    !usb_profile_line(value) ||
+	    management_listener(22) != 0 ||
+	    (management_listener(80) != 0 && management_listener(443) != 0) ||
+	    management_network_ready())
 		return -1;
-	*reason = "profile";
-	if (text("/run/udx-usb/applied", value, sizeof(value)) ||
-	    strncmp(value, "profile=", 8) ||
-	    value[8] == '\n' || value[8] == '\0')
-		return -1;
-	*reason = "listener";
-	{
-		int ssh = management_listener(22) == 0;
-		int web = management_listener(80) == 0 && management_listener(443) == 0;
-		if (!ssh && !web)
-			*degraded |= BOOT_DEGRADED_LISTENER;
-	}
-	*reason = "network";
-	if (management_network_ready())
-		*degraded |= BOOT_DEGRADED_NETWORK;
-	*reason = *degraded ? "degraded" : "ready";
 	return 0;
 }
 
@@ -400,10 +402,8 @@ static int boot_accept(char *why, size_t cap)
 	struct volume misc = {.fd = -1};
 	struct udx_root_layout layout;
 	unsigned char *data = NULL;
-	char boot[40], value[64], detail[64] = "";
+	char boot[40], value[64];
 	const char *failure = "boot-accept-health";
-	const char *reason = "";
-	unsigned degraded = 0;
 	int result = -1;
 	if (text("/etc/udx-openwrt-root", value, sizeof(value)) ||
 	    strcmp(value, "OpenWrt production root\n") ||
@@ -412,13 +412,8 @@ static int boot_accept(char *why, size_t cap)
 	    boot_id(boot) || udx_root_check(0, 1, &layout) || live_runtime(boot))
 		goto out;
 	failure = "boot-accept-management";
-	if (boot_management_ready(&reason, &degraded))
+	if (boot_management_ready())
 		goto out;
-	if (degraded)
-		snprintf(detail, sizeof(detail), "%s%s%s",
-			 degraded & BOOT_DEGRADED_LISTENER ? "listener" : "",
-			 degraded == (BOOT_DEGRADED_LISTENER | BOOT_DEGRADED_NETWORK) ? "," : "",
-			 degraded & BOOT_DEGRADED_NETWORK ? "network" : "");
 	failure = "boot-accept-misc";
 	if (find_volume("misc", UDX_MISC_ENV_BYTES, &misc))
 		goto out;
@@ -449,20 +444,8 @@ out:
 	free(data);
 	if (misc.fd >= 0)
 		close(misc.fd);
-	if (!result && degraded)
-		snprintf(why, cap, "boot-accept-degraded:%s", detail);
-	else
-		snprintf(why, cap, "%s%s%s", failure, *reason ? ":" : "", reason);
+	snprintf(why, cap, "%s", failure);
 	return result;
-}
-
-static void announce(const char *why)
-{
-	int fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
-	if (fd < 0)
-		return;
-	dprintf(fd, "<4>udx-boot-state: %s\n", why);
-	close(fd);
 }
 
 /* Only the native bootloader's persistent state is device-specific. Firmware data
@@ -480,7 +463,6 @@ int main(int argc, char **argv)
 	if (!strcmp(argv[1], "accept")) {
 		char why[80];
 		int rc = boot_accept(why, sizeof(why));
-		announce(why);
 		if (rc)
 			fprintf(stderr, "%s\n", why);
 		return !!rc;

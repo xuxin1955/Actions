@@ -86,6 +86,7 @@ case "${1:-}" in
 		[ ! -f "$UDX_RUN/applied" ] || cp "$UDX_RUN/applied" "$previous" || exit 1
 		g_console_stop && g_destroy || exit $?
 		if g_create && g_state_save; then
+			g_state_load "$UDX_RUN/applied" || exit 1
 			uci set "udx-usb.main.profile=$PROFILE" && uci set "udx-usb.main.acm=$ACM" && uci set "udx-usb.main.adb=$ADB" &&
 			uci commit udx-usb || { g_error 'active profile changed but saving the boot preference failed'; exit 1; }
 			g_network_ready

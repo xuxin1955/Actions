@@ -722,3 +722,9 @@ msgstr ""
 
 msgid "Expose an Android ADB interface for debugging."
 msgstr ""
+
+msgid "ADB unavailable; switched to ACM + NCM mode"
+msgstr ""
+
+msgid "ACM unavailable; USB network is running without it"
+msgstr ""
