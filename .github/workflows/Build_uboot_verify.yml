@@ -1,28 +1,39 @@
-name: Build_uboot_verify（验证版：关闭原生启动）
+name: Build_uboot_verify（原样 vs 关闭原生启动，双份对照）
 
-# 目的：验证「关闭 CONFIG_SY108_NATIVE_BOOT」后编出的 uboot 能否正常启动。
-# 与原 Build_sy108_UDX710.yml 的唯一源码差异：注释掉 udx710_4h10_recon.h 里的
-#   #define CONFIG_SY108_NATIVE_BOOT
-# 该宏会在 init_sequence 最早期插入 sy108_boot_early()，硬读 0x82000000；
-# 实测带它的版本刷入后「响一声就没动静」，关掉后等价于已验证能用的基线。
+# 背景（本地二进制比对已确认，勿再改回旧结论）：
+#   - 你的 uboot 1310720 (0x140000)，尾部 743292 字节 FF，有效载荷 567428
+#   - 对方 uboot 567428，无尾部 FF，有效载荷同为 567428
+#   => 大小差异只是 FF 填充：j佬 envelope.py 原生补 FF 到 0x140000，你的正常，不是编译问题。
+#   - 两份用同一份原厂 SML donor：signed 载荷 53072B、descriptor、证书载荷hash 全相同。
+#     证书尾部签名不同只是 code 不同->body hash 不同->再用同一私钥重签的必然结果，非 donor 不同。
+#   - 唯一实质差异 = code 区 23 字节（sy108_boot_early / 原生启动），
+#     正是它连锁导致 body hash / header hash / 证书签名全部不同。
+#
+# 本 workflow 同时编两份做对照：
+#   1) original —— j佬原样源码
+#   2) noboot   —— 只注释 CONFIG_SY108_NATIVE_BOOT
+# 真机分别刷入，即可判定「响一声没动静」是否由原生启动那段代码导致。
 
 on:
   workflow_dispatch:
     inputs:
-      main_artifact_run:
-        description: '后备：仓库未放 capsule 时，取 main boot.bin 的来源 run_id（留空=最近成功的主 workflow）'
-        required: false
-        default: ''
-        type: string
+      model:
+        description: '要比对的机型（m50rs 是之前刷机那台）'
+        required: true
+        default: 'm50rs'
+        type: choice
+        options:
+          - m50rs
+          - m50p
+          - p50pro
+          - all
 
 env:
   UBOOT_REPO: https://github.com/jason-liu-4980/sy108-uboot-spl
-  UBOOT_IMAGE: udx710-boot:build
   TZ: Asia/Shanghai
 
 permissions:
   contents: write
-  actions: read
 
 concurrency:
   group: uboot-verify-${{ github.ref }}
@@ -34,182 +45,122 @@ jobs:
     timeout-minutes: 120
 
     steps:
-    - name: Checkout（取 sy108-oem/ 与 scripts/sy108/）
+    - name: Checkout（取 sy108-oem/ 原厂输入与 capsule）
       uses: actions/checkout@main
 
-    - name: 获取 capsule（main-boot / recovery-boot）
-      id: capsule
-      run: |
-        set +e
-        mkdir -p firmware
-
-        # 方案1（推荐）：仓库里已放好两个 capsule —— 完全离线，不依赖任何 artifact/Release。
-        #   capsules/immortalwrt-sprd-udx710-sy108-kernel.bin  → main capsule (target=2)
-        #   capsules/recovery-boot.bin                         → recovery capsule (target=1)
-        # 也兼容直接放在仓库根目录，或 sy108-oem/ 下。
-        for d in capsules . sy108-oem; do
-          [ -s "$d/immortalwrt-sprd-udx710-sy108-kernel.bin" ] && cp -f "$d/immortalwrt-sprd-udx710-sy108-kernel.bin" firmware/main-boot.bin
-          [ -s "$d/recovery-boot.bin" ] && cp -f "$d/recovery-boot.bin" firmware/recovery-boot.bin
-        done
-
-        # 方案2：仓库没有时，回退到主 workflow 的 artifact。
-        if [ ! -s firmware/main-boot.bin ]; then
-          echo "::group::仓库无 capsule，回退到主 workflow artifact"
-          RUN_ID="${{ inputs.main_artifact_run }}"
-          if [ -z "$RUN_ID" ]; then
-            RUN_ID=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/Build_sy108_UDX710.yml/runs?status=success&per_page=10" \
-              | jq -r '.workflow_runs[].id' | head -1)
-          fi
-          if [ -n "$RUN_ID" ]; then
-            AID=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/$RUN_ID/artifacts?per_page=100" \
-              | jq -r '.artifacts[] | select(.name | startswith("SY108_main_")) | .id' | head -1)
-            if [ -n "$AID" ]; then
-              curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
-                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/$AID/zip" \
-                -o "/tmp/main.zip" && mkdir -p "/tmp/main" && unzip -q -o "/tmp/main.zip" -d "/tmp/main"
-              BIN=$(find "/tmp/main" -type f -name 'boot.bin' | head -1)
-              [ -n "$BIN" ] && cp -f "$BIN" "firmware/main-boot.bin"
-            fi
-          fi
-          echo "::endgroup::"
-        fi
-        # recovery 兜底：Release 的 recovery.bin 已验证是合法 recovery capsule（target=1）
-        if [ ! -s firmware/recovery-boot.bin ]; then
-          echo "::group::recovery capsule 回退到 Release recovery.bin"
-          RURL=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" \
-            | jq -r '.assets[] | select(.name=="recovery.bin") | .browser_download_url' | head -1)
-          [ -n "$RURL" ] && curl -fsSL "$RURL" -o firmware/recovery-boot.bin
-          echo "::endgroup::"
-        fi
-
-        ls -l firmware/
-        if [ ! -s firmware/main-boot.bin ] || [ ! -s firmware/recovery-boot.bin ]; then
-          echo "::error::缺少 capsule。请把两个 boot.bin 放进仓库 capsules/ 目录。"
-          exit 1
-        fi
-        # 严格校验：main=target2、recovery=target1，避免编到最后才被 offline.py 拒。
-        python3 - <<'PY'
-        import struct
-        for c, want in (('main-boot',2), ('recovery-boot',1)):
-            d = open(f'firmware/{c}.bin','rb').read(2752)
-            if d[:8] != b'DHTB\x01\x00\x00\x00' or d[512:520] != b'ANDROID!':
-                raise SystemExit(f'::error::{c} 不是合法 capsule（DHTB+ANDROID! 头不符）')
-            t = struct.unpack_from('<I', d, 2560+128+8)[0]
-            if t != want:
-                raise SystemExit(f'::error::{c} 的 boot-target={t}，期望 {want}')
-            print(f'{c}: capsule 校验通过（target={t}）')
-        PY
-        echo "ok=1" >> "$GITHUB_OUTPUT"
-
-    - name: Clone uboot 源码并关闭原生启动
+    - name: Clone j佬源码（同时准备 original / noboot 两份）
       run: |
         set -e
-        if ! git clone --depth 1 "$UBOOT_REPO" uboot-src; then
-          echo "::error::拉取 uboot 源码失败"; exit 1
-        fi
-        if ! git -C uboot-src fetch --depth 1 origin oem:oem; then
-          echo "::error::拉取 oem 分支失败（offline.py 需要 oem 做 chipram 校验）"; exit 1
-        fi
+        git clone --depth 1 --no-single-branch "$UBOOT_REPO" uboot-src
+        # offline 的 build.sh 要 git rev-parse oem 做 chipram 校验，本地要有 oem 分支
+        git -C uboot-src checkout -B oem origin/oem
+        git -C uboot-src checkout main
+        echo "SOURCE_COMMIT=$(git -C uboot-src rev-parse HEAD)" | tee -a "$GITHUB_ENV"
 
-        CFG=uboot-src/src/u-boot/include/configs/udx710_4h10_recon.h
-        echo "--- 修改前 ---"
-        grep -n "CONFIG_SY108_NATIVE_BOOT" "$CFG" || true
-        # 核心：注释掉原生启动宏，等价于已验证能用的 oem 基线
-        sed -i 's/^#define CONFIG_SY108_NATIVE_BOOT$/\/\/ #define CONFIG_SY108_NATIVE_BOOT (disabled for verify)/' "$CFG"
-        echo "--- 修改后 ---"
+        # original：保持 j佬 main 原样，不动
+        # noboot：复制一份源码树，只注释原生启动宏
+        rm -rf uboot-noboot
+        cp -a uboot-src uboot-noboot
+        CFG=uboot-noboot/src/u-boot/include/configs/udx710_4h10_recon.h
+        echo "--- noboot 修改前 ---"
+        grep -n "CONFIG_SY108_NATIVE_BOOT" "$CFG"
+        sed -i 's|^#define CONFIG_SY108_NATIVE_BOOT$|// #define CONFIG_SY108_NATIVE_BOOT (disabled for verify)|' "$CFG"
+        echo "--- noboot 修改后 ---"
         grep -n "NATIVE_BOOT" "$CFG"
         if grep -q '^#define CONFIG_SY108_NATIVE_BOOT$' "$CFG"; then
           echo "::error::NATIVE_BOOT 未成功关闭"; exit 1
         fi
 
-        # 加速 docker build：j佬 Dockerfile 用 archive.ubuntu.com，某些 runner 很慢。
-        # 测几个镜像挑最快的写进 Dockerfile（容器是 focal/20.04）。
-        echo "::group::测速选择最快的 apt 源"
-        DF=uboot-src/docker/Dockerfile
-        BEST=""; BEST_T=999999
-        for host in archive.ubuntu.com us.archive.ubuntu.com mirrors.edge.kernel.org mirrors.tuna.tsinghua.edu.cn mirrors.cloud.tencent.com; do
-          t=$(curl -s -o /dev/null --max-time 8 -w '%{time_total}' "http://$host/ubuntu/dists/focal/InRelease" 2>/dev/null || echo 999999)
-          echo "  $host : ${t}s"
-          better=$(awk -v a="$t" -v b="$BEST_T" 'BEGIN{print (a+0 < b+0)?1:0}')
-          [ "$better" = "1" ] && { BEST_T="$t"; BEST="$host"; }
-        done
-        echo "选用 apt 源: $BEST (${BEST_T}s)"
-        if [ -n "$BEST" ] && [ "$BEST" != "archive.ubuntu.com" ]; then
-          sed -i "s|http://archive.ubuntu.com/ubuntu|http://$BEST/ubuntu|g; s|http://security.ubuntu.com/ubuntu|http://$BEST/ubuntu|g" "$DF"
-          echo "已把 Dockerfile 的 apt 源替换为 $BEST"
-        fi
-        echo "::endgroup::"
+    - name: 前置校验 capsule（main=target2 / recovery=target1）
+      run: |
+        python3 - <<'PY'
+        import struct
+        for f, want in [
+            ('sy108-oem/immortalwrt-sprd-udx710-sy108-kernel.bin', 2),
+            ('sy108-oem/recovery-boot.bin', 1),
+        ]:
+            d = open(f, 'rb').read(2752)
+            assert d[:8] == b'DHTB\x01\x00\x00\x00' and d[512:520] == b'ANDROID!', f'{f}: 非合法 capsule'
+            t = struct.unpack_from('<I', d, 2560 + 128 + 8)[0]
+            assert t == want, f'{f}: boot-target={t}, 期望 {want}'
+            print(f'{f}: target={t} OK')
+        PY
 
-    - name: 编译 uboot（make offline）
+    - name: make offline（original / noboot 各编一遍）
       run: |
         set -e
-        MODELS="p50pro m50p m50rs"
-        base=""
+        M="${{ inputs.model }}"
+        if [ "$M" = all ]; then MODELS="m50rs m50p p50pro"; else MODELS="$M"; fi
+        MAIN="$PWD/sy108-oem/immortalwrt-sprd-udx710-sy108-kernel.bin"
+        REC="$PWD/sy108-oem/recovery-boot.bin"
         for m in $MODELS; do
-          if [ -f "sy108-oem/$m/splloader.bin" ] && [ -f "sy108-oem/$m/sml.bin" ]; then
-            base="$m"; break
-          fi
+          d="$PWD/sy108-oem/$m"
+          for variant in original noboot; do
+            case "$variant" in
+              original) SRCDIR="uboot-src";    LABEL="orig-$m";   IMG="udx710-boot:orig" ;;
+              noboot)   SRCDIR="uboot-noboot"; LABEL="noboot-$m"; IMG="udx710-boot:noboot" ;;
+            esac
+            echo "===== make offline [$variant] $m ====="
+            make -C "$SRCDIR" offline LABEL="$LABEL" BOOT_IMAGE="$IMG" \
+              SPL_IMAGE="$d/splloader.bin" \
+              SML_IMAGE="$d/sml.bin" \
+              MAIN_CAPSULE="$MAIN" \
+              RECOVERY_CAPSULE="$REC"
+          done
         done
-        [ -n "$base" ] || { echo "::error::无可用 sy108-oem 输入"; exit 1; }
-        echo "base=$base"
 
-        make -C uboot-src offline LABEL=base \
-          SPL_IMAGE="$PWD/sy108-oem/$base/splloader.bin" \
-          SML_IMAGE="$PWD/sy108-oem/$base/sml.bin" \
-          MAIN_CAPSULE="$PWD/firmware/main-boot.bin" \
-          RECOVERY_CAPSULE="$PWD/firmware/recovery-boot.bin"
-
-    - name: 封装各机型 uboot + 校验
+    - name: 分析两份产物并生成对照报告
       run: |
-        set +e
+        set -e
         mkdir -p verify-out
-        MODELS="p50pro m50p m50rs"
+        M="${{ inputs.model }}"
+        if [ "$M" = all ]; then MODELS="m50rs m50p p50pro"; else MODELS="$M"; fi
         : > uboot-rows.md
-        ok=0
         for m in $MODELS; do
-          d="sy108-oem/$m"
-          [ -f "$d/splloader.bin" ] && [ -f "$d/sml.bin" ] || continue
-          name="uboot-$m.bin"
-          rm -rf "out-$m"; mkdir -p "out-$m"
-          if ! docker run --rm --platform linux/amd64 --network none \
-              --user "$(id -u):$(id -g)" \
-              -v "$PWD/$d:/inputs:ro" \
-              -v "$PWD/uboot-src/build/base:/base:ro" \
-              -v "$PWD/out-$m:/out" \
-              -v "$PWD/scripts/sy108:/scripts:ro" \
-              --entrypoint /bin/sh "$UBOOT_IMAGE" \
-              /scripts/verify-envelope.sh /base/uboot/u-boot-dtb.bin \
-                /inputs/sml.bin /inputs/splloader.bin "/out/$name"; then
-            echo "::warning::$m 封装/校验失败"
-            continue
-          fi
-          mv "out-$m/$name" "verify-out/$name"
-          echo "| \`$m\` | \`$name\` | \`$(sha256sum "verify-out/$name" | cut -d' ' -f1)\` | $(stat -c%s "verify-out/$name") |" >> uboot-rows.md
-          ok=1
+          for variant in original noboot; do
+            case "$variant" in
+              original) LABEL="orig-$m";   NAME="uboot-$m-original.bin" ;;
+              noboot)   LABEL="noboot-$m"; NAME="uboot-$m-noboot.bin" ;;
+            esac
+            src="uboot-src/build/$LABEL/uboot.bin"
+            [ "$variant" = noboot ] && src="uboot-noboot/build/$LABEL/uboot.bin"
+            [ -s "$src" ] || { echo "::error::$variant $m 未产出 uboot.bin"; exit 1; }
+            cp "$src" "verify-out/$NAME"
+            python3 - "$m" "$variant" "$src" "$NAME" >> uboot-rows.md <<'PY'
+        import sys, hashlib
+        m, variant, p, name = sys.argv[1:5]
+        d = open(p, 'rb').read()
+        n = len(d)
+        while n > 0 and d[n-1] == 0xFF:
+            n -= 1
+        ff = len(d) - n
+        bodyhash = d[8:40].hex()
+        print(f'| `{m}` | `{variant}` | `{n}` | `{ff}` | `{len(d)}` | `{bodyhash[:16]}…` | `{name}` |')
+        if n != 567428:
+            print(f'::warning::{variant} {m} 有效长度 {n} != 567428，需复核')
+        PY
+          done
         done
-        [ "$ok" = 1 ] || { echo "::error::没有任何 uboot 封装成功"; exit 1; }
-        cat uboot-rows.md
-
-    - name: 汇总并上传
-      run: |
         {
-          echo "## uboot 验证版（已关闭 CONFIG_SY108_NATIVE_BOOT）"
+          echo "## uboot 双份对照（original vs 关闭原生启动）"
           echo ""
-          echo "> 与刷入后「响一声没动静」的版本的唯一区别：关闭了 init_sequence 里的 sy108_boot_early()（硬读 0x82000000）。"
-          echo "> 请重点验证：刷入 uboot-m50rs.bin + recovery 后能否正常进 recovery、USB 出网卡+串口。"
+          echo "> 唯一实质差异：code 区 23 字节 \`sy108_boot_early\` / 原生启动。两版其余（SML donor、签名载荷、证书载荷hash）完全一致。"
+          echo "> 有效载荷应为 **567428**，总 1310720 (FF 743292)——与已验证能用的那份等长；大小不是问题。"
+          echo "> **请分别刷 \`uboot-<机型>-original.bin\` 和 \`uboot-<机型>-noboot.bin\`**：哪个能进 recovery / USB 出网卡+串口，就锁定根因。"
+          echo "> 刷机务必保留 \`ubootbak\`，起不来可救回。"
           echo ""
-          echo "| 机型 | 文件 | sha256 | 字节 |"
-          echo "|---|---|---|---|"
+          echo "SOURCE_COMMIT: $SOURCE_COMMIT"
+          echo ""
+          echo "| 机型 | 版本 | 有效载荷 | 尾部FF | 总字节 | body hash(前16) | 文件 |"
+          echo "|---|---|---|---|---|---|---|"
           cat uboot-rows.md
         } > verify-release.md
         cat verify-release.md
 
-    - name: Upload uboot 验证版
+    - name: Upload
       uses: actions/upload-artifact@main
       with:
-        name: uboot-verify-noboot
+        name: uboot-verify-dual
         path: verify-out/*
         if-no-files-found: error
 
@@ -218,8 +169,8 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        name: uboot 验证版（关闭原生启动）
-        tag: uboot-verify-${{ github.run_number }}
+        name: uboot 双份对照（原样 vs 关原生启动）
+        tag: uboot-verify-dual-${{ github.run_number }}
         bodyFile: verify-release.md
         artifacts: verify-out/*
         artifactErrorsFailBuild: false
