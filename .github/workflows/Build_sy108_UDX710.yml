@@ -116,7 +116,6 @@ jobs:
         fi
         echo "status=success" >> "$GITHUB_OUTPUT"
 
-        echo "===== main 产物 ====="
         ls -lh bin/targets/sprd/udx710/ | grep -E 'sysupgrade|kernel.bin|squashfs-rootfs' || true
         SYS=$(ls bin/targets/sprd/udx710/*squashfs-sysupgrade.bin 2>/dev/null | head -1)
         KERN=$(ls bin/targets/sprd/udx710/*sy108-kernel.bin 2>/dev/null | head -1)
@@ -145,20 +144,13 @@ jobs:
           make -j1 V=s
         fi
 
-        echo "===== recovery 打包 ====="
         KDIR=$(ls -d build_dir/target-*/linux-sprd_udx710/linux-* 2>/dev/null | head -1)
         [ -d "$KDIR" ] || { echo "::error::未找到内核源码目录 $KDIR"; exit 1; }
         RD=$(ls bin/targets/sprd/udx710/*rootfs.cpio.gz 2>/dev/null | head -1)
         [ -n "$RD" ] || { echo "::error::rootfs.cpio.gz 缺失"; exit 1; }
-        python3 staging_dir/host/share/sy108-image/tools/image/capsule.py \
-          --image  "$KDIR/arch/arm64/boot/Image" \
-          --dtb    "$KDIR/arch/arm64/boot/dts/sprd/udx710-sy108-recovery.dtb" \
-          --ramdisk "$RD" \
-          --target recovery \
-          --output "$FIRMWARE_DIR/recovery.bin"
+        python3 staging_dir/host/share/sy108-image/tools/image/capsule.py  --image  "$KDIR/arch/arm64/boot/Image"  --dtb    "$KDIR/arch/arm64/boot/dts/sprd/udx710-sy108-recovery.dtb"  --ramdisk "$RD"  --target recovery  --output "$FIRMWARE_DIR/recovery.bin"
         echo "status=success" >> "$GITHUB_OUTPUT"
 
-        echo "===== 产物清单 ====="
         ls -lh "$FIRMWARE_DIR"
 
     - name: Upload main firmware
@@ -213,9 +205,7 @@ jobs:
         echo "" >> release.txt
         echo "- 源码: $REPO_URL" >> release.txt
         echo "- 分支: $REPO_BRANCH ($IMM_COMMIT)" >> release.txt
-        KVER=$(grep -hE '^(kernel|kmod-usb-core) ' "$FIRMWARE_DIR"/*.manifest 2>/dev/null \
-          | awk -F' - ' '{print $2}' \
-          | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?([-~]?rc[0-9]+)?' | head -1)
+        KVER=$(grep -hE '^(kernel|kmod-usb-core) ' "$FIRMWARE_DIR"/*.manifest 2>/dev/null  | awk -F' - ' '{print $2}'  | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?([-~]?rc[0-9]+)?' | head -1)
         echo "- 内核版本: ${KVER:-未知}" >> release.txt
         echo "- 管理地址: 192.168.66.1" >> release.txt
         echo "- 登录账号: root" >> release.txt
@@ -227,10 +217,7 @@ jobs:
         echo "" >> release.txt
         for m in "$FIRMWARE_DIR"/*.manifest; do
           [ -f "$m" ] || continue
-          LIST=$(awk '{print $1}' "$m" \
-            | sed -E 's/:.*$//; s/-[0-9][^-]*$//' \
-            | grep -E '^(luci-app|udx)-' \
-            | sort -u || true)
+          LIST=$(awk '{print $1}' "$m"  | sed -E 's/:.*$//; s/-[0-9][^-]*$//'  | grep -E '^(luci-app|udx)-'  | sort -u || true)
           [ -n "$LIST" ] && printf '%s\n' "$LIST" | sed 's/^/- /' >> release.txt
         done
         echo "" >> release.txt
@@ -238,27 +225,14 @@ jobs:
         rm -f "$FIRMWARE_DIR"/*.manifest "$FIRMWARE_DIR"/*.json
 
         ls -l firmware
-        cat release.txt
 
     - name: Free disk for uboot
-      id: disk
       if: always() && !cancelled()
       run: |
-        du -sh "$GITHUB_WORKSPACE/openwrt" 2>/dev/null || true
-        rm -rf "$GITHUB_WORKSPACE/openwrt/build_dir" \
-               "$GITHUB_WORKSPACE/openwrt/staging_dir" \
-               "$GITHUB_WORKSPACE/openwrt/tmp"
-        AVAIL_MB=$(df -Pm / | awk 'NR==2{print $4}')
-        echo "可用空间 ${AVAIL_MB} MiB"
-        if [ "${AVAIL_MB:-0}" -lt 15360 ]; then
-          echo "::warning::可用空间不足 15 GiB，跳过 U-Boot"
-          echo "skip=1" >> "$GITHUB_OUTPUT"
-        else
-          echo "skip=0" >> "$GITHUB_OUTPUT"
-        fi
+        rm -rf "$GITHUB_WORKSPACE/openwrt/build_dir" "$GITHUB_WORKSPACE/openwrt/staging_dir" "$GITHUB_WORKSPACE/openwrt/tmp"
 
     - name: Build uboot
-      if: always() && !cancelled() && steps.disk.outputs.skip != '1'
+      if: always() && !cancelled()
       continue-on-error: true
       env:
         UBOOT_REPO: https://github.com/jason-liu-4980/sy108-uboot-spl
@@ -280,11 +254,7 @@ jobs:
         done
         git clone --depth 1 "$UBOOT_REPO" uboot-src || exit 0
         git -C uboot-src fetch --depth 1 origin oem:oem || exit 0
-        make -C uboot-src offline LABEL=base \
-          SPL_IMAGE="$PWD/sy108-oem/$base/splloader.bin" \
-          SML_IMAGE="$PWD/sy108-oem/$base/sml.bin" \
-          MAIN_CAPSULE="$PWD/firmware/main-boot.bin" \
-          RECOVERY_CAPSULE="$PWD/firmware/recovery.bin" || exit 0
+        make -C uboot-src offline LABEL=base  SPL_IMAGE="$PWD/sy108-oem/$base/splloader.bin"  SML_IMAGE="$PWD/sy108-oem/$base/sml.bin"  MAIN_CAPSULE="$PWD/firmware/main-boot.bin"  RECOVERY_CAPSULE="$PWD/firmware/recovery.bin" || exit 0
 
         : > uboot-rows.md
         ok=0
@@ -293,15 +263,7 @@ jobs:
           [ -f "$d/splloader.bin" ] && [ -f "$d/sml.bin" ] || continue
           name="uboot-$m.bin"
           rm -rf "out-$m"; mkdir -p "out-$m"
-          if docker run --rm --platform linux/amd64 --network none \
-              --user "$(id -u):$(id -g)" \
-              -v "$PWD/$d:/inputs:ro" \
-              -v "$PWD/uboot-src/build/base:/base:ro" \
-              -v "$PWD/out-$m:/out" \
-              -v "$PWD/scripts/sy108:/scripts:ro" \
-              --entrypoint /bin/sh "$UBOOT_IMAGE" \
-              /scripts/verify-envelope.sh /base/uboot/u-boot-dtb.bin \
-                /inputs/sml.bin /inputs/splloader.bin "/out/$name"; then
+          if docker run --rm --platform linux/amd64 --network none  --user "$(id -u):$(id -g)"  -v "$PWD/$d:/inputs:ro"  -v "$PWD/uboot-src/build/base:/base:ro"  -v "$PWD/out-$m:/out"  -v "$PWD/scripts/sy108:/scripts:ro"  --entrypoint /bin/sh "$UBOOT_IMAGE"  /scripts/verify-envelope.sh /base/uboot/u-boot-dtb.bin  /inputs/sml.bin /inputs/splloader.bin "/out/$name"; then
             mv "out-$m/$name" "firmware/$name"
             python3 -c 'import sys;p=sys.argv[1];raw=open(p,"rb").read();n0=len(raw);t=n0-len(raw.rstrip(b"\xff"));v=n0-t;a=min(n0,(v+4095)//4096*4096);open(p,"wb").write(raw[:a]) if t>4096 else None;print("[trim] %s: %dB -> %dB | required=%dB | tailFF=%dB"%(p,n0,a,v,t))' "firmware/$name"
             echo "| \`$m\` | \`$name\` | 实验 | \`$(sha256sum "firmware/$name" | cut -d' ' -f1)\` |" >> uboot-rows.md
@@ -315,8 +277,25 @@ jobs:
             cat uboot-rows.md; echo ""; echo "</details>"
           } >> release.txt
         fi
-        cat uboot-rows.md 2>/dev/null || true
         exit 0
+
+    - name: Upload uboot artifacts
+      uses: actions/upload-artifact@main
+      if: always() && !cancelled() && hashFiles('firmware/uboot-*.bin') != ''
+      with:
+        name: SY108_uboot_${{ env.IMM_COMMIT }}
+        path: ${{ env.FIRMWARE_DIR }}/uboot-*.bin
+
+    - name: Upload full firmware bundle
+      uses: actions/upload-artifact@main
+      if: always() && !cancelled()
+      with:
+        name: SY108_all_${{ env.IMM_COMMIT }}
+        path: |
+          ${{ env.FIRMWARE_DIR }}/sysupgrade.bin
+          ${{ env.FIRMWARE_DIR }}/main-boot.bin
+          ${{ env.FIRMWARE_DIR }}/recovery.bin
+          ${{ env.FIRMWARE_DIR }}/uboot-*.bin
 
     - name: Trim release files
       if: always() && !cancelled()
@@ -324,7 +303,7 @@ jobs:
         [ -d firmware ] || exit 0
         cd firmware
         rm -f main-boot.bin sha256sums.txt
-        echo "--- 最终发布文件"; ls -l
+        ls -l
 
     - name: Upload to release
       if: always() && !cancelled() && env.UPLOAD_RELEASE == 'true' && hashFiles('firmware/*.bin') != ''
@@ -335,7 +314,9 @@ jobs:
         name: ${{ steps.tag.outputs.release_name }}
         tag: ${{ steps.tag.outputs.release_tag }}
         bodyFile: release.txt
-        artifacts: firmware/*
+        artifacts: |
+          firmware/*
+          scripts/spd_dump.zip
         artifactErrorsFailBuild: false
         allowUpdates: true
         makeLatest: true
@@ -358,12 +339,8 @@ jobs:
             | select((.created_at | fromdateiso8601) < ($cutoff | tonumber))
             | {id, created_at} ]
           | sort_by(.created_at) | .[:-($keep)] | .[].id ' 2>/dev/null || true)
-        if [ -z "$DEL_IDS" ]; then
-          echo "No old runs to delete."
-        else
+        if [ -n "$DEL_IDS" ]; then
           echo "$DEL_IDS" | while read -r run_id; do
-            echo "Deleting run $run_id"
-            curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$run_id"
+            curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/actions/runs/$run_id"
           done
         fi
