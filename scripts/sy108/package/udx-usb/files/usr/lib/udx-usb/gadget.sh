@@ -237,6 +237,7 @@ g_console_getty() {
 
 g_console_reason() {
 	local hash
+	[ ! -e /etc/udx-recovery-root ] || { echo recovery-passwordless; return 0; }
 	hash=$(awk -F: '$1 == "root" {print $2; exit}' "$UDX_SHADOW" 2>/dev/null)
 	case "$hash" in ''|'!'*|'*'*) echo password-required; return 1;; esac
 	g_console_getty >/dev/null && [ -x /bin/login ] || { echo login-tools-missing; return 1; }

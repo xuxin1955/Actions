@@ -32,6 +32,7 @@ endef
 define Package/$(PKG_NAME)-adbd
 $(call Package/$(PKG_NAME)/default)
 	TITLE+= - adbd
+	DEPENDS:=+zlib +libopenssl +libpthread @!SY108_RECOVERY
 endef
 
 define Build/Compile

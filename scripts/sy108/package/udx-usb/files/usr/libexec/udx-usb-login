@@ -1,4 +1,5 @@
 #!/bin/sh
+[ ! -e /etc/udx-recovery-root ] || exec /bin/sh -l
 . /usr/lib/udx-usb/gadget.sh
 reason=$(g_console_reason) || { g_error "console disabled: $reason"; exit 1; }
 exec /bin/login root
