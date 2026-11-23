@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       main_artifact_run:
-        description: '取 capsule 的来源 run_id（留空=自动用最近一次成功的主 workflow；需该 run 产出 SY108_main_*/SY108_recovery_* artifact）'
+        description: '后备：仓库未放 capsule 时，取 main boot.bin 的来源 run_id（留空=最近成功的主 workflow）'
         required: false
         default: ''
         type: string
@@ -37,51 +37,69 @@ jobs:
     - name: Checkout（取 sy108-oem/ 与 scripts/sy108/）
       uses: actions/checkout@main
 
-    - name: 获取 capsule（main-boot.bin / recovery.bin）
+    - name: 获取 capsule（main-boot / recovery-boot）
       id: capsule
       run: |
         set +e
         mkdir -p firmware
 
-        echo "::group::从主 workflow 的 artifact 获取 boot.bin（合法 capsule）"
-        RUN_ID="${{ inputs.main_artifact_run }}"
-        if [ -z "$RUN_ID" ]; then
-          RUN_ID=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/Build_sy108_UDX710.yml/runs?status=success&per_page=10" \
-            | jq -r '.workflow_runs[].id' | head -1)
-        fi
-        if [ -n "$RUN_ID" ]; then
-          echo "使用 run_id=$RUN_ID"
-          for kind in main recovery; do
+        # 方案1（推荐）：仓库里已放好两个 capsule —— 完全离线，不依赖任何 artifact/Release。
+        #   capsules/immortalwrt-sprd-udx710-sy108-kernel.bin  → main capsule (target=2)
+        #   capsules/recovery-boot.bin                         → recovery capsule (target=1)
+        # 也兼容直接放在仓库根目录，或 sy108-oem/ 下。
+        for d in capsules . sy108-oem; do
+          [ -s "$d/immortalwrt-sprd-udx710-sy108-kernel.bin" ] && cp -f "$d/immortalwrt-sprd-udx710-sy108-kernel.bin" firmware/main-boot.bin
+          [ -s "$d/recovery-boot.bin" ] && cp -f "$d/recovery-boot.bin" firmware/recovery-boot.bin
+        done
+
+        # 方案2：仓库没有时，回退到主 workflow 的 artifact。
+        if [ ! -s firmware/main-boot.bin ]; then
+          echo "::group::仓库无 capsule，回退到主 workflow artifact"
+          RUN_ID="${{ inputs.main_artifact_run }}"
+          if [ -z "$RUN_ID" ]; then
+            RUN_ID=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/Build_sy108_UDX710.yml/runs?status=success&per_page=10" \
+              | jq -r '.workflow_runs[].id' | head -1)
+          fi
+          if [ -n "$RUN_ID" ]; then
             AID=$(curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
               "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/$RUN_ID/artifacts?per_page=100" \
-              | jq -r --arg k "$kind" '.artifacts[] | select(.name | startswith("SY108_\($k)_")) | .id' | head -1)
+              | jq -r '.artifacts[] | select(.name | startswith("SY108_main_")) | .id' | head -1)
             if [ -n "$AID" ]; then
               curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" \
                 "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/$AID/zip" \
-                -o "/tmp/${kind}.zip" && mkdir -p "/tmp/$kind" && unzip -q -o "/tmp/${kind}.zip" -d "/tmp/$kind"
-              BIN=$(find "/tmp/$kind" -type f -name 'boot.bin' | head -1)
-              [ -n "$BIN" ] && cp -f "$BIN" "firmware/${kind}-boot.bin"
+                -o "/tmp/main.zip" && mkdir -p "/tmp/main" && unzip -q -o "/tmp/main.zip" -d "/tmp/main"
+              BIN=$(find "/tmp/main" -type f -name 'boot.bin' | head -1)
+              [ -n "$BIN" ] && cp -f "$BIN" "firmware/main-boot.bin"
             fi
-          done
+          fi
+          echo "::endgroup::"
         fi
-        echo "::endgroup::"
+        # recovery 兜底：Release 的 recovery.bin 已验证是合法 recovery capsule（target=1）
+        if [ ! -s firmware/recovery-boot.bin ]; then
+          echo "::group::recovery capsule 回退到 Release recovery.bin"
+          RURL=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" \
+            | jq -r '.assets[] | select(.name=="recovery.bin") | .browser_download_url' | head -1)
+          [ -n "$RURL" ] && curl -fsSL "$RURL" -o firmware/recovery-boot.bin
+          echo "::endgroup::"
+        fi
 
         ls -l firmware/
-        # capsule 会被 offline.py 严格校验（DHTB + ANDROID! boot + udx,boot-policy 字段），
-        # Release 里的整包 recovery.bin 不是这种 capsule，不能拿来顶替。
         if [ ! -s firmware/main-boot.bin ] || [ ! -s firmware/recovery-boot.bin ]; then
-          echo "::error::未能从 artifact 获取合法 capsule（images/main/boot.bin 与 images/recovery/boot.bin）。"
-          echo "::error::请先让 Build_sy108_UDX710 成功跑一次产出 artifact，或把两个 boot.bin 放到仓库 firmware/ 下。"
+          echo "::error::缺少 capsule。请把两个 boot.bin 放进仓库 capsules/ 目录。"
           exit 1
         fi
-        # 提前做一次 DHTB + ANDROID! capsule 头校验，避免编译到最后才失败
+        # 严格校验：main=target2、recovery=target1，避免编到最后才被 offline.py 拒。
         python3 - <<'PY'
-        for c in ('main-boot', 'recovery-boot'):
-            d = open(f'firmware/{c}.bin', 'rb').read(528)
+        import struct
+        for c, want in (('main-boot',2), ('recovery-boot',1)):
+            d = open(f'firmware/{c}.bin','rb').read(2752)
             if d[:8] != b'DHTB\x01\x00\x00\x00' or d[512:520] != b'ANDROID!':
                 raise SystemExit(f'::error::{c} 不是合法 capsule（DHTB+ANDROID! 头不符）')
-            print(f'{c}: capsule 头校验通过')
+            t = struct.unpack_from('<I', d, 2560+128+8)[0]
+            if t != want:
+                raise SystemExit(f'::error::{c} 的 boot-target={t}，期望 {want}')
+            print(f'{c}: capsule 校验通过（target={t}）')
         PY
         echo "ok=1" >> "$GITHUB_OUTPUT"
 
