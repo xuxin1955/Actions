@@ -129,6 +129,11 @@ jobs:
         MF=$(ls bin/targets/sprd/udx710/*.manifest 2>/dev/null | head -1)
         [ -n "$MF" ] && cp -f "$MF" "$FIRMWARE_DIR/main.manifest" || true
 
+        mkdir -p "$GITHUB_WORKSPACE/targets-full"
+        cp -a bin/targets/sprd/udx710/. "$GITHUB_WORKSPACE/targets-full/"
+        rm -rf "$GITHUB_WORKSPACE/targets-full/packages"
+        ls -lh "$GITHUB_WORKSPACE/targets-full/"
+
     - name: Compile recovery firmware
       id: compile_recovery
       working-directory: ./openwrt
@@ -160,9 +165,7 @@ jobs:
       if: always() && steps.compile_main.outputs.status == 'success' && !cancelled()
       with:
         name: SY108_main_${{ env.IMM_COMMIT }}
-        path: |
-          ${{ env.FIRMWARE_DIR }}/sysupgrade.bin
-          ${{ env.FIRMWARE_DIR }}/main-boot.bin
+        path: ${{ github.workspace }}/targets-full/*
 
     - name: Upload recovery firmware
       uses: actions/upload-artifact@main
@@ -287,17 +290,6 @@ jobs:
       with:
         name: SY108_uboot_${{ env.IMM_COMMIT }}
         path: ${{ env.FIRMWARE_DIR }}/uboot-*.bin
-
-    - name: Upload full firmware bundle
-      uses: actions/upload-artifact@main
-      if: always() && !cancelled()
-      with:
-        name: SY108_all_${{ env.IMM_COMMIT }}
-        path: |
-          ${{ env.FIRMWARE_DIR }}/sysupgrade.bin
-          ${{ env.FIRMWARE_DIR }}/main-boot.bin
-          ${{ env.FIRMWARE_DIR }}/recovery.bin
-          ${{ env.FIRMWARE_DIR }}/uboot-*.bin
 
     - name: Trim release files
       if: always() && !cancelled()
