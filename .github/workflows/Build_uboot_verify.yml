@@ -124,6 +124,24 @@ jobs:
           echo "::error::NATIVE_BOOT 未成功关闭"; exit 1
         fi
 
+        # 加速 docker build：j佬 Dockerfile 用 archive.ubuntu.com，某些 runner 很慢。
+        # 测几个镜像挑最快的写进 Dockerfile（容器是 focal/20.04）。
+        echo "::group::测速选择最快的 apt 源"
+        DF=uboot-src/docker/Dockerfile
+        BEST=""; BEST_T=999999
+        for host in archive.ubuntu.com us.archive.ubuntu.com mirrors.edge.kernel.org mirrors.tuna.tsinghua.edu.cn mirrors.cloud.tencent.com; do
+          t=$(curl -s -o /dev/null --max-time 8 -w '%{time_total}' "http://$host/ubuntu/dists/focal/InRelease" 2>/dev/null || echo 999999)
+          echo "  $host : ${t}s"
+          better=$(awk -v a="$t" -v b="$BEST_T" 'BEGIN{print (a+0 < b+0)?1:0}')
+          [ "$better" = "1" ] && { BEST_T="$t"; BEST="$host"; }
+        done
+        echo "选用 apt 源: $BEST (${BEST_T}s)"
+        if [ -n "$BEST" ] && [ "$BEST" != "archive.ubuntu.com" ]; then
+          sed -i "s|http://archive.ubuntu.com/ubuntu|http://$BEST/ubuntu|g; s|http://security.ubuntu.com/ubuntu|http://$BEST/ubuntu|g" "$DF"
+          echo "已把 Dockerfile 的 apt 源替换为 $BEST"
+        fi
+        echo "::endgroup::"
+
     - name: 编译 uboot（make offline）
       run: |
         set -e
