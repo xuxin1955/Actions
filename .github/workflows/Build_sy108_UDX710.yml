@@ -48,20 +48,22 @@ jobs:
         docker-images: false
         tools-cache: false
 
-    - name: Initialization environment
+    - name: apt update
+      id: init
       timeout-minutes: 12
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
         echo 'Acquire::ForceIPv4 "true";' | sudo tee /etc/apt/apt.conf.d/99force-ipv4
-        printf 'Acquire::http::Timeout "60";\nAcquire::https::Timeout "60";\nAcquire::Retries "3";\n' | sudo tee /etc/apt/apt.conf.d/99timeout
-        PKGS=$(curl -fsSL --retry 3 --max-time 60 https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt | tr ' ' '\n' | grep -vE '^(gcc-multilib|g\+\+-multilib|libc6-dev-i386)$' | tr '\n' ' ')
-        [ -n "$PKGS" ] || { echo "::error::依赖列表拉取失败"; exit 1; }
-        sudo -E apt-get -y install --no-install-recommends $PKGS || {
+        sudo find /etc/apt -maxdepth 2 -type f \( -name 'apt-mirrors.txt' -o -name '*.list' -o -name '*.sources' -o -name 'sources.list' \) -exec sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' {} + || true
+        printf 'Acquire::http::Timeout "15";\nAcquire::https::Timeout "15";\nAcquire::Retries "1";\n' | sudo tee /etc/apt/apt.conf.d/99timeout
+        DEPS=$(curl -fsSL --retry 2 --max-time 30 https://raw.githubusercontent.com/xuxin1955/depend_ubuntu2204_openwrt/refs/heads/main/depend_ubuntu2204_openwrt)
+        [ -n "$DEPS" ] || { echo "::error::依赖列表拉取失败"; exit 1; }
+        sudo -E apt-get -y install --no-install-recommends $DEPS || {
           sudo -E apt-get -y update
-          sudo -E apt-get -y install --no-install-recommends $PKGS
+          sudo -E apt-get -y install --no-install-recommends $DEPS
         }
-        sudo timedatectl set-timezone "${TZ}"
+        echo "status=success" >> "$GITHUB_OUTPUT"
 
     - name: Clone ImmortalWrt source
       run: |
