@@ -1,0 +1,10 @@
+--- a/package/libs/libnftnl/Makefile
++++ b/package/libs/libnftnl/Makefile
+@@ -44,6 +44,7 @@
+ endef
+ 
+ TARGET_CFLAGS += $(FPIC)
++TARGET_CFLAGS += -Wno-error=incompatible-pointer-types
+ 
+ CONFIGURE_ARGS += \
+ 	--enable-static \
