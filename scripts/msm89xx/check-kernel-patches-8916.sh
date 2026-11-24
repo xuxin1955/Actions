@@ -90,6 +90,37 @@ TC=$(ls "$SCRIPTS/toolchain/kernel-headers/patches"/*.patch 2>/dev/null | sort)
 echo "== toolchain/kernel-headers: $(echo "$TC" | grep -c .) patches"
 apply_group "$T2" $TC
 
+MAC80211_MK="$SCRIPTS/package/kernel/mac80211/Makefile"
+BP_VER=$(sed -n 's/^PKG_SOURCE_VERSION *:= *//p' "$MAC80211_MK" 2>/dev/null | head -1)
+BP_HASH=$(sed -n 's/^PKG_HASH *:= *//p' "$MAC80211_MK" 2>/dev/null | head -1)
+ATH_DIR="$SCRIPTS/package/kernel/mac80211/patches/ath"
+ATH=$(ls "$ATH_DIR"/*.patch 2>/dev/null | sort)
+case "$BP_VER" in ''|*[!0-9.]*) echo "::error::cannot parse backports version from mac80211 Makefile" >&2; exit 2;; esac
+BP_TARBALL="$OW/dl/backports-$BP_VER.tar.zst"
+if [ ! -f "$BP_TARBALL" ]; then
+	echo "   dl/ cache miss for backports-$BP_VER, downloading..."
+	mkdir -p "$OW/dl"
+	BP_URL="https://github.com/openwrt/backports/releases/download/backports-v$BP_VER/backports-$BP_VER.tar.zst"
+	curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 560 -o "$BP_TARBALL" "$BP_URL" || {
+		echo "::error::backports tarball download failed" >&2; exit 2;
+	}
+fi
+if [ -n "$BP_HASH" ]; then
+	bp_actual=$(sha256sum "$BP_TARBALL" | awk '{print $1}')
+	if [ "$bp_actual" != "$BP_HASH" ]; then
+		echo "::error::backports hash mismatch: Makefile=$BP_HASH actual=$bp_actual" >&2
+		exit 2
+	fi
+fi
+command -v zstd >/dev/null 2>&1 || tar --zstd --version >/dev/null 2>&1 || {
+	echo "::error::zstd required to extract backports tarball" >&2; exit 2;
+}
+mkdir -p "$WORK/t3"
+tar --zstd -xf "$BP_TARBALL" -C "$WORK/t3" || { echo "::error::backports extract failed" >&2; exit 2; }
+T3=$(find "$WORK/t3" -mindepth 1 -maxdepth 1 -type d | head -1)
+echo "== package/kernel/mac80211 (backports-$BP_VER): $(echo "$ATH" | grep -c .) ath patches"
+apply_group "$T3" $ATH
+
 echo "== OK=$ok FUZZ=$fuzz FAIL=$fail on linux-$KVER"
 if [ "$fail" -gt 0 ]; then
 	echo "::error::$fail kernel patch(es) failed on linux-$KVER, blocked" >&2

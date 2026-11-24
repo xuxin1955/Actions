@@ -1,6 +1,6 @@
 config gadget 'main'
 	option enabled '1'
-	option profile 'ncm'
+	option profile 'rndis-software'
 	option acm '0'
 	option adb '1'
 	option serial 'auto'
