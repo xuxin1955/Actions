@@ -1,6 +1,6 @@
 --- a/drivers/net/wireless/ath/wcn36xx/main.c
 +++ b/drivers/net/wireless/ath/wcn36xx/main.c
-@@ -573,6 +573,11 @@
+@@ -577,6 +577,11 @@ static int wcn36xx_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
  				key,
  				get_sta_index(vif, sta_priv));
  		} else {
@@ -12,7 +12,7 @@
  			wcn36xx_smd_set_bsskey(wcn,
  				vif_priv->encrypt_type,
  				vif_priv->bss_index,
-@@ -597,6 +602,9 @@
+@@ -601,6 +606,9 @@ static int wcn36xx_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
  		break;
  	case DISABLE_KEY:
  		if (!(IEEE80211_KEY_FLAG_PAIRWISE & key_conf->flags)) {
