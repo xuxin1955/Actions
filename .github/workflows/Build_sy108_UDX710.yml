@@ -277,7 +277,8 @@ jobs:
           if docker run --rm --platform linux/amd64 --network none  --user "$(id -u):$(id -g)"  -v "$PWD/$d:/inputs:ro"  -v "$PWD/uboot-src/build/base:/base:ro"  -v "$PWD/out-$m:/out"  -v "$PWD/scripts/sy108:/scripts:ro"  --entrypoint /bin/sh "$UBOOT_IMAGE"  /scripts/verify-envelope.sh /base/uboot/u-boot-dtb.bin  /inputs/sml.bin /inputs/splloader.bin "/out/$name"; then
             mv "out-$m/$name" "firmware/$name"
             python3 -c 'import sys;p=sys.argv[1];raw=open(p,"rb").read();n0=len(raw);t=n0-len(raw.rstrip(b"\xff"));v=n0-t;a=min(n0,(v+4095)//4096*4096);open(p,"wb").write(raw[:a]) if t>4096 else None;print("[trim] %s: %dB -> %dB | required=%dB | tailFF=%dB"%(p,n0,a,v,t))' "firmware/$name"
-            echo "| \`$m\` | \`$name\` | 实验 | \`$(sha256sum "firmware/$name" | cut -d' ' -f1)\` |" >> uboot-rows.md
+            if [ "$m" = m50rs ]; then st="验证成功"; else st="实验"; fi
+            echo "| \`$m\` | \`$name\` | $st | \`$(sha256sum "firmware/$name" | cut -d' ' -f1)\` |" >> uboot-rows.md
             ok=1
           fi
         done
