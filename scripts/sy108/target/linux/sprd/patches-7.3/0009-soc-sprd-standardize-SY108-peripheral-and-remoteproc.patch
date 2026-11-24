@@ -4129,7 +4129,7 @@ diff --git a/drivers/tty/serial/Kconfig b/drivers/tty/serial/Kconfig
 index 08af11827..3756f8f30 100644
 --- a/drivers/tty/serial/Kconfig
 +++ b/drivers/tty/serial/Kconfig
-@@ -1395,10 +1395,12 @@ config SERIAL_SPRD
+@@ -1396,10 +1396,12 @@ config SERIAL_SPRD
  
  config SERIAL_SPRD_EX
  	bool "Spreadtrum UDX710 SBUF-assisted UART extension"

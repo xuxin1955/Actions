@@ -1,6 +1,6 @@
 --- a/package/base-files/files/sbin/sysupgrade
 +++ b/package/base-files/files/sbin/sysupgrade
-@@ -259,6 +259,10 @@
+@@ -267,6 +267,10 @@
  include /lib/upgrade
  
  create_backup_archive() {
@@ -11,7 +11,7 @@
  	local conf_tar="$1"
  	local disabled
  	local err
-@@ -430,6 +434,9 @@
+@@ -438,6 +442,9 @@
  fi
  
  install_bin /sbin/upgraded

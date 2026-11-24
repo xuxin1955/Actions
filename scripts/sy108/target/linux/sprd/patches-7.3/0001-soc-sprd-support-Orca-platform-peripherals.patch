@@ -1197,32 +1197,10 @@ index 730d9a3a3..059fdd67a 100644
    reg:
      maxItems: 1
 diff --git a/drivers/dma/sprd-dma.c b/drivers/dma/sprd-dma.c
-index 19b32a23c..5eb8b1a37 100644
+index 60b3067..3bbd723 100644
 --- a/drivers/dma/sprd-dma.c
 +++ b/drivers/dma/sprd-dma.c
-@@ -270,8 +270,9 @@ static int sprd_dma_enable(struct sprd_dma_dev *sdev)
- 	 * The ashb_clk is optional and only for AGCP DMA controller, so we
- 	 * need add one condition to check if the ashb_clk need enable.
- 	 */
--	if (!IS_ERR(sdev->ashb_clk))
--		ret = clk_prepare_enable(sdev->ashb_clk);
-+	ret = clk_prepare_enable(sdev->ashb_clk);
-+	if (ret)
-+		clk_disable_unprepare(sdev->clk);
- 
- 	return ret;
- }
-@@ -283,8 +284,7 @@ static void sprd_dma_disable(struct sprd_dma_dev *sdev)
- 	/*
- 	 * Need to check if we need disable the optional ashb_clk for AGCP DMA.
- 	 */
--	if (!IS_ERR(sdev->ashb_clk))
--		clk_disable_unprepare(sdev->ashb_clk);
-+	clk_disable_unprepare(sdev->ashb_clk);
- }
- 
- static void sprd_dma_set_uid(struct sprd_dma_chn *schan)
-@@ -1103,6 +1103,10 @@ static bool sprd_dma_filter_fn(struct dma_chan *chan, void *param)
+@@ -1083,6 +1083,10 @@ static bool sprd_dma_filter_fn(struct dma_chan *chan, void *param)
  	struct sprd_dma_chn *schan = to_sprd_dma_chan(chan);
  	u32 slave_id = *(u32 *)param;
  
@@ -1233,7 +1211,7 @@ index 19b32a23c..5eb8b1a37 100644
  	schan->dev_id = slave_id;
  	return true;
  }
-@@ -1112,6 +1116,7 @@ static int sprd_dma_probe(struct platform_device *pdev)
+@@ -1092,6 +1096,7 @@ static int sprd_dma_probe(struct platform_device *pdev)
  	struct device_node *np = pdev->dev.of_node;
  	struct sprd_dma_dev *sdev;
  	struct sprd_dma_chn *dma_chn;
@@ -1241,7 +1219,7 @@ index 19b32a23c..5eb8b1a37 100644
  	u32 chn_count;
  	int ret, i;
  
-@@ -1134,6 +1139,13 @@ static int sprd_dma_probe(struct platform_device *pdev)
+@@ -1114,6 +1119,13 @@ static int sprd_dma_probe(struct platform_device *pdev)
  		return ret;
  	}
  
@@ -1255,17 +1233,11 @@ index 19b32a23c..5eb8b1a37 100644
  	sdev = devm_kzalloc(&pdev->dev,
  			    struct_size(sdev, channels, chn_count),
  			    GFP_KERNEL);
-@@ -1147,9 +1159,18 @@ static int sprd_dma_probe(struct platform_device *pdev)
- 	}
+@@ -1132,6 +1144,15 @@ static int sprd_dma_probe(struct platform_device *pdev)
+ 		return dev_err_probe(&pdev->dev, -ENOENT,
+ 				     "get enable clock failed\n");
  
- 	/* ashb clock is optional for AGCP DMA */
--	sdev->ashb_clk = devm_clk_get(&pdev->dev, "ashb_eb");
-+	sdev->ashb_clk = devm_clk_get_optional(&pdev->dev, "ashb_eb");
- 	if (IS_ERR(sdev->ashb_clk))
--		dev_warn(&pdev->dev, "no optional ashb eb clock\n");
-+		return dev_err_probe(&pdev->dev, PTR_ERR(sdev->ashb_clk),
-+				     "cannot get optional ashb clock\n");
-+
++	/* Two 32-bit pending-enable registers cover request IDs 1..64. */
 +	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 +	if (!res || resource_size(res) < SPRD_DMA_GLB_REQ_UID_OFFSET + 64 * 4)
 +		return dev_err_probe(&pdev->dev, -EINVAL,
@@ -1273,10 +1245,11 @@ index 19b32a23c..5eb8b1a37 100644
 +	sdev->glb_base = devm_ioremap_resource(&pdev->dev, res);
 +	if (IS_ERR(sdev->glb_base))
 +		return PTR_ERR(sdev->glb_base);
- 
++
  	/*
  	 * We have three DMA controllers: AP DMA, AON DMA and AGCP DMA. For AGCP
-@@ -1158,7 +1179,12 @@ static int sprd_dma_probe(struct platform_device *pdev)
+ 	 * DMA controller, it can or do not request the irq, which will save
+@@ -1139,7 +1160,12 @@ static int sprd_dma_probe(struct platform_device *pdev)
  	 * does not request the irq. Thus the DMA interrupts property should
  	 * be optional.
  	 */
@@ -1290,7 +1263,7 @@ index 19b32a23c..5eb8b1a37 100644
  	if (sdev->irq > 0) {
  		ret = devm_request_irq(&pdev->dev, sdev->irq, dma_irq_handle,
  				       0, "sprd_dma", (void *)sdev);
-@@ -1170,10 +1196,6 @@ static int sprd_dma_probe(struct platform_device *pdev)
+@@ -1151,10 +1177,6 @@ static int sprd_dma_probe(struct platform_device *pdev)
  		dev_warn(&pdev->dev, "no interrupts for the dma controller\n");
  	}
  
@@ -1301,7 +1274,7 @@ index 19b32a23c..5eb8b1a37 100644
  	dma_cap_set(DMA_MEMCPY, sdev->dma_dev.cap_mask);
  	sdev->total_chns = chn_count;
  	INIT_LIST_HEAD(&sdev->dma_dev.channels);
-@@ -1249,14 +1271,19 @@ static void sprd_dma_remove(struct platform_device *pdev)
+@@ -1230,14 +1252,19 @@ static void sprd_dma_remove(struct platform_device *pdev)
  	if (sdev->irq > 0)
  		devm_free_irq(&pdev->dev, sdev->irq, sdev);
  
@@ -1323,7 +1296,7 @@ index 19b32a23c..5eb8b1a37 100644
  	sprd_dma_disable(sdev);
  
  	pm_runtime_put_noidle(&pdev->dev);
-@@ -1264,7 +1291,15 @@ static void sprd_dma_remove(struct platform_device *pdev)
+@@ -1245,7 +1272,15 @@ static void sprd_dma_remove(struct platform_device *pdev)
  }
  
  static const struct of_device_id sprd_dma_match[] = {
@@ -1340,7 +1313,7 @@ index 19b32a23c..5eb8b1a37 100644
  	{},
  };
  MODULE_DEVICE_TABLE(of, sprd_dma_match);
-@@ -1306,7 +1341,7 @@ static struct platform_driver sprd_dma_driver = {
+@@ -1287,7 +1322,7 @@ static struct platform_driver sprd_dma_driver = {
  };
  module_platform_driver(sprd_dma_driver);
  
@@ -4888,7 +4861,7 @@ index 16cf9d15f..c2af05879 100644
  	ret = of_property_count_strings(np, "pins");
  	if (ret < 0)
  		return ret;
-@@ -386,12 +416,19 @@ static int sprd_pmx_set_mux(struct pinctrl_dev *pctldev,
+@@ -389,12 +419,19 @@ static int sprd_pmx_set_mux(struct pinctrl_dev *pctldev,
  {
  	struct sprd_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
  	struct sprd_pinctrl_soc_info *info = pctl->info;
@@ -4911,7 +4884,7 @@ index 16cf9d15f..c2af05879 100644
  		return -EINVAL;
  
  	switch (func_selector) {
-@@ -434,6 +471,10 @@ static const struct pinmux_ops sprd_pmx_ops = {
+@@ -437,6 +474,10 @@ static const struct pinmux_ops sprd_pmx_ops = {
  	.set_mux = sprd_pmx_set_mux,
  };
  
@@ -4922,7 +4895,7 @@ index 16cf9d15f..c2af05879 100644
  static int sprd_pinconf_get(struct pinctrl_dev *pctldev, unsigned int pin_id,
  			    unsigned long *config)
  {
-@@ -462,9 +503,13 @@ static int sprd_pinconf_get(struct pinctrl_dev *pctldev, unsigned int pin_id,
+@@ -465,9 +506,13 @@ static int sprd_pinconf_get(struct pinctrl_dev *pctldev, unsigned int pin_id,
  			break;
  		case PIN_CONFIG_INPUT_ENABLE:
  			arg = (reg >> SLEEP_INPUT_SHIFT) & SLEEP_INPUT_MASK;
@@ -4936,7 +4909,7 @@ index 16cf9d15f..c2af05879 100644
  			break;
  		case PIN_CONFIG_BIAS_HIGH_IMPEDANCE:
  			if ((reg & SLEEP_OUTPUT) || (reg & SLEEP_INPUT))
-@@ -475,8 +520,16 @@ static int sprd_pinconf_get(struct pinctrl_dev *pctldev, unsigned int pin_id,
+@@ -478,8 +523,16 @@ static int sprd_pinconf_get(struct pinctrl_dev *pctldev, unsigned int pin_id,
  		case PIN_CONFIG_DRIVE_STRENGTH:
  			arg = (reg >> DRIVE_STRENGTH_SHIFT) &
  				DRIVE_STRENGTH_MASK;
@@ -4953,7 +4926,7 @@ index 16cf9d15f..c2af05879 100644
  			/* combine sleep pull down and pull down config */
  			arg = ((reg >> SLEEP_PULL_DOWN_SHIFT) &
  			       SLEEP_PULL_DOWN_MASK) << 16;
-@@ -484,21 +537,38 @@ static int sprd_pinconf_get(struct pinctrl_dev *pctldev, unsigned int pin_id,
+@@ -487,21 +540,38 @@ static int sprd_pinconf_get(struct pinctrl_dev *pctldev, unsigned int pin_id,
  			break;
  		case PIN_CONFIG_INPUT_SCHMITT_ENABLE:
  			arg = (reg >> INPUT_SCHMITT_SHIFT) & INPUT_SCHMITT_MASK;
@@ -4994,7 +4967,7 @@ index 16cf9d15f..c2af05879 100644
  			arg = 0;
  			break;
  		default:
-@@ -512,7 +582,7 @@ static int sprd_pinconf_get(struct pinctrl_dev *pctldev, unsigned int pin_id,
+@@ -515,7 +585,7 @@ static int sprd_pinconf_get(struct pinctrl_dev *pctldev, unsigned int pin_id,
  	return 0;
  }
  
@@ -5003,7 +4976,7 @@ index 16cf9d15f..c2af05879 100644
  {
  	unsigned int val = 0;
  
-@@ -565,7 +635,7 @@ static unsigned int sprd_pinconf_drive(unsigned int mA)
+@@ -568,7 +638,7 @@ static unsigned int sprd_pinconf_drive(unsigned int mA)
  		val |= BIT(22) | BIT(21) | BIT(20) | BIT(19);
  		break;
  	default:
@@ -5012,7 +4985,7 @@ index 16cf9d15f..c2af05879 100644
  	}
  
  	return val;
-@@ -593,7 +663,7 @@ static int sprd_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin_id,
+@@ -596,7 +666,7 @@ static int sprd_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin_id,
  	struct sprd_pin *pin = sprd_pinctrl_get_pin_by_id(pctl, pin_id);
  	bool is_sleep_config;
  	unsigned long reg;
@@ -5021,7 +4994,7 @@ index 16cf9d15f..c2af05879 100644
  
  	if (!pin)
  		return -EINVAL;
-@@ -626,10 +696,15 @@ static int sprd_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin_id,
+@@ -629,10 +699,15 @@ static int sprd_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin_id,
  				if (arg & CM4_SLEEP)
  					val |= CM4_SLEEP_MODE;
  
@@ -5037,7 +5010,7 @@ index 16cf9d15f..c2af05879 100644
  				if (is_sleep_config == true) {
  					if (arg > 0)
  						val |= SLEEP_INPUT;
-@@ -641,6 +716,9 @@ static int sprd_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin_id,
+@@ -644,6 +719,9 @@ static int sprd_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin_id,
  				}
  				break;
  			case PIN_CONFIG_OUTPUT_ENABLE:
@@ -5047,7 +5020,7 @@ index 16cf9d15f..c2af05879 100644
  				if (is_sleep_config == true) {
  					if (arg > 0)
  						val |= SLEEP_OUTPUT;
-@@ -652,16 +730,20 @@ static int sprd_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin_id,
+@@ -655,16 +733,20 @@ static int sprd_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin_id,
  				}
  				break;
  			case PIN_CONFIG_BIAS_HIGH_IMPEDANCE:
@@ -5071,7 +5044,7 @@ index 16cf9d15f..c2af05879 100644
  				mask = DRIVE_STRENGTH_MASK;
  				shift = DRIVE_STRENGTH_SHIFT;
  				break;
-@@ -692,9 +774,13 @@ static int sprd_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin_id,
+@@ -695,9 +777,13 @@ static int sprd_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin_id,
  					shift = SLEEP_PULL_UP_SHIFT;
  				} else {
  					if (arg == 20000)
@@ -5087,7 +5060,7 @@ index 16cf9d15f..c2af05879 100644
  
  					mask = PULL_UP_MASK;
  					shift = PULL_UP_SHIFT;
-@@ -706,8 +792,7 @@ static int sprd_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin_id,
+@@ -709,8 +795,7 @@ static int sprd_pinconf_set(struct pinctrl_dev *pctldev, unsigned int pin_id,
  					mask = SLEEP_PULL_DOWN | SLEEP_PULL_UP;
  				} else {
  					val = shift = 0;
@@ -5097,7 +5070,7 @@ index 16cf9d15f..c2af05879 100644
  				}
  				break;
  			case PIN_CONFIG_SLEEP_HARDWARE_STATE:
-@@ -749,6 +834,10 @@ static int sprd_pinconf_group_get(struct pinctrl_dev *pctldev,
+@@ -752,6 +837,10 @@ static int sprd_pinconf_group_get(struct pinctrl_dev *pctldev,
  		return -EINVAL;
  
  	grp = &info->groups[selector];
@@ -5108,7 +5081,7 @@ index 16cf9d15f..c2af05879 100644
  	pin_id = grp->pins[0];
  
  	return sprd_pinconf_get(pctldev, pin_id, config);
-@@ -768,6 +857,10 @@ static int sprd_pinconf_group_set(struct pinctrl_dev *pctldev,
+@@ -771,6 +860,10 @@ static int sprd_pinconf_group_set(struct pinctrl_dev *pctldev,
  		return -EINVAL;
  
  	grp = &info->groups[selector];
@@ -5119,7 +5092,7 @@ index 16cf9d15f..c2af05879 100644
  
  	for (i = 0; i < grp->npins; i++) {
  		unsigned int pin_id = grp->pins[i];
-@@ -876,19 +969,28 @@ static struct pinctrl_desc sprd_pinctrl_desc = {
+@@ -879,19 +972,28 @@ static struct pinctrl_desc sprd_pinctrl_desc = {
  	.owner = THIS_MODULE,
  };
  
@@ -5154,7 +5127,7 @@ index 16cf9d15f..c2af05879 100644
  	grp->npins = ret;
  	grp->pins = devm_kcalloc(sprd_pctl->dev,
  				 grp->npins, sizeof(unsigned int),
-@@ -898,8 +1000,9 @@ static int sprd_pinctrl_parse_groups(struct device_node *np,
+@@ -901,8 +1003,9 @@ static int sprd_pinctrl_parse_groups(struct device_node *np,
  
  	of_property_for_each_string(np, "pins", prop, pin_name) {
  		ret = sprd_pinctrl_get_id_by_name(sprd_pctl, pin_name);
@@ -5166,7 +5139,7 @@ index 16cf9d15f..c2af05879 100644
  	}
  
  	for (i = 0; i < grp->npins; i++) {
-@@ -911,15 +1014,35 @@ static int sprd_pinctrl_parse_groups(struct device_node *np,
+@@ -914,15 +1017,35 @@ static int sprd_pinctrl_parse_groups(struct device_node *np,
  	return 0;
  }
  
@@ -5205,7 +5178,7 @@ index 16cf9d15f..c2af05879 100644
  		if (cnt > 0)
  			group_cnt += cnt;
  	}
-@@ -927,6 +1050,30 @@ static unsigned int sprd_pinctrl_get_groups(struct device_node *np)
+@@ -930,6 +1053,30 @@ static unsigned int sprd_pinctrl_get_groups(struct device_node *np)
  	return group_cnt;
  }
  
@@ -5236,7 +5209,7 @@ index 16cf9d15f..c2af05879 100644
  static int sprd_pinctrl_parse_dt(struct sprd_pinctrl *sprd_pctl)
  {
  	struct sprd_pinctrl_soc_info *info = sprd_pctl->info;
-@@ -958,7 +1105,7 @@ static int sprd_pinctrl_parse_dt(struct sprd_pinctrl *sprd_pctl)
+@@ -961,7 +1108,7 @@ static int sprd_pinctrl_parse_dt(struct sprd_pinctrl *sprd_pctl)
  	temp = info->grp_names;
  	grp = info->groups;
  
@@ -5245,7 +5218,7 @@ index 16cf9d15f..c2af05879 100644
  		ret = sprd_pinctrl_parse_groups(child, sprd_pctl, grp);
  		if (ret)
  			return ret;
-@@ -966,8 +1113,9 @@ static int sprd_pinctrl_parse_dt(struct sprd_pinctrl *sprd_pctl)
+@@ -969,8 +1116,9 @@ static int sprd_pinctrl_parse_dt(struct sprd_pinctrl *sprd_pctl)
  		*temp++ = grp->name;
  		grp++;
  
@@ -5257,7 +5230,7 @@ index 16cf9d15f..c2af05879 100644
  				ret = sprd_pinctrl_parse_groups(sub_child,
  								sprd_pctl, grp);
  				if (ret)
-@@ -979,11 +1127,13 @@ static int sprd_pinctrl_parse_dt(struct sprd_pinctrl *sprd_pctl)
+@@ -982,11 +1130,13 @@ static int sprd_pinctrl_parse_dt(struct sprd_pinctrl *sprd_pctl)
  		}
  	}
  
@@ -5272,7 +5245,7 @@ index 16cf9d15f..c2af05879 100644
  				 int pins_cnt)
  {
  	struct sprd_pinctrl_soc_info *info = sprd_pctl->info;
-@@ -1013,13 +1163,13 @@ static int sprd_pinctrl_add_pins(struct sprd_pinctrl *sprd_pctl,
+@@ -1016,13 +1166,13 @@ static int sprd_pinctrl_add_pins(struct sprd_pinctrl *sprd_pctl,
  			ctrl_pin++;
  		} else if (pin->type == COMMON_PIN) {
  			pin->reg = (unsigned long)sprd_pctl->base +
@@ -5290,7 +5263,7 @@ index 16cf9d15f..c2af05879 100644
  		}
  	}
  
-@@ -1033,9 +1183,10 @@ static int sprd_pinctrl_add_pins(struct sprd_pinctrl *sprd_pctl,
+@@ -1036,9 +1186,10 @@ static int sprd_pinctrl_add_pins(struct sprd_pinctrl *sprd_pctl,
  	return 0;
  }
  
@@ -5304,7 +5277,7 @@ index 16cf9d15f..c2af05879 100644
  {
  	struct sprd_pinctrl *sprd_pctl;
  	struct sprd_pinctrl_soc_info *pinctrl_info;
-@@ -1057,6 +1208,7 @@ int sprd_pinctrl_core_probe(struct platform_device *pdev,
+@@ -1060,6 +1211,7 @@ int sprd_pinctrl_core_probe(struct platform_device *pdev,
  	if (!pinctrl_info)
  		return -ENOMEM;
  
@@ -5312,7 +5285,7 @@ index 16cf9d15f..c2af05879 100644
  	sprd_pctl->info = pinctrl_info;
  	sprd_pctl->dev = &pdev->dev;
  	platform_set_drvdata(pdev, sprd_pctl);
-@@ -1099,6 +1251,15 @@ int sprd_pinctrl_core_probe(struct platform_device *pdev,
+@@ -1102,6 +1254,15 @@ int sprd_pinctrl_core_probe(struct platform_device *pdev,
  
  	return 0;
  }
@@ -5328,7 +5301,7 @@ index 16cf9d15f..c2af05879 100644
  EXPORT_SYMBOL_GPL(sprd_pinctrl_core_probe);
  
  void sprd_pinctrl_remove(struct platform_device *pdev)
-@@ -1126,4 +1287,4 @@ EXPORT_SYMBOL_GPL(sprd_pinctrl_shutdown);
+@@ -1129,4 +1290,4 @@ EXPORT_SYMBOL_GPL(sprd_pinctrl_shutdown);
  
  MODULE_DESCRIPTION("SPREADTRUM Pin Controller Driver");
  MODULE_AUTHOR("Baolin Wang <baolin.wang@spreadtrum.com>");

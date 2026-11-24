@@ -1516,7 +1516,7 @@ diff --git a/Documentation/devicetree/bindings/vendor-prefixes.yaml b/Documentat
 index ba2002969..6e096a71d 100644
 --- a/Documentation/devicetree/bindings/vendor-prefixes.yaml
 +++ b/Documentation/devicetree/bindings/vendor-prefixes.yaml
-@@ -1055,6 +1055,8 @@ patternProperties:
+@@ -1067,6 +1067,8 @@ patternProperties:
      description: Medion AG
    "^megachips,.*":
      description: MegaChips

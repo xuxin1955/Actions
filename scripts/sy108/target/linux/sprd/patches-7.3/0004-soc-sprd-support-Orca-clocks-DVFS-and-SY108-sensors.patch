@@ -4075,7 +4075,7 @@ index 000000000..2181be011
 +MODULE_DESCRIPTION("Orca cluster and SoC aggregate temperatures");
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/thermal/sprd_thermal.c b/drivers/thermal/sprd_thermal.c
-index d683fcb0f..61265928d 100644
+index b57277e..6126592 100644
 --- a/drivers/thermal/sprd_thermal.c
 +++ b/drivers/thermal/sprd_thermal.c
 @@ -5,11 +5,13 @@
@@ -4273,7 +4273,7 @@ index d683fcb0f..61265928d 100644
  }
  
  static void sprd_thm_toggle_sensor(struct sprd_thermal_sensor *sen, bool on)
-@@ -328,194 +372,229 @@ static void sprd_thm_toggle_sensor(struct sprd_thermal_sensor *sen, bool on)
+@@ -328,200 +372,229 @@ static void sprd_thm_toggle_sensor(struct sprd_thermal_sensor *sen, bool on)
  		thermal_zone_device_disable(tzd);
  }
  
@@ -4362,14 +4362,14 @@ index d683fcb0f..61265928d 100644
 -	const struct sprd_thm_variant_data *pdata;
  	int ret, i;
 -	u32 val;
--
++	u32 val, id;
+ 
 -	pdata = of_device_get_match_data(&pdev->dev);
 -	if (!pdata) {
 -		dev_err(&pdev->dev, "No matching driver data found\n");
 -		return -EINVAL;
 -	}
-+	u32 val, id;
- 
+-
 -	thm = devm_kzalloc(&pdev->dev, sizeof(*thm), GFP_KERNEL);
 +	thm = devm_kzalloc(dev, sizeof(*thm), GFP_KERNEL);
  	if (!thm)
@@ -4427,38 +4427,39 @@ index d683fcb0f..61265928d 100644
 -
 -	for_each_child_of_node(np, sen_child) {
 -		sen = devm_kzalloc(&pdev->dev, sizeof(*sen), GFP_KERNEL);
-+		return dev_err_probe(dev, ret, "ratio calibration\n");
-+	for_each_available_child_of_node(np, sen_child) {
-+		ret = of_property_read_u32(sen_child, "reg", &id);
-+		if (ret)
-+			goto of_put;
-+		if (id >= SPRD_THM_MAX_SENSOR || thm->sensor[id]) {
-+			ret = -EINVAL;
-+			goto of_put;
-+		}
-+		sen = devm_kzalloc(dev, sizeof(*sen), GFP_KERNEL);
- 		if (!sen) {
- 			ret = -ENOMEM;
- 			goto of_put;
- 		}
+-		if (!sen) {
+-			ret = -ENOMEM;
+-			goto of_put;
+-		}
 -
-+		sen->id = id;
- 		sen->data = thm;
+-		sen->data = thm;
 -		sen->dev = &pdev->dev;
 -
 -		ret = of_property_read_u32(sen_child, "reg", &sen->id);
 -		if (ret) {
 -			dev_err(&pdev->dev, "get sensor reg failed");
--			goto of_put;
--		}
--
-+		sen->dev = dev;
- 		ret = sprd_thm_sensor_calibration(sen_child, thm, sen);
--		if (ret) {
--			dev_err(&pdev->dev, "efuse cal analysis failed");
++		return dev_err_probe(dev, ret, "ratio calibration\n");
++	for_each_available_child_of_node(np, sen_child) {
++		ret = of_property_read_u32(sen_child, "reg", &id);
 +		if (ret)
  			goto of_put;
 -		}
+-
+-		if (sen->id < 0 || sen->id >= SPRD_THM_MAX_SENSOR) {
+-			dev_err(&pdev->dev, "invalid sensor id %d\n", sen->id);
++		if (id >= SPRD_THM_MAX_SENSOR || thm->sensor[id]) {
+ 			ret = -EINVAL;
+ 			goto of_put;
+ 		}
+-
+-		ret = sprd_thm_sensor_calibration(sen_child, thm, sen);
+-		if (ret) {
+-			dev_err(&pdev->dev, "efuse cal analysis failed");
++		sen = devm_kzalloc(dev, sizeof(*sen), GFP_KERNEL);
++		if (!sen) {
++			ret = -ENOMEM;
+ 			goto of_put;
+ 		}
 -
 -		sprd_thm_sensor_init(thm, sen);
 -
@@ -4470,7 +4471,12 @@ index d683fcb0f..61265928d 100644
 -			dev_err(&pdev->dev, "register thermal zone failed %d\n",
 -				sen->id);
 -			ret = PTR_ERR(sen->tzd);
--			goto of_put;
++		sen->id = id;
++		sen->data = thm;
++		sen->dev = dev;
++		ret = sprd_thm_sensor_calibration(sen_child, thm, sen);
++		if (ret)
+ 			goto of_put;
 -		}
 -
 -		thm->sensor[sen->id] = sen;
@@ -4642,7 +4648,7 @@ index d683fcb0f..61265928d 100644
  		sprd_thm_toggle_sensor(thm->sensor[i], false);
  		devm_thermal_of_zone_unregister(&pdev->dev,
  						thm->sensor[i]->tzd);
-@@ -524,7 +603,8 @@ static void sprd_thm_remove(struct platform_device *pdev)
+@@ -530,7 +603,8 @@ static void sprd_thm_remove(struct platform_device *pdev)
  
  static const struct of_device_id sprd_thermal_of_match[] = {
  	{ .compatible = "sprd,ums512-thermal", .data = &ums512_data },
@@ -4652,7 +4658,7 @@ index d683fcb0f..61265928d 100644
  };
  MODULE_DEVICE_TABLE(of, sprd_thermal_of_match);
  
-@@ -546,4 +626,4 @@ module_platform_driver(sprd_thermal_driver);
+@@ -552,4 +626,4 @@ module_platform_driver(sprd_thermal_driver);
  
  MODULE_AUTHOR("Freeman Liu <freeman.liu@unisoc.com>");
  MODULE_DESCRIPTION("Spreadtrum thermal driver");

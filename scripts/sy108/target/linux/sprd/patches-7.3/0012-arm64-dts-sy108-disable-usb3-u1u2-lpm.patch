@@ -1,7 +1,7 @@
 diff --git a/arch/arm64/boot/dts/sprd/udx710-sy108.dts b/arch/arm64/boot/dts/sprd/udx710-sy108.dts
 --- a/arch/arm64/boot/dts/sprd/udx710-sy108.dts
 +++ b/arch/arm64/boot/dts/sprd/udx710-sy108.dts
-@@ -34,3 +34,5 @@
+@@ -33,3 +33,5 @@
  	snps,rx-thr-num-pkt = /bits/ 8 <4>;
  	snps,rx-max-burst = /bits/ 8 <4>;
 +	snps,dis-u1-entry-quirk;

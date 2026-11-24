@@ -1,3 +1,5 @@
+diff --git a/service/instance.c b/service/instance.c
+index 9c64406..be27c42 100644
 --- a/service/instance.c
 +++ b/service/instance.c
 @@ -2726,6 +2726,8 @@ void instance_dump(struct blob_buf *b, struct service_instance *in, int verbose)
@@ -9,7 +11,7 @@
  		if (!in->bundle) {
  			if (in->jail.hostname)
  				blobmsg_add_string(b, "hostname", in->jail.hostname);
-@@ -2739,8 +2741,5 @@
+@@ -2739,9 +2741,6 @@ void instance_dump(struct blob_buf *b, struct service_instance *in, int verbose)
  			blobmsg_add_u8(b, "userns", in->jail.userns);
  			blobmsg_add_u8(b, "cgroupsns", in->jail.cgroupsns);
  		} else {
@@ -18,3 +20,4 @@
 -
  			if (in->jail.stop_timeout)
  				blobmsg_add_u32(b, "stop_timeout", in->jail.stop_timeout);
+ 
