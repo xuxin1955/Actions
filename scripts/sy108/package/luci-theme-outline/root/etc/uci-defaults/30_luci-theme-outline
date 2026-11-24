@@ -17,6 +17,7 @@ fi
 for s in appearance:appearance light:theme dark:theme branding:branding updates:updates; do
 	uci -q get "outline.${s%%:*}" >/dev/null || uci -q set "outline.${s%%:*}=${s#*:}"
 done
+uci -q get outline.appearance.mode >/dev/null || uci -q set outline.appearance.mode=dark
 uci -q commit outline
 
 # Brand images uploaded on the Branding page live outside the package's own
