@@ -184,7 +184,6 @@ g_load_config() {
 	[ "$DEV_MAC" != auto ] || DEV_MAC=$AUTO_DEV_MAC
 	[ "$HOST_MAC" != auto ] || HOST_MAC=$AUTO_HOST_MAC
 	ADB_ACTIVE=$ADB
-	ADB_FALLBACK=0
 }
 
 g_profile() {
@@ -303,32 +302,12 @@ g_adb_release() {
 	/etc/init.d/adbd stop >/dev/null 2>&1 || true
 	umount "$UDX_ADB_FFS" >/dev/null 2>&1 || true
 	[ ! -d "$UDX_G/functions/ffs.adb" ] || g_rmdir "$UDX_G/functions/ffs.adb" 2>/dev/null
-	# Fall back to the ACM console rather than dropping the debug channel.
-	ACM=1
-	if ! g_console_reason >/dev/null; then
-		ACM=0
-		g_error 'acm needs a root password; usb network continues without it'
-	elif [ -d "$UDX_G/functions/acm.maint" ]; then
-		if [ ! -L "$UDX_G/configs/c.1/acm.maint" ] &&
-			! g_link "$UDX_G/functions/acm.maint" "$UDX_G/configs/c.1/acm.maint"; then
-			ACM=0
-			g_error 'acm link failed; usb network continues without it'
-		fi
-	elif ! g_acm_setup; then
-		ACM=0
-		g_error 'acm unavailable; usb network continues without it'
-	fi
 	ADB=0
 	if g_profile; then
-		g_write "$UDX_G/idProduct" "$PID" 2>/dev/null || true
+		g_write "$UDX_G/idProduct" "$PID" 2>/dev/null || g_error 'could not update product id after adb failure'
 	fi
 	ADB=$saved
 	ADB_ACTIVE=0
-	ADB_FALLBACK=1
-	uci -q set udx-usb.main.adb='0' &&
-		uci -q set udx-usb.main.acm="$ACM" &&
-		uci -q commit udx-usb ||
-		g_error 'could not persist adb fallback'
 	return 0
 }
 
@@ -366,7 +345,6 @@ g_net_function() {
 g_create() {
 	local actual expected
 	ADB_ACTIVE=$ADB
-	ADB_FALLBACK=0
 	g_boot_mark "event=identity source=${IDENTITY_SOURCE:-uci-explicit} reason=${IDENTITY_REASON:-none}"
 	[ "${IDENTITY_SOURCE:-}" != diagnostic-fallback ] || g_error "factory serial unavailable ($IDENTITY_REASON); using generic diagnostic identity"
 	[ ! -e "$UDX_G" ] || return 1
@@ -452,7 +430,6 @@ g_state_save() {
 	{
 		printf 'profile=%s\nacm=%s\nadb=%s\nserial=%s\nvid=%s\n' "$PROFILE" "$ACM" "${ADB_ACTIVE:-$ADB}" "$SERIAL" "$VID"
 		printf 'dev_mac=%s\nhost_mac=%s\n' "$DEV_MAC" "$HOST_MAC"
-		printf 'adb_fallback=%s\n' "${ADB_FALLBACK:-0}"
 		printf 'identity_source=%s\nidentity_reason=%s\n' "${IDENTITY_SOURCE:-uci-explicit}" "${IDENTITY_REASON:-none}"
 	} > "$UDX_RUN/applied.new" && mv "$UDX_RUN/applied.new" "$UDX_RUN/applied"
 }
@@ -462,12 +439,10 @@ g_state_load() {
 	[ -f "$1" ] || return 1
 	IDENTITY_SOURCE=uci-explicit IDENTITY_REASON=none
 	ADB=1
-	ADB_FALLBACK=0
 	while IFS='=' read -r key value; do
 		case "$key" in
 			profile) PROFILE=$value;; acm) ACM=$value;; adb) ADB=$value;; serial) SERIAL=$value;; vid) VID=$value;;
 			dev_mac) DEV_MAC=$value;; host_mac) HOST_MAC=$value;;
-			adb_fallback) ADB_FALLBACK=$value;;
 			identity_source) IDENTITY_SOURCE=$value;; identity_reason) IDENTITY_REASON=$value;;
 			*) return 1;;
 		esac

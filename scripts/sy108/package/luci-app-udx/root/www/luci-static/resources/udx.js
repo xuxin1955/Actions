@@ -287,15 +287,16 @@ function usb(profile, acm, adb) {
             return getStatus().then(
                 function(d) {
                     var u = d.usb || {};
-                    var fellBack = adb && u.adb === '0' && String(u.adb_fallback) === '1';
-                    var acmFellBack = !!acm && !fellBack && u.acm === '0' && !u.pending &&
+                    var acmFellBack = !!acm && u.acm === '0' && !u.pending &&
+                        (u.result === '0' || u.result === 0);
+                    var adbFailed = !!adb && u.adb === '0' && !u.pending &&
                         (u.result === '0' || u.result === 0);
                     if (!u.pending && u.profile === profile &&
-                        (fellBack || acmFellBack || u.acm === (acm ? '1' : '0')) &&
-                        (u.adb === (adb ? '1' : '0') || fellBack) &&
+                        (acmFellBack || u.acm === (acm ? '1' : '0')) &&
+                        (adbFailed || u.adb === (adb ? '1' : '0')) &&
                         (u.result === '0' || u.result === 0)) {
-                        if (fellBack)
-                            throw new Error(_('ADB unavailable; switched to ACM + NCM mode'));
+                        if (adbFailed)
+                            throw new Error(_('ADB failure'));
                         if (acmFellBack)
                             throw new Error(_('ACM unavailable; USB network is running without it'));
                         return u;
