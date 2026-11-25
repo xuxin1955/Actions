@@ -1,4 +1,9 @@
 #!/bin/sh
+#
+if [ -z "$(uci -q get udx-cellular.modem.network_mode)" ]; then
+	uci set udx-cellular.modem.network_mode=nr_lte
+	uci commit udx-cellular
+fi
 # Configure the cellular WAN and migrate its retired device name.
 kind=$(uci -q get network.wan)
 if [ -z "$kind" ]; then

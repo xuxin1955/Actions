@@ -274,6 +274,20 @@ invalid:
 	return NULL;
 }
 
+int advanced_mode_matches(struct controller *c, const char *mode)
+{
+	int index = mode_index(mode);
+	if (index < 0)
+		return errorf(CELL_INVALID, "Unknown network mode");
+	J *now = workmode(c);
+	if (!now)
+		return -1;
+	bool same = json_object_get_int(json_object_array_get_idx(now, 0)) == mode_codes[index];
+	json_object_object_add(c->status, "workmode", json_object_get(now));
+	json_object_put(now);
+	return same ? 1 : 0;
+}
+
 int advanced_set_mode(struct controller *c, const char *mode, J **result)
 {
 	*result = NULL;

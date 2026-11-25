@@ -50,6 +50,7 @@ uci set dhcp.usbmgmt.ra=server
 uci set dhcp.usbmgmt.dhcpv6=server
 uci set dhcp.usbmgmt.ndp=disabled
 uci set dhcp.usbmgmt.ra_slaac=1
+uci set dhcp.usbmgmt.dhcpv4=server
 uci commit network
 uci commit firewall
 uci commit dhcp

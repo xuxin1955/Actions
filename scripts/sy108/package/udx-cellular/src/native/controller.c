@@ -492,27 +492,61 @@ static int initialize(struct controller *c)
 		return 0;
 	const char *commands[] = {"ATE0Q0V1",	 "AT+CMEE=1",	  "AT+CEREG=2",
 				  "AT+C5GREG=2", "AT+CGEREP=1,0", "AT+CGPIAF=1"};
+	bool nr_events = true;
 	for (size_t i = 0; i < 6; i++)
 		if (command(c, commands[i], 15) < 0) {
 			if (i != 3 ||
 			    (cell_error_kind != CELL_MODEM && cell_error_kind != CELL_INVALID))
 				return -1;
+			nr_events = false;
 		}
-	if (*str(c->config, "network_mode")) {
-		struct radio_change change;
-		J *result = NULL, *nr = NULL;
-		bool ok = radio_begin(c, &change) == 0;
-		if (ok)
-			ok = advanced_set_mode(c, str(c->config, "network_mode"), &result) == 0;
-		if (ok) {
-			nr = mode_set_nr(c, str(c->config, "nr_capability"));
-			ok = nr != NULL;
+	if (!nr_events) {
+		c->nr_events_pending = true;
+		c->nr_events_last = mono();
+		string(c->status, "nr_events_error", cell_error);
+		cell_error[0] = 0;
+		cell_error_kind = CELL_INVALID;
+	} else {
+		c->nr_events_pending = false;
+		string(c->status, "nr_events_error", NULL);
+	}
+	const char *mode = str(c->config, "network_mode"), *cap = str(c->config, "nr_capability");
+	if (*mode) {
+		char saved[512];
+		enum cell_error_kind kind = cell_error_kind;
+		snprintf(saved, sizeof(saved), "%s", cell_error);
+		bool need = true;
+		int matched = advanced_mode_matches(c, mode);
+		if (matched >= 0) {
+			need = matched == 0;
+			if (!need && *cap)
+				need = mode_nr_matches(c, cap) != 1;
 		}
-		int rc = radio_end(c, &change, ok);
-		json_object_put(result);
-		json_object_put(nr);
-		if (rc < 0)
-			return -1;
+		size_t keep = strlen(saved) + 1;
+		memcpy(cell_error, saved, keep);
+		cell_error_kind = kind;
+		if (*cap)
+			string(c->status, "nr_capability_error", NULL);
+		else
+			string(c->status, "nr_capability_error",
+			       "network_mode is set but nr_capability is empty");
+		if (need) {
+			struct radio_change change;
+			J *result = NULL, *nr = NULL;
+			bool ok = radio_begin(c, &change) == 0;
+			if (ok)
+				ok = advanced_set_mode(c, mode, &result) == 0;
+			if (ok && *cap) {
+				nr = mode_set_nr(c, cap);
+				ok = nr != NULL;
+			}
+			int rc = radio_end(c, &change, ok);
+			json_object_put(result);
+			json_object_put(nr);
+			if (rc < 0)
+				return -1;
+		}
+		string(c->status, "mode", mode);
 	}
 	if (sms_configure(c, NULL) < 0) {
 		if (c->transport.poisoned)
@@ -597,6 +631,48 @@ static J *read_registration(struct controller *c)
 	json_object_object_add(c->status, "registration", lte);
 	json_object_object_add(c->status, "nr_registration", nr);
 	return json_object_get(json_object_get_boolean(get(nr, "registered")) ? nr : lte);
+}
+
+static void nr_track(struct controller *c, bool before, bool after)
+{
+	if (get(get(c->status, "nr_registration"), "error"))
+		return;
+	J *history = get(c->status, "nr_transitions");
+	if (before == after && history)
+		return;
+	J *row = json_object_new_object();
+	string(row, "event", before != after ? (after ? "nr_acquired" : "nr_lost")
+					    : "nr_baseline");
+	boolean(row, "registered", after);
+	real(row, "uptime", mono());
+	J *reg = get(c->status, "registration");
+	if (reg) {
+		json_object_object_add(row, "lte_act", json_object_get(get(reg, "act")));
+		string(row, "lte_tac", str(reg, "tac"));
+	}
+	J *nr = get(c->status, "nr_registration");
+	if (nr)
+		json_object_object_add(row, "nr_status", json_object_get(get(nr, "status")));
+	J *cells = get(c->status, "cells");
+	for (size_t i = 0; cells && i < json_object_array_length(cells); i++) {
+		J *cell = json_object_array_get_idx(cells, i);
+		if (!json_object_get_boolean(get(cell, "serving")))
+			continue;
+		string(row, "serving_rat", str(cell, "rat"));
+		string(row, "serving_band", str(cell, "band"));
+		json_object_object_add(row, "serving_rsrp", json_object_get(get(cell, "rsrp")));
+		json_object_object_add(row, "serving_sinr", json_object_get(get(cell, "sinr")));
+		break;
+	}
+	if (!history) {
+		history = json_object_new_array();
+		json_object_object_add(c->status, "nr_transitions", history);
+	}
+	json_object_array_add(history, row);
+	while (json_object_array_length(history) > 8)
+		json_object_array_del_idx(history, 0, 1);
+	int64_t seen = json_object_get_int64(get(c->status, "nr_transitions_seen"));
+	integer(c->status, "nr_transitions_seen", seen + 1);
 }
 
 static J *waiting(struct controller *c, const char *reason, J *reg)
@@ -783,11 +859,15 @@ int controller_refresh(struct controller *c)
 {
 	if (transport_admit(&c->transport) < 0 || sim_refresh(c) < 0)
 		return -1;
+	
+	bool nr_was = json_object_get_boolean(get(get(c->status, "nr_registration"), "registered"));
 	J *reg = read_registration(c);
 	if (!reg)
 		return -1;
 	bool registered_now = json_object_get_boolean(get(reg, "registered"));
 	json_object_put(reg);
+	nr_track(c, nr_was,
+		 json_object_get_boolean(get(get(c->status, "nr_registration"), "registered")));
 	J *op = controller_query(c, "AT+COPS?", 50, "+COPS:");
 	if (!op)
 		return -1;
@@ -857,6 +937,17 @@ int controller_refresh(struct controller *c)
 	integer(c->status, "attached", attached);
 	if (ims_refresh(c) < 0)
 		return -1;
+	if (c->nr_events_pending && cfun == 1 && mono() - c->nr_events_last >= 60) {
+		char saved[512];
+		enum cell_error_kind kind = cell_error_kind;
+		snprintf(saved, sizeof(saved), "%s", cell_error);
+		c->nr_events_last = mono();
+		if (command(c, "AT+C5GREG=2", 15) == 0) {
+			c->nr_events_pending = false;
+			string(c->status, "nr_events_error", NULL);
+		} else
+			errorf(kind, "%s", saved); 
+	}
 	if (c->data) {
 		char *raw = controller_at(c, "AT+CGACT?", 5);
 		int active = raw ? bearer_active(raw) : -1;
