@@ -60,8 +60,7 @@ sy108_check_image() (
 	boot_capacity=$(sy108_volume_bytes "$boot") || return 74
 	root_capacity=$(sy108_volume_bytes "$root") || return 74
 	sy108_volume_bytes "$data" >/dev/null || return 74
-	/usr/libexec/udx-image-check "$directory/kernel" "$directory/root-header" "$root_bytes" \
-		"$boot_capacity" "$root_capacity" || return 74
+	/usr/libexec/udx-image-check "$directory/kernel" "$directory/root-header" "$root_bytes" "$boot_capacity" "$root_capacity" || return 74
 )
 
 platform_check_image() {

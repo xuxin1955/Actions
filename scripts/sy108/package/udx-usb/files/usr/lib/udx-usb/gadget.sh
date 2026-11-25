@@ -437,13 +437,10 @@ g_destroy() {
 	if grep -qs " $UDX_ADB_FFS " /proc/mounts; then
 		umount "$UDX_ADB_FFS" 2>/dev/null || true
 	fi
-	for path in "$UDX_G/os_desc/c.1" "$UDX_G/configs/c.1/acm.maint" \
-		"$UDX_G/configs/c.1/adb" "$UDX_G"/configs/c.1/*.usb0; do
+	for path in "$UDX_G/os_desc/c.1" "$UDX_G/configs/c.1/acm.maint" "$UDX_G/configs/c.1/adb" "$UDX_G"/configs/c.1/*.usb0; do
 		[ ! -L "$path" ] || g_unlink "$path" || return 1
 	done
-	for path in "$UDX_G/configs/c.1/strings/0x409" "$UDX_G/configs/c.1" \
-		"$UDX_G/functions/acm.maint" "$UDX_G/functions/ffs.adb" \
-		"$UDX_G"/functions/*.usb0 "$UDX_G/strings/0x409"; do
+	for path in "$UDX_G/configs/c.1/strings/0x409" "$UDX_G/configs/c.1" "$UDX_G/functions/acm.maint" "$UDX_G/functions/ffs.adb" "$UDX_G"/functions/*.usb0 "$UDX_G/strings/0x409"; do
 		[ ! -d "$path" ] || g_rmdir "$path" || return 1
 	done
 	g_rmdir "$UDX_G" || return 1
@@ -454,8 +451,7 @@ g_destroy() {
 g_state_save() {
 	{
 		printf 'profile=%s\nacm=%s\nadb=%s\nserial=%s\nvid=%s\n' "$PROFILE" "$ACM" "${ADB_ACTIVE:-$ADB}" "$SERIAL" "$VID"
-		printf 'dev_mac=%s\nhost_mac=%s\n' \
-			"$DEV_MAC" "$HOST_MAC"
+		printf 'dev_mac=%s\nhost_mac=%s\n' "$DEV_MAC" "$HOST_MAC"
 		printf 'adb_fallback=%s\n' "${ADB_FALLBACK:-0}"
 		printf 'identity_source=%s\nidentity_reason=%s\n' "${IDENTITY_SOURCE:-uci-explicit}" "${IDENTITY_REASON:-none}"
 	} > "$UDX_RUN/applied.new" && mv "$UDX_RUN/applied.new" "$UDX_RUN/applied"

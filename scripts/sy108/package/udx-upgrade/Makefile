@@ -19,14 +19,8 @@ define Package/udx-upgrade
 endef
 
 define Build/Compile
-	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -std=c11 -Os -Wall -Wextra \
-	 -I$(CURDIR)/src/boot-format -I$(CURDIR)/src \
-	 $(CURDIR)/src/boot-state.c $(CURDIR)/src/management-ready.c $(CURDIR)/src/boot-format/misc-state.c \
-	 $(TARGET_LDFLAGS) -lubus -lubox -luci -o $(PKG_BUILD_DIR)/udx-boot-state
-	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -std=c11 -Os -Wall -Wextra \
-	 -I$(CURDIR)/src/boot-format \
-	 $(CURDIR)/src/image-check.c $(CURDIR)/src/boot-format/capsule.c \
-	 $(CURDIR)/src/boot-format/misc-state.c $(TARGET_LDFLAGS) -lfdt -o $(PKG_BUILD_DIR)/udx-image-check
+	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -std=c11 -Os -Wall -Wextra -I$(CURDIR)/src/boot-format -I$(CURDIR)/src $(CURDIR)/src/boot-state.c $(CURDIR)/src/management-ready.c $(CURDIR)/src/boot-format/misc-state.c $(TARGET_LDFLAGS) -lubus -lubox -luci -o $(PKG_BUILD_DIR)/udx-boot-state
+	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -std=c11 -Os -Wall -Wextra -I$(CURDIR)/src/boot-format $(CURDIR)/src/image-check.c $(CURDIR)/src/boot-format/capsule.c $(CURDIR)/src/boot-format/misc-state.c $(TARGET_LDFLAGS) -lfdt -o $(PKG_BUILD_DIR)/udx-image-check
 endef
 
 define Package/udx-upgrade/install

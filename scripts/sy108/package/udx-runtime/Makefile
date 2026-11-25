@@ -26,10 +26,8 @@ define Package/udx-runtime/config
 endef
 
 define Build/Compile
-	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -std=gnu11 -Wall -Wextra \
-	 $(CURDIR)/src/system/runtime.c $(TARGET_LDFLAGS) -lubus -lubox -o $(PKG_BUILD_DIR)/udx-runtime
-	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -std=gnu11 \
-	 $(CURDIR)/src/system/verify-ubi-root.c $(TARGET_LDFLAGS) -o $(PKG_BUILD_DIR)/udx-verify-root
+	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -std=gnu11 -Wall -Wextra $(CURDIR)/src/system/runtime.c $(TARGET_LDFLAGS) -lubus -lubox -o $(PKG_BUILD_DIR)/udx-runtime
+	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -std=gnu11 $(CURDIR)/src/system/verify-ubi-root.c $(TARGET_LDFLAGS) -o $(PKG_BUILD_DIR)/udx-verify-root
 endef
 
 define Package/udx-runtime/install

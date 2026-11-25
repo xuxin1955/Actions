@@ -38,8 +38,7 @@ echo $$ > "$RUN/job.pid"
 
 status() { # state step [error]
 	STEP="$2"
-	printf '{"id":"%s","action":"%s","state":"%s","step":"%s","error":"%s","updated":%s}\n' \
-		"$ID" "$ACTION" "$1" "$2" "${3:-}" "$(date +%s)" > "$RUN/job.json.tmp" &&
+	printf '{"id":"%s","action":"%s","state":"%s","step":"%s","error":"%s","updated":%s}\n' "$ID" "$ACTION" "$1" "$2" "${3:-}" "$(date +%s)" > "$RUN/job.json.tmp" &&
 		mv "$RUN/job.json.tmp" "$RUN/job.json"
 }
 
@@ -260,13 +259,8 @@ remove_theme() {
 	drop_cron
 	# Whatever the package manager left: files a reinstall over a manual
 	# copy never owned, and this worker's own installed path.
-	rm -rf /www/luci-static/outline /usr/share/ucode/luci/template/themes/outline \
-		/www/luci-static/resources/outline /www/luci-static/resources/view/outline \
-		/usr/libexec/outline
-	rm -f /www/luci-static/resources/menu-outline.js /www/luci-static/resources/sidebar-outline.js \
-		/www/luci-static/resources/router-outline.js \
-		/usr/share/rpcd/ucode/luci.outline /usr/share/rpcd/acl.d/luci-theme-outline.json \
-		/usr/share/luci/menu.d/luci-theme-outline.json
+	rm -rf /www/luci-static/outline /usr/share/ucode/luci/template/themes/outline /www/luci-static/resources/outline /www/luci-static/resources/view/outline /usr/libexec/outline
+	rm -f /www/luci-static/resources/menu-outline.js /www/luci-static/resources/sidebar-outline.js /www/luci-static/resources/router-outline.js /usr/share/rpcd/ucode/luci.outline /usr/share/rpcd/acl.d/luci-theme-outline.json /usr/share/luci/menu.d/luci-theme-outline.json
 	clear_luci_cache
 }
 
@@ -301,8 +295,7 @@ do_auto() {
 		syslog "automatic update: no release found"
 		fail "$([ $rc = 2 ] && echo no_asset || echo no_release)"
 	fi
-	printf '{"checked":%s,"theme":{"tag":"%s","version":"%s","url":"%s","repo":"%s"},"auto":1}\n' \
-		"$(date +%s)" "$REL_TAG" "$REL_VERSION" "$REL_URL" "$REL_REPO" > "$RUN/updates.json"
+	printf '{"checked":%s,"theme":{"tag":"%s","version":"%s","url":"%s","repo":"%s"},"auto":1}\n' "$(date +%s)" "$REL_TAG" "$REL_VERSION" "$REL_URL" "$REL_REPO" > "$RUN/updates.json"
 	have="$(installed_version)"
 	if newer "$REL_VERSION" "$have"; then
 		syslog "automatic update: installing $REL_VERSION (was ${have:-unknown})"

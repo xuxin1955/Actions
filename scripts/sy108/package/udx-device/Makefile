@@ -23,10 +23,7 @@ define Package/udx-device/conffiles
 endef
 
 define Build/Compile
-	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -std=c11 \
-	 -I$(CURDIR)/src \
-	 $(CURDIR)/src/device.c $(CURDIR)/src/frequency.c $(CURDIR)/src/common.c \
-	 $(TARGET_LDFLAGS) -ljson-c -lubus -lubox -o $(PKG_BUILD_DIR)/udx-device-rpc
+	$(TARGET_CC) $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -std=c11 -I$(CURDIR)/src $(CURDIR)/src/device.c $(CURDIR)/src/frequency.c $(CURDIR)/src/common.c $(TARGET_LDFLAGS) -ljson-c -lubus -lubox -o $(PKG_BUILD_DIR)/udx-device-rpc
 endef
 
 define Package/udx-device/install

@@ -24,10 +24,7 @@ define Package/udx-cellular/conffiles
 endef
 
 define Build/Compile
-	CC="$(TARGET_CC)" CFLAGS="$(TARGET_CFLAGS)" \
-	 CPPFLAGS="$(TARGET_CPPFLAGS)" LDFLAGS="$(TARGET_LDFLAGS)" \
-	 JSON_INCLUDE="$(STAGING_DIR)/usr/include" \
-	 sh $(CURDIR)/build-native.sh $(PKG_BUILD_DIR)/bin -ljson-c
+	CC="$(TARGET_CC)" CFLAGS="$(TARGET_CFLAGS)" CPPFLAGS="$(TARGET_CPPFLAGS)" LDFLAGS="$(TARGET_LDFLAGS)" JSON_INCLUDE="$(STAGING_DIR)/usr/include" sh $(CURDIR)/build-native.sh $(PKG_BUILD_DIR)/bin -ljson-c
 endef
 
 define Package/udx-cellular/install

@@ -32,16 +32,11 @@ endef
 define Package/$(PKG_NAME)-adbd
 $(call Package/$(PKG_NAME)/default)
 	TITLE+= - adbd
-	DEPENDS:=+zlib +libopenssl +libpthread @!SY108_RECOVERY
+	DEPENDS:=+zlib +libopenssl +libpthread
 endef
 
 define Build/Compile
-	$(MAKE) -C $(PKG_BUILD_DIR) \
-		$(TARGET_CONFIGURE_OPTS) \
-		TARGET=Linux \
-		CFLAGS="$(TARGET_CFLAGS) $(TARGET_CPPFLAGS)" \
-		LDFLAGS="$(TARGET_LDFLAGS)" \
-		-f $(PKG_BUILD_DIR)/adbd.mk
+	$(MAKE) -C $(PKG_BUILD_DIR) $(TARGET_CONFIGURE_OPTS) TARGET=Linux CFLAGS="$(TARGET_CFLAGS) $(TARGET_CPPFLAGS)" LDFLAGS="$(TARGET_LDFLAGS)" -f $(PKG_BUILD_DIR)/adbd.mk
 endef
 
 define Package/$(PKG_NAME)-adbd/install
