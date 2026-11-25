@@ -4,6 +4,30 @@ set -eu
 case "$(uci -q get system.@system[0].hostname)" in
 	''|OpenWrt) uci set system.@system[0].hostname=sy108; uci commit system;;
 esac
+# config_generate hardcodes GMT0/UTC in every freshly generated
+# /etc/config/system, so an out-of-the-box unit reports UTC no matter what the
+# image was built with (CONFIG_TZ no longer reaches this path). Default to
+# China Standard Time - UTC+8, no DST - while leaving a zone the user picked on
+# purpose untouched. CST-8 is a POSIX TZ string, so it needs no zoneinfo data.
+case "$(uci -q get system.@system[0].timezone || true)" in
+	''|GMT0|UTC|UTC0)
+		uci set system.@system[0].timezone='CST-8'
+		uci set system.@system[0].zonename='Asia/Shanghai'
+		uci commit system
+		;;
+esac
+# The stock timeserver list is four OpenWrt pool aliases, which resolve abroad
+# from mainland China; the first sync then takes minutes and every log line
+# written in between carries the wrong clock. Replace the list only while it is
+# still byte-for-byte the upstream default, so a hand-picked server survives.
+stock_ntp='0.openwrt.pool.ntp.org 1.openwrt.pool.ntp.org 2.openwrt.pool.ntp.org 3.openwrt.pool.ntp.org'
+if [ "$(uci -q get system.ntp.server || true)" = "$stock_ntp" ]; then
+	uci -q delete system.ntp.server
+	uci add_list system.ntp.server='ntp.aliyun.com'
+	uci add_list system.ntp.server='ntp.tencent.com'
+	uci add_list system.ntp.server='cn.pool.ntp.org'
+	uci commit system
+fi
 # Cooperative CP/NV shutdown is bounded at 330 seconds. Let standard rpcd
 # file.exec finish sysupgrade preparation instead of killing it after 30 s.
 uci set rpcd.@rpcd[0].timeout=360

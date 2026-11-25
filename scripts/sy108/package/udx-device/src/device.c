@@ -26,7 +26,7 @@
 static const char *method_description =
     "{\"frequency_status\":{},\"frequency_apply\":{\"cpu_governor\":\"\",\"cpu_min_khz\":0,"
     "\"cpu_max_khz\":0},"
-    "\"status\":{},\"usb\":{\"profile\":\"\",\"acm\":false,\"adb\":false}}";
+    "\"status\":{},\"usb\":{\"profile\":\"\",\"acm\":false}}";
 
 static char *read_file(const char *name, size_t maximum)
 {
@@ -333,23 +333,21 @@ static J *rejected(const char *error, bool uncertain)
 static bool usb_profile_supported(const char *profile)
 {
 	return text_equal(profile, "ncm") || text_equal(profile, "ncm-software") ||
-	       text_equal(profile, "ecm") || text_equal(profile, "rndis");
+	       text_equal(profile, "ecm") || text_equal(profile, "rndis") ||
+	       text_equal(profile, "rndis-software");
 }
 
 static J *usb_request(J *arguments)
 {
 	const char *profile = str(arguments, "profile");
 	J *acm = get(arguments, "acm");
-	J *adb = get(arguments, "adb");
 	if (!usb_profile_supported(profile) ||
-	    !json_object_is_type(acm, json_type_boolean) ||
-	    !json_object_is_type(adb, json_type_boolean)) {
+	    !json_object_is_type(acm, json_type_boolean)) {
 		errorf(CELL_INVALID, "Invalid USB profile");
 		return NULL;
 	}
 	const char *argv[] = {"/usr/sbin/udx-usbctl", "switch", profile,
-			      json_object_get_boolean(acm) ? "acm" : "no-acm",
-			      json_object_get_boolean(adb) ? "adb" : "no-adb", NULL};
+			      json_object_get_boolean(acm) ? "acm" : "no-acm", NULL};
 	char *output = NULL;
 	int rc = command_run(argv, NULL, 8000, 65536, &output);
 	if (rc < 0)

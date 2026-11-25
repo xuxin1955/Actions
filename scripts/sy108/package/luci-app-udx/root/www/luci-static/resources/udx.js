@@ -25,7 +25,7 @@ var wan6RPC = rpc.declare({object: 'network.interface.wan6', method: 'status', e
 var usbRPC = rpc.declare({
     object : 'udx',
     method : 'usb',
-    params : [ 'profile', 'acm', 'adb' ],
+    params : [ 'profile', 'acm' ],
     expect : {'' : {}},
     reject : true
 });
@@ -278,8 +278,8 @@ function watch(load, update, initial) {
     }, 5);
     return error;
 }
-function usb(profile, acm, adb) {
-    return usbRPC(profile, acm, adb).then(function(r) {
+function usb(profile, acm) {
+    return usbRPC(profile, acm).then(function(r) {
         if (!r.accepted)
             throw failure(r);
         var end = Date.now() + 300000;
@@ -289,14 +289,9 @@ function usb(profile, acm, adb) {
                     var u = d.usb || {};
                     var acmFellBack = !!acm && u.acm === '0' && !u.pending &&
                         (u.result === '0' || u.result === 0);
-                    var adbFailed = !!adb && u.adb === '0' && !u.pending &&
-                        (u.result === '0' || u.result === 0);
                     if (!u.pending && u.profile === profile &&
                         (acmFellBack || u.acm === (acm ? '1' : '0')) &&
-                        (adbFailed || u.adb === (adb ? '1' : '0')) &&
                         (u.result === '0' || u.result === 0)) {
-                        if (adbFailed)
-                            throw new Error(_('ADB failure'));
                         if (acmFellBack)
                             throw new Error(_('ACM unavailable; USB network is running without it'));
                         return u;

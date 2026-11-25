@@ -386,7 +386,8 @@ return view.extend({
             [ 'ncm', _('NCM (hardware accelerated)'), _('Works on Windows, Linux and macOS. Fastest.') ],
             [ 'ncm-software', _('NCM (software mode)'), _('Use when the host has trouble with accelerated NCM.') ],
             [ 'ecm', _('CDC-ECM'), _('Native support on Linux and macOS.') ],
-            [ 'rndis', _('RNDIS'), _('Compatibility mode for Windows, especially older releases.') ]
+            [ 'rndis', _('RNDIS'), _('Compatibility mode for Windows, especially older releases.') ],
+            [ 'rndis-software', _('RNDIS (software mode)'), _('Software RNDIS. Use when hardware accelerated RNDIS has trouble on the host.') ]
         ];
         var usbCfg = initial[1] || {};
         var usbMain = usbCfg['main'] || {};
@@ -403,11 +404,6 @@ return view.extend({
             'class' : 'cbi-input-checkbox',
             'checked' : (usbMain['acm'] === '1') ? 'checked' : null
         });
-        var usbAdb = E('input', {
-            'type' : 'checkbox',
-            'class' : 'cbi-input-checkbox',
-            'checked' : (usbMain['adb'] === '1') ? 'checked' : null
-        });
         function usbRefreshHint() {
             var sel = usbModes.filter(function(m) { return m[0] === usbSelect.value; })[0];
             usbHint.textContent = sel ? sel[2] : '';
@@ -420,7 +416,7 @@ return view.extend({
                 if (!confirm(_('Switch the USB network mode to %s? The device reboots and the USB link drops for about a minute.').format(usbSelect.value)))
                     return;
                 return udx.notify(function() {
-                    return udx.usb(usbSelect.value, !!usbAcm.checked, !!usbAdb.checked);
+                    return udx.usb(usbSelect.value, !!usbAcm.checked);
                 });
             })
         }, [ _('Apply and reboot') ]);
@@ -437,13 +433,6 @@ return view.extend({
                     usbAcm,
                     E('span', {style : 'margin-left:8px'}, [ _('Adds a second serial channel for debug console access.') ])
                 ])
-            ]),
-            E('div', {class : 'cbi-value'}, [
-                E('label', {class : 'cbi-value-title'}, [ _('ADB debugging') ]),
-                E('div', {class : 'cbi-value-field'}, [
-                    usbAdb,
-                    E('span', {style : 'margin-left:8px'}, [ _('Expose an Android ADB interface for debugging.') ])
-                ])
             ])
         ]));
         var usb = udx.table(_('USB status'), [
@@ -457,13 +446,6 @@ return view.extend({
                 _('ACM console'),
                 function(d) {
                     var r = (d.usb || {}).acm;
-                    return r == null ? null : r === '1';
-                }
-            ],
-            [
-                _('ADB debugging'),
-                function(d) {
-                    var r = (d.usb || {}).adb;
                     return r == null ? null : r === '1';
                 }
             ],

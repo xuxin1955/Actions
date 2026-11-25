@@ -170,8 +170,6 @@ g_boot_mark() {
 g_load_config() {
 	PROFILE=$(uci -q get udx-usb.main.profile) || return 1
 	ACM=$(uci -q get udx-usb.main.acm) || ACM=0
-	ADB=$(uci -q get udx-usb.main.adb)
-	[ -n "$ADB" ] || ADB=1
 	SERIAL=$(uci -q get udx-usb.main.serial) || SERIAL=auto
 	VID=$(uci -q get udx-usb.main.vid) || return 1
 	DEV_MAC=$(uci -q get udx-usb.main.dev_mac) || DEV_MAC=auto
@@ -183,7 +181,6 @@ g_load_config() {
 	[ "$SERIAL" != auto ] || SERIAL=$AUTO_SERIAL
 	[ "$DEV_MAC" != auto ] || DEV_MAC=$AUTO_DEV_MAC
 	[ "$HOST_MAC" != auto ] || HOST_MAC=$AUTO_HOST_MAC
-	ADB_ACTIVE=$ADB
 }
 
 g_profile() {
@@ -200,11 +197,7 @@ g_profile() {
 		1) PID=$(printf '0x%04x' "$((PID + 16))") ;;
 		*) g_error 'acm must be 0 or 1'; return 64 ;;
 	esac
-	case "$ADB" in
-		0) ;;
-		1) PID=0x4ee4 ;;
-		*) g_error 'adb must be 0 or 1'; return 64 ;;
-	esac
+	PID=0x4ee4
 }
 
 g_validate() {
@@ -236,7 +229,6 @@ g_console_getty() {
 
 g_console_reason() {
 	local hash
-	[ ! -e /etc/udx-recovery-root ] || { echo recovery-passwordless; return 0; }
 	hash=$(awk -F: '$1 == "root" {print $2; exit}' "$UDX_SHADOW" 2>/dev/null)
 	case "$hash" in ''|'!'*|'*'*) echo password-required; return 1;; esac
 	g_console_getty >/dev/null && [ -x /bin/login ] || { echo login-tools-missing; return 1; }
@@ -249,7 +241,7 @@ g_preflight() {
 	[ -d "$UDX_CF" ] || { g_error 'configfs usb_gadget is unavailable'; return 1; }
 	if [ "$ACM" = 1 ]; then
 		local reason
-		reason=$(g_console_reason) || g_error "ACM has no login: $reason"
+		reason=$(g_console_reason) || { g_error "ACM disabled: $reason"; return 1; }
 	fi
 	local other owner
 	for other in "$UDX_CF"/*/UDC; do
@@ -261,54 +253,6 @@ g_preflight() {
 	if [ -d "$UDX_G" ] && [ ! -f "$UDX_RUN/owned" ]; then
 		g_error 'existing udx-usb gadget has no ownership record'; return 1
 	fi
-}
-
-g_adb_ready() {
-	mkdir -p "$UDX_ADB_FFS" || return 1
-	if ! grep -qs " $UDX_ADB_FFS " /proc/mounts; then
-		mount -t functionfs -o no_disconnect=1 adb "$UDX_ADB_FFS" || return 1
-	fi
-	/etc/init.d/adbd restart >/dev/null 2>&1 || return 1
-	local i=0
-	while [ $i -lt 10 ] && [ ! -e "$UDX_ADB_FFS/ep1" ]; do
-		i=$((i + 1))
-		sleep 1
-	done
-	[ -e "$UDX_ADB_FFS/ep1" ] || { g_error 'adbd endpoints not ready'; return 1; }
-}
-
-g_adb_setup() {
-	g_mkdir "$UDX_G/functions/ffs.adb" || return 1
-	g_link "$UDX_G/functions/ffs.adb" "$UDX_G/configs/c.1/adb" || return 1
-	g_adb_ready || return 1
-}
-
-g_acm_setup() {
-	g_mkdir "$UDX_G/functions/acm.maint" || return 1
-	if [ "$(g_read "$UDX_G/functions/acm.maint/port_num")" != 0 ]; then
-		g_rmdir "$UDX_G/functions/acm.maint" 2>/dev/null
-		g_error 'ttyGS0 is already allocated'
-		return 1
-	fi
-	if [ -e "$UDX_G/functions/acm.maint/console" ]; then
-		g_write "$UDX_G/functions/acm.maint/console" 0 || return 1
-	fi
-	g_link "$UDX_G/functions/acm.maint" "$UDX_G/configs/c.1/acm.maint" || return 1
-}
-
-g_adb_release() {
-	local saved=$ADB
-	[ ! -L "$UDX_G/configs/c.1/adb" ] || g_unlink "$UDX_G/configs/c.1/adb" 2>/dev/null
-	/etc/init.d/adbd stop >/dev/null 2>&1 || true
-	umount "$UDX_ADB_FFS" >/dev/null 2>&1 || true
-	[ ! -d "$UDX_G/functions/ffs.adb" ] || g_rmdir "$UDX_G/functions/ffs.adb" 2>/dev/null
-	ADB=0
-	if g_profile; then
-		g_write "$UDX_G/idProduct" "$PID" 2>/dev/null || g_error 'could not update product id after adb failure'
-	fi
-	ADB=$saved
-	ADB_ACTIVE=0
-	return 0
 }
 
 g_lock() {
@@ -342,9 +286,24 @@ g_net_function() {
 	g_link "$dir" "$UDX_G/configs/c.1/$FUNC"
 }
 
+g_adb_setup() {
+	g_mkdir "$UDX_G/functions/ffs.adb" || return 1
+	g_link "$UDX_G/functions/ffs.adb" "$UDX_G/configs/c.1/adb" || return 1
+	mkdir -p "$UDX_ADB_FFS" || return 1
+	if ! grep -qs " $UDX_ADB_FFS " /proc/mounts; then
+		mount -t functionfs -o no_disconnect=1 adb "$UDX_ADB_FFS" || return 1
+	fi
+	/etc/init.d/adbd restart >/dev/null 2>&1 || return 1
+	local i=0
+	while [ $i -lt 10 ] && [ ! -e "$UDX_ADB_FFS/ep1" ]; do
+		i=$((i + 1))
+		sleep 1
+	done
+	[ -e "$UDX_ADB_FFS/ep1" ] || { g_error 'adbd endpoints not ready'; return 1; }
+}
+
 g_create() {
 	local actual expected
-	ADB_ACTIVE=$ADB
 	g_boot_mark "event=identity source=${IDENTITY_SOURCE:-uci-explicit} reason=${IDENTITY_REASON:-none}"
 	[ "${IDENTITY_SOURCE:-}" != diagnostic-fallback ] || g_error "factory serial unavailable ($IDENTITY_REASON); using generic diagnostic identity"
 	[ ! -e "$UDX_G" ] || return 1
@@ -377,20 +336,15 @@ g_create() {
 		g_write "$UDX_G/os_desc/qw_sign" MSFT100 || return 1
 		g_link "$UDX_G/configs/c.1" "$UDX_G/os_desc/c.1" || return 1
 	fi
-	if [ "$ACM" = 1 ] && ! g_acm_setup; then
-		ACM=0
-		g_profile && g_write "$UDX_G/idProduct" "$PID" || return 1
-		g_error 'acm unavailable; usb network continues without it'
-	fi
-	if [ "$ADB" = 1 ]; then
-		if [ ! -x /usr/bin/adbd ]; then
-			g_adb_release
-			g_error 'adbd is missing; usb network continues without it'
-		elif ! g_adb_setup; then
-			g_adb_release
-			g_error 'adb unavailable; usb network continues without it'
+	if [ "$ACM" = 1 ]; then
+		g_mkdir "$UDX_G/functions/acm.maint" || return 1
+		[ "$(g_read "$UDX_G/functions/acm.maint/port_num")" = 0 ] || { g_error 'ttyGS0 is already allocated'; return 1; }
+		if [ -e "$UDX_G/functions/acm.maint/console" ]; then
+			g_write "$UDX_G/functions/acm.maint/console" 0 || return 1
 		fi
+		g_link "$UDX_G/functions/acm.maint" "$UDX_G/configs/c.1/acm.maint" || return 1
 	fi
+	g_adb_setup || return 1
 	g_affinity_apply || g_error 'CPU affinity unavailable; retaining default scheduling'
 	g_boot_mark 'event=udc-bind-begin'
 	g_write "$UDX_G/UDC" "$UDX_UDC" || return 1
@@ -407,7 +361,7 @@ g_destroy() {
 	[ -f "$UDX_RUN/owned" ] || { g_error 'refusing to remove an unowned gadget'; return 1; }
 	owner=$(g_read "$UDX_G/UDC") || return 1
 	case "$owner" in
-		'') ;; # A failed build may never have bound; kernel unbind would return ENODEV.
+		'') ;;
 		"$UDX_UDC") g_write "$UDX_G/UDC" '' || return 1;;
 		*) g_error 'owned gadget is bound to an unexpected controller'; return 1;;
 	esac
@@ -415,10 +369,13 @@ g_destroy() {
 	if grep -qs " $UDX_ADB_FFS " /proc/mounts; then
 		umount "$UDX_ADB_FFS" 2>/dev/null || true
 	fi
-	for path in "$UDX_G/os_desc/c.1" "$UDX_G/configs/c.1/acm.maint" "$UDX_G/configs/c.1/adb" "$UDX_G"/configs/c.1/*.usb0; do
+	for path in "$UDX_G/os_desc/c.1" "$UDX_G/configs/c.1/acm.maint" \
+		"$UDX_G/configs/c.1/adb" "$UDX_G"/configs/c.1/*.usb0; do
 		[ ! -L "$path" ] || g_unlink "$path" || return 1
 	done
-	for path in "$UDX_G/configs/c.1/strings/0x409" "$UDX_G/configs/c.1" "$UDX_G/functions/acm.maint" "$UDX_G/functions/ffs.adb" "$UDX_G"/functions/*.usb0 "$UDX_G/strings/0x409"; do
+	for path in "$UDX_G/configs/c.1/strings/0x409" "$UDX_G/configs/c.1" \
+		"$UDX_G/functions/acm.maint" "$UDX_G/functions/ffs.adb" \
+		"$UDX_G"/functions/*.usb0 "$UDX_G/strings/0x409"; do
 		[ ! -d "$path" ] || g_rmdir "$path" || return 1
 	done
 	g_rmdir "$UDX_G" || return 1
@@ -428,8 +385,9 @@ g_destroy() {
 
 g_state_save() {
 	{
-		printf 'profile=%s\nacm=%s\nadb=%s\nserial=%s\nvid=%s\n' "$PROFILE" "$ACM" "${ADB_ACTIVE:-$ADB}" "$SERIAL" "$VID"
-		printf 'dev_mac=%s\nhost_mac=%s\n' "$DEV_MAC" "$HOST_MAC"
+		printf 'profile=%s\nacm=%s\nserial=%s\nvid=%s\n' "$PROFILE" "$ACM" "$SERIAL" "$VID"
+		printf 'dev_mac=%s\nhost_mac=%s\n' \
+			"$DEV_MAC" "$HOST_MAC"
 		printf 'identity_source=%s\nidentity_reason=%s\n' "${IDENTITY_SOURCE:-uci-explicit}" "${IDENTITY_REASON:-none}"
 	} > "$UDX_RUN/applied.new" && mv "$UDX_RUN/applied.new" "$UDX_RUN/applied"
 }
@@ -438,16 +396,14 @@ g_state_load() {
 	local key value
 	[ -f "$1" ] || return 1
 	IDENTITY_SOURCE=uci-explicit IDENTITY_REASON=none
-	ADB=1
 	while IFS='=' read -r key value; do
 		case "$key" in
-			profile) PROFILE=$value;; acm) ACM=$value;; adb) ADB=$value;; serial) SERIAL=$value;; vid) VID=$value;;
+			profile) PROFILE=$value;; acm) ACM=$value;; serial) SERIAL=$value;; vid) VID=$value;;
 			dev_mac) DEV_MAC=$value;; host_mac) HOST_MAC=$value;;
 			identity_source) IDENTITY_SOURCE=$value;; identity_reason) IDENTITY_REASON=$value;;
 			*) return 1;;
 		esac
 	done < "$1"
-	ADB_ACTIVE=$ADB
 	g_validate
 }
 
