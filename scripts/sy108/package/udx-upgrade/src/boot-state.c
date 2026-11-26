@@ -1,36 +1,23 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #define _GNU_SOURCE
 #include "misc-state.h"
-#include "root-health.h"
-#include <poll.h>
-#include <signal.h>
-#include <sys/wait.h>
-#include <sys/socket.h>
-#include <libubus.h>
-#include <libubox/blobmsg.h>
 #include "management-ready.h"
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <time.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <glob.h>
-#include <linux/magic.h>
 #include <mtd/ubi-user.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
-#include <sys/mount.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 #include <sys/sysmacros.h>
-#include <sys/vfs.h>
 #include <unistd.h>
 
 struct volume {
 	int fd;
-	char sys[256], node[320];
+	char sys[256];
 	size_t capacity;
 };
 
@@ -119,7 +106,6 @@ static int find_volume(const char *name, size_t minimum, struct volume *out)
 	if (!access(p, F_OK))
 		return -1; /* Do not begin a transaction against a mapped root. */
 	snprintf(p, sizeof(p), "/dev/%s", strrchr(out->sys, '/') + 1);
-	snprintf(out->node, sizeof(out->node), "%s", p);
 	struct stat st;
 	if (lstat(p, &st) || !S_ISCHR(st.st_mode) || st.st_rdev != makedev(maj, min))
 		return -1;
@@ -250,169 +236,61 @@ static int boot_id(char value[40])
 	return 0;
 }
 
-struct runtime_readiness {
-	const char *boot;
-	int ready;
-};
-
-static void runtime_reply(struct ubus_request *request, int type, struct blob_attr *message)
+static int adbd_running(void)
 {
-	enum { BOOT, OWNER, CORE, ERROR, RENEWALS, LAST, CLOSING, ROOT, QUIESCE, QERROR, N };
-	static const struct blobmsg_policy policy[N] = {
-	    [BOOT] = {.name = "boot_id", .type = BLOBMSG_TYPE_STRING},
-	    [OWNER] = {.name = "owner", .type = BLOBMSG_TYPE_INT32},
-	    [CORE] = {.name = "core", .type = BLOBMSG_TYPE_STRING},
-	    [ERROR] = {.name = "core_error", .type = BLOBMSG_TYPE_INT32},
-	    [RENEWALS] = {.name = "renewals", .type = BLOBMSG_TYPE_INT32},
-	    [LAST] = {.name = "last_renew_ms", .type = BLOBMSG_TYPE_INT64},
-	    [CLOSING] = {.name = "closing", .type = BLOBMSG_TYPE_BOOL},
-	    [ROOT] = {.name = "root", .type = BLOBMSG_TYPE_STRING},
-	    [QUIESCE] = {.name = "quiesce", .type = BLOBMSG_TYPE_STRING},
-	    [QERROR] = {.name = "quiesce_error", .type = BLOBMSG_TYPE_INT32},
-	};
-	struct runtime_readiness *s = request->priv;
-	struct blob_attr *tb[N];
-	struct timespec now;
-	(void)type;
-	if (!message)
-		return;
-	blobmsg_parse(policy, N, tb, blob_data(message), blob_len(message));
-	for (unsigned i = 0; i < N; i++)
-		if (!tb[i])
-			return;
-	if (strcmp(blobmsg_get_string(tb[BOOT]), s->boot) || blobmsg_get_u32(tb[OWNER]) <= 1 ||
-	    strcmp(blobmsg_get_string(tb[CORE]), "ready") || blobmsg_get_u32(tb[ERROR]) ||
-	    blobmsg_get_bool(tb[CLOSING]) || blobmsg_get_u32(tb[RENEWALS]) < 2 ||
-	    strcmp(blobmsg_get_string(tb[ROOT]), "overlay") ||
-	    strcmp(blobmsg_get_string(tb[QUIESCE]), "idle") || blobmsg_get_u32(tb[QERROR]) ||
-	    clock_gettime(CLOCK_BOOTTIME, &now))
-		return;
-	uint64_t milliseconds = (uint64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
-	uint64_t last = blobmsg_get_u64(tb[LAST]);
-	s->ready = last <= milliseconds && milliseconds - last <= 25000;
-}
-
-static int live_runtime(const char *boot)
-{
-	struct runtime_readiness state = {.boot = boot};
-	struct ubus_context *ctx;
-	uint32_t id;
-	int ret = -1;
-	/* Object lookup itself is synchronous and has no timeout argument. */
-	alarm(2);
-	ctx = ubus_connect(NULL);
-	if (ctx) {
-		if (!ubus_lookup_id(ctx, "udx.runtime", &id) &&
-		    !ubus_invoke(ctx, id, "status", NULL, runtime_reply, &state, 1000) &&
-		    state.ready)
-			ret = 0;
-		ubus_free(ctx);
-	}
-	alarm(0);
-	return ret;
-}
-
-static int management_listener(unsigned port)
-{
-	int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-	struct sockaddr_in address = {.sin_family = AF_INET,
-				      .sin_port = htons(port),
-				      .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
-	int result = -1, error = 0;
-	socklen_t length = sizeof(error);
-	if (fd < 0)
-		return -1;
-	if (!connect(fd, (void *)&address, sizeof(address)))
-		result = 0;
-	else if (errno == EINPROGRESS) {
-		struct pollfd wait = {.fd = fd, .events = POLLOUT};
-		if (poll(&wait, 1, 500) == 1 &&
-		    !getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) && !error)
-			result = 0;
-	}
-	close(fd);
-	return result;
-}
-
-static int management_network_ready(void)
-{
-	/* The same bounded helper serves boot acceptance and live USB status. */
-	pid_t child = fork();
-	if (child < 0)
-		return -1;
-	if (!child) {
-		setpgid(0, 0);
-		execl("/usr/libexec/udx-boot-state", "udx-boot-state", "management-ready",
-		      (char *)0);
-		_exit(127);
-	}
-	setpgid(child, child);
-	int status;
-	for (unsigned i = 0; i < 30; i++) {
-		pid_t result = waitpid(child, &status, WNOHANG);
-		if (result == child)
-			return WIFEXITED(status) && !WEXITSTATUS(status) ? 0 : -1;
-		if (result < 0 && errno != EINTR)
-			break;
-		struct timespec delay = {0, 100000000};
-		nanosleep(&delay, NULL);
-	}
-	kill(-child, SIGKILL);
-	while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
-	}
-	return -1;
-}
-
-/* /run/udx-usb/applied starts with the active profile line. Keep every gadget
- * profile the daemon supports readable here, otherwise an ECM/RNDIS boot would
- * be treated as an unmanaged gadget and block the boot trial confirmation. */
-static int usb_profile_line(const char *value)
-{
-	static const char *const profiles[] = {"ncm", "ncm-software", "ecm", "rndis",
-						"rndis-software"};
-
-	if (strncmp(value, "profile=", 8))
+	DIR *dir = opendir("/proc");
+	struct dirent *entry;
+	int found = 0;
+	if (!dir)
 		return 0;
-	value += 8;
-	for (size_t i = 0; i < sizeof(profiles) / sizeof(*profiles); i++) {
-		size_t len = strlen(profiles[i]);
-		if (!strncmp(value, profiles[i], len) && value[len] == '\n')
-			return 1;
+	while ((entry = readdir(dir))) {
+		char path[288], comm[64];
+		int fd;
+		ssize_t n;
+		if (entry->d_name[0] < '0' || entry->d_name[0] > '9')
+			continue;
+		snprintf(path, sizeof(path), "/proc/%s/comm", entry->d_name);
+		fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+		if (fd < 0)
+			continue;
+		n = read(fd, comm, sizeof(comm) - 1);
+		close(fd);
+		if (n <= 0)
+			continue;
+		comm[n] = 0;
+		if (comm[n - 1] == '\n')
+			comm[n - 1] = 0;
+		if (!strcmp(comm, "adbd")) {
+			found = 1;
+			break;
+		}
 	}
-	return 0;
+	closedir(dir);
+	return found;
 }
 
-static int boot_management_ready(void)
+static int adbd_ready(void)
 {
-	char value[512];
-	/* Logical gadget readiness is independent of a connected host or SIM.
-	 * All run files are from this boot; require the live UDC binding too. */
+	char value[64];
+	if (!adbd_running())
+		return -1;
+	if (access("/dev/usb-ffs/adb/ep1", F_OK))
+		return -1;
 	if (text("/sys/kernel/config/usb_gadget/udx-usb/UDC", value, sizeof(value)) ||
-	    strcmp(value, "29100000.usb\n") || text("/run/udx-usb/applied", value, sizeof(value)) ||
-	    !usb_profile_line(value) ||
-	    management_listener(22) != 0 ||
-	    (management_listener(80) != 0 && management_listener(443) != 0) ||
-	    management_network_ready())
+	    strcmp(value, "29100000.usb\n"))
 		return -1;
 	return 0;
 }
+
 
 static int boot_accept(char *why, size_t cap)
 {
 	struct volume misc = {.fd = -1};
-	struct udx_root_layout layout;
 	unsigned char *data = NULL;
-	char boot[40], value[64];
-	const char *failure = "boot-accept-health";
+	char boot[40];
+	const char *failure = "boot-accept-adbd";
 	int result = -1;
-	if (text("/etc/udx-openwrt-root", value, sizeof(value)) ||
-	    strcmp(value, "OpenWrt production root\n") ||
-	    property("/sys/firmware/devicetree/base/chosen/udx,boot-policy", "openwrt-v1") ||
-	    property("/sys/firmware/devicetree/base/chosen/udx,boot-target", "openwrt") ||
-	    boot_id(boot) || udx_root_check(0, 1, &layout) || live_runtime(boot))
-		goto out;
-	failure = "boot-accept-management";
-	if (boot_management_ready())
+	if (boot_id(boot) || adbd_ready())
 		goto out;
 	failure = "boot-accept-misc";
 	if (find_volume("misc", UDX_MISC_ENV_BYTES, &misc))

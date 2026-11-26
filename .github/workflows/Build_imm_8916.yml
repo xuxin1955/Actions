@@ -317,7 +317,7 @@ jobs:
 
   release:
     name: 汇总发布 Release
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: build
     permissions:
       contents: write
