@@ -183,6 +183,7 @@ static J *usb_status(void)
 	json_object_array_add(profiles, json_object_new_string("ncm-software"));
 	json_object_array_add(profiles, json_object_new_string("ecm"));
 	json_object_array_add(profiles, json_object_new_string("rndis"));
+	json_object_array_add(profiles, json_object_new_string("rndis-software"));
 	json_object_object_add(out, "profiles", profiles);
 	text_file(out, "offload_state", "/sys/bus/platform/devices/2b300000.pamu3/offload_state");
 	return out;
