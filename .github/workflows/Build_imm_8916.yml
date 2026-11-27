@@ -300,50 +300,9 @@ jobs:
         name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}
 
-    - name: Cleanup old workflow runs
-      if: success()
-      continue-on-error: true
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        WF="${GITHUB_WORKFLOW_REF%%@*}"; WF="${WF##*/}"
-        gh run list -w "$WF" --status=completed --limit=1000 \
-          --json databaseId --jq ".[].databaseId | select(. != $GITHUB_RUN_ID)" |
-        while read -r id; do
-          gh run delete "$id" >/dev/null 2>&1 \
-            && echo "Deleted run $id" \
-            || echo "::warning::run $id delete failed"
-        done
-
-  release:
-    name: 汇总发布 Release
-    runs-on: ubuntu-26.04
-    needs: build
-    permissions:
-      contents: write
-    if: needs.build.result == 'success' && !cancelled()
-    steps:
-
-    - name: Checkout
-      uses: actions/checkout@main
-
-    - name: Collect firmware artifacts
-      uses: actions/download-artifact@main
-      with:
-        pattern: OpenWrt_firmware*
-        merge-multiple: true
-        path: firmware
-
-    - name: Organize output
-      run: |
-        mkdir -p out
-        find firmware -type f -exec mv {} out/ \;
-        echo "FIRMWARE=$PWD/out" >> $GITHUB_ENV
-        echo "===== files ====="
-        find out -type f
-
     - name: Generate release tag
       id: tag
+      if: steps.organize.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
       env:
         MIRROR: https://gh-proxy.com/
       run: |
@@ -444,6 +403,7 @@ jobs:
         fi
 
     - name: Generate file list
+      if: steps.tag.outputs.status == 'success'
       run: |
         find ${{ env.FIRMWARE }} -type f > file_list.txt
         echo "Collected files:"
@@ -451,6 +411,7 @@ jobs:
         test -s file_list.txt || { echo "::error::No firmware files found"; exit 1; }
 
     - name: Keep firmware files only
+      if: steps.tag.outputs.status == 'success'
       run: |
         cd ${{ env.FIRMWARE }}
         rm -f config.buildinfo feeds.buildinfo profiles.json \
@@ -508,4 +469,20 @@ jobs:
           [ -n "$tag" ] || continue
           gh api -X DELETE "repos/$R/git/refs/tags/$tag" >/dev/null 2>&1 \
             && echo "Deleted orphan tag: $tag"
+        done
+
+
+    - name: Cleanup old workflow runs
+      if: success()
+      continue-on-error: true
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        WF="${GITHUB_WORKFLOW_REF%%@*}"; WF="${WF##*/}"
+        gh run list -w "$WF" --status=completed --limit=1000 \
+          --json databaseId --jq ".[].databaseId | select(. != $GITHUB_RUN_ID)" |
+        while read -r id; do
+          gh run delete "$id" >/dev/null 2>&1 \
+            && echo "Deleted run $id" \
+            || echo "::warning::run $id delete failed"
         done
