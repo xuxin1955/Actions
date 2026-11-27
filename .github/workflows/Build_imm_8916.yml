@@ -1,8 +1,8 @@
 name: Build_imm_8916
 
 on:
-  schedule:
-   - cron: '0 17 * * 6'
+  # schedule:
+  #  - cron: '0 17 * * 6'
   repository_dispatch:
   workflow_dispatch:
     inputs:
