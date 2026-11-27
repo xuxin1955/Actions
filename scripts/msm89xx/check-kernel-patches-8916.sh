@@ -184,6 +184,9 @@ PA_TAR="pulseaudio-$PV-$PD-$PABBR.tar.zst"
 check_pkg_patch "$PA_MK" PKG_VERSION PKG_MIRROR_HASH "$PA_TAR" \
 	"https://sources.openwrt.org" \
 	"$SCRIPTS/patches/005-pulseaudio-system-pa-auth-anonymous.patch" pulseaudio
+check_pkg_patch "$PA_MK" PKG_VERSION PKG_MIRROR_HASH "$PA_TAR" \
+	"https://sources.openwrt.org" \
+	"$SCRIPTS/patches/007-pulseaudio-system-pa-disable-module-detect.patch" pulseaudio007
 
 echo "== sound Kconfig patch presence"
 P0105="$SCRIPTS/target/linux/msm89xx/patches-7.3/0105-sound-core-add-prompt-to-snd-hwdep-and-compress.patch"

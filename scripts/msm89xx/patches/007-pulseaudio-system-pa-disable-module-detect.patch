@@ -1,0 +1,11 @@
+--- a/src/daemon/system.pa.in
++++ b/src/daemon/system.pa.in
+@@ -37,7 +37,7 @@
+ .ifexists module-detect@PA_SOEXT@
+ ])dnl
+ ### Use the static hardware detection module (for systems that lack udev/hal support)
+-load-module module-detect
++#load-module module-detect
+ .endif
+ ifelse(@OS_IS_FREEBSD@, 1, [dnl
+ ### FreeBSD devd is used in addition to static detection (only handles hotplug)

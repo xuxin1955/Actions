@@ -36,6 +36,8 @@ cp "$GITHUB_WORKSPACE/scripts/msm89xx/patches/300-bluez-main-conf-secure-connect
 
 cp "$GITHUB_WORKSPACE/scripts/msm89xx/patches/005-pulseaudio-system-pa-auth-anonymous.patch" "$GITHUB_WORKSPACE/openwrt/feeds/packages/sound/pulseaudio/patches/005-pulseaudio-system-pa-auth-anonymous.patch"
 
+cp "$GITHUB_WORKSPACE/scripts/msm89xx/patches/007-pulseaudio-system-pa-disable-module-detect.patch" "$GITHUB_WORKSPACE/openwrt/feeds/packages/sound/pulseaudio/patches/007-pulseaudio-system-pa-disable-module-detect.patch"
+
 patch -p1 --forward < "$GITHUB_WORKSPACE/scripts/msm89xx/patches/006-pulseaudio-tools-add-libpulse-depends.patch" || {
 	echo "::error::006 pulseaudio-tools libpulse depends patch failed"
 	exit 1
