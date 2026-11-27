@@ -311,7 +311,7 @@ jobs:
         NAME="MSM8916-$(date +%Y.%m.%d-%H%M)"
         { echo "release_tag=$TAG"; echo "release_name=$NAME"; } >> $GITHUB_OUTPUT
 
-        cp -f "$GITHUB_WORKSPACE/scripts/flash.zip" "${{ env.FIRMWARE }}/刷机小工具-flash.zip" 2>/dev/null || true
+        cp -f "$GITHUB_WORKSPACE/scripts/flash.zip" "${{ env.FIRMWARE }}/flash.zip" 2>/dev/null || true
 
         KVER=$(grep -h "kmod-usb-core" ${{ env.FIRMWARE }}/*.manifest 2>/dev/null | awk -F' - ' '{print $2}' | grep -oP '[0-9]+\.[0-9]+(\.[0-9]+)?([-~]?rc[0-9]+)?' | head -1 || true)
 
@@ -321,10 +321,11 @@ jobs:
           echo "- 编译时间: $(date +"%Y-%m-%d %H:%M")"
           echo "- 内核版本: ${KVER:-未知}"
           echo "- 管理地址: 192.168.10.1"
-          echo "- 默认账号: root / 空密码"
+          echo "- 默认账号: root / 空"
           echo "- 源码: ${{ env.REPO_URL }}"
           echo "- 分支: ${{ env.REPO_BRANCH }}"
-          echo "- 刷机小工具: 见下方加速表格或 Assets：\`刷机小工具-flash.zip\`"
+          echo "- 刷机小工具: flash.zip"
+          echo "- 已开启 Bluetooth 功能"
           echo ""
           echo "<details>"
           echo "<summary>支持机型</summary>"
@@ -374,8 +375,8 @@ jobs:
             echo "|---|---|---|---|"
             printf '%s' "${ROWS}"
           fi
-          if [ -f "${{ env.FIRMWARE }}/刷机小工具-flash.zip" ]; then
-            FN="刷机小工具-flash.zip"
+          if [ -f "${{ env.FIRMWARE }}/flash.zip" ]; then
+            FN="flash.zip"
             SZ=$(LC_ALL=C du -h "${{ env.FIRMWARE }}/${FN}" | cut -f1)
             U="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${FN}"
             echo ""
