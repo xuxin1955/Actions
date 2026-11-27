@@ -1,0 +1,20 @@
+--- a/sound/core/Kconfig
++++ b/sound/core/Kconfig
+@@ -17,7 +17,7 @@
+ 	tristate
+ 
+ config SND_HWDEP
+-	tristate
++	tristate "ALSA hwdep interface"
+ 
+ config SND_SEQ_DEVICE
+ 	tristate
+@@ -57,7 +57,7 @@
+ 
+ 
+ config SND_COMPRESS_OFFLOAD
+-	tristate
++	tristate "ALSA compressed offload support"
+ 
+ config SND_COMPRESS_ACCEL
+ 	bool

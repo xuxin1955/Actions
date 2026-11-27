@@ -185,6 +185,25 @@ check_pkg_patch "$PA_MK" PKG_VERSION PKG_MIRROR_HASH "$PA_TAR" \
 	"https://sources.openwrt.org" \
 	"$SCRIPTS/patches/005-pulseaudio-system-pa-auth-anonymous.patch" pulseaudio
 
+echo "== sound Kconfig patch presence"
+P0105="$SCRIPTS/target/linux/msm89xx/patches-7.3/0105-sound-core-add-prompt-to-snd-hwdep-and-compress.patch"
+if [ ! -f "$P0105" ]; then
+	echo "  [FAIL] 0105-sound-core-add-prompt-to-snd-hwdep-and-compress.patch missing"
+	echo "::error::0105 sound Kconfig patch not found under $SCRIPTS, kmod-sound-core will hit snd-hwdep.ko is missing"
+	fail=$((fail+1))
+elif ! grep -q 'tristate "ALSA hwdep interface"' "$P0105"; then
+	echo "  [FAIL] 0105 patch has no SND_HWDEP prompt hunk"
+	echo "::error::0105 sound Kconfig patch malformed: SND_HWDEP prompt hunk absent"
+	fail=$((fail+1))
+elif ! grep -q 'tristate "ALSA compressed offload support"' "$P0105"; then
+	echo "  [FAIL] 0105 patch has no SND_COMPRESS_OFFLOAD prompt hunk"
+	echo "::error::0105 sound Kconfig patch malformed: SND_COMPRESS_OFFLOAD prompt hunk absent"
+	fail=$((fail+1))
+else
+	echo "  [OK]   0105 both prompt hunks present, apply verified in target group above"
+	ok=$((ok+1))
+fi
+
 echo "== OK=$ok FUZZ=$fuzz FAIL=$fail on linux-$KVER"
 if [ "$fail" -gt 0 ]; then
 	echo "::error::$fail kernel patch(es) failed on linux-$KVER, blocked" >&2
