@@ -121,6 +121,70 @@ T3=$(find "$WORK/t3" -mindepth 1 -maxdepth 1 -type d | head -1)
 echo "== package/kernel/mac80211 (backports-$BP_VER): $(echo "$ATH" | grep -c .) ath patches"
 apply_group "$T3" $ATH
 
+check_pkg_patch() {
+	local mk="$1" verkey="$2" hashkey="$3" tname="$4" urlbase="$5" patchfile="$6" label="$7"
+	local ver hsh tar f actual tree out rc
+	[ -f "$mk" ] || { echo "  [FAIL] $label: Makefile missing: $mk" >&2; fail=$((fail+1)); return; }
+	[ -f "$patchfile" ] || { echo "  [FAIL] $label: patch missing: $patchfile" >&2; fail=$((fail+1)); return; }
+	ver=$(sed -n "s/^${verkey} *:= *//p" "$mk" | head -1)
+	case "$ver" in ''|*[!0-9.]*) echo "  [FAIL] $label: cannot parse $verkey from $mk" >&2; fail=$((fail+1)); return;; esac
+	hsh=$(sed -n "s/^${hashkey} *:= *//p" "$mk" | head -1)
+	tar="$OW/dl/$tname"
+	if [ ! -f "$tar" ]; then
+		echo "   dl/ cache miss for $tname, downloading..."
+		mkdir -p "$OW/dl"
+		curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 560 -o "$tar" "$urlbase/$tname" || {
+			echo "  [FAIL] $label: tarball download failed" >&2; fail=$((fail+1)); return;
+		}
+	fi
+	if [ -n "$hsh" ]; then
+		actual=$(sha256sum "$tar" | awk '{print $1}')
+		if [ "$actual" != "$hsh" ]; then
+			echo "  [FAIL] $label: hash mismatch: Makefile=$hsh actual=$actual" >&2
+			fail=$((fail+1)); return
+		fi
+	fi
+	mkdir -p "$WORK/$label"
+	case "$tname" in
+		*.tar.zst) tar --zstd -xf "$tar" -C "$WORK/$label" || { echo "  [FAIL] $label: extract failed" >&2; fail=$((fail+1)); return; };;
+		*) tar -xf "$tar" -C "$WORK/$label" || { echo "  [FAIL] $label: extract failed" >&2; fail=$((fail+1)); return; };;
+	esac
+	tree=$(find "$WORK/$label" -mindepth 1 -maxdepth 1 -type d | head -1)
+	out=$(patch -p1 --batch --forward --no-backup-if-mismatch --fuzz=2 -d "$tree" -i "$patchfile" 2>&1); rc=$?
+	if [ $rc -eq 0 ] && ! echo "$out" | grep -qiE 'fuzz|offset'; then
+		echo "  [OK]   $label: $(basename "$patchfile")"; ok=$((ok+1))
+	elif [ $rc -eq 0 ]; then
+		echo "  [FUZZ] $label: $(basename "$patchfile")"
+		echo "::warning::$label patch applied with fuzz/offset"
+		echo "$out" | grep -iE 'fuzz|offset' | sed 's/^/         /'
+		fuzz=$((fuzz+1))
+	else
+		echo "  [FAIL] $label: $(basename "$patchfile")"
+		echo "::error::$label patch failed, blocked"
+		echo "$out" | grep -iE 'Hunk|FAILED|can.t find|malformed|Reversed' | head -12 | sed 's/^/         /'
+		fail=$((fail+1))
+	fi
+}
+
+echo "== package patches: bluez / pulseaudio"
+BLUEZ_MK="$OW/feeds/packages/utils/bluez/Makefile"
+PA_MK="$OW/feeds/packages/sound/pulseaudio/Makefile"
+
+BV=$(sed -n 's/^PKG_VERSION *:= *//p' "$BLUEZ_MK" 2>/dev/null | head -1)
+BLUEZ_TAR="bluez-$BV.tar.xz"
+check_pkg_patch "$BLUEZ_MK" PKG_VERSION PKG_HASH "$BLUEZ_TAR" \
+	"https://www.kernel.org/pub/linux/bluetooth" \
+	"$SCRIPTS/patches/300-bluez-main-conf-secure-connections-off.patch" bluez
+
+PV=$(sed -n 's/^PKG_VERSION *:= *//p' "$PA_MK" 2>/dev/null | head -1)
+PD=$(sed -n 's/^PKG_SOURCE_DATE *:= *//p' "$PA_MK" 2>/dev/null | head -1)
+PSV=$(sed -n 's/^PKG_SOURCE_VERSION *:= *//p' "$PA_MK" 2>/dev/null | head -1)
+PABBR=$(printf '%.8s' "$PSV")
+PA_TAR="pulseaudio-$PV-$PD-$PABBR.tar.zst"
+check_pkg_patch "$PA_MK" PKG_VERSION PKG_MIRROR_HASH "$PA_TAR" \
+	"https://sources.openwrt.org" \
+	"$SCRIPTS/patches/005-pulseaudio-system-pa-auth-anonymous.patch" pulseaudio
+
 echo "== OK=$ok FUZZ=$fuzz FAIL=$fail on linux-$KVER"
 if [ "$fail" -gt 0 ]; then
 	echo "::error::$fail kernel patch(es) failed on linux-$KVER, blocked" >&2
