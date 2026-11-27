@@ -1,0 +1,11 @@
+--- a/feeds/packages/sound/pulseaudio/Makefile
++++ b/feeds/packages/sound/pulseaudio/Makefile
+@@ -83,7 +83,7 @@
+ define Package/pulseaudio-tools
+   SECTION:=sound
+   CATEGORY:=Sound
+-  DEPENDS:=+libsndfile pulseaudio
++  DEPENDS:=+libsndfile +libpulse pulseaudio
+   TITLE:=Tools for Pulseaudio
+   URL:=https://www.freedesktop.org/wiki/Software/PulseAudio/
+   VARIANT:=noavahi
