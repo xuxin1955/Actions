@@ -26,3 +26,12 @@ patch -p1 --forward < "$GITHUB_WORKSPACE/scripts/msm89xx/patches/002-image-mk-re
 	echo "::error::002-image-mk-remove-graph-child-address.patch failed to apply: upstream image.mk has drifted; re-sync scripts/msm89xx/patches/002-image-mk-remove-graph-child-address.patch"
 	exit 1
 }
+
+patch -p1 --forward < "$GITHUB_WORKSPACE/scripts/msm89xx/patches/003-pulseaudio-init-no-disallow-module-loading.patch" || {
+	echo "::error::003-pulseaudio-init-no-disallow-module-loading.patch failed to apply: upstream pulseaudio.init has drifted; re-sync scripts/msm89xx/patches/003-pulseaudio-init-no-disallow-module-loading.patch"
+	exit 1
+}
+
+cp "$GITHUB_WORKSPACE/scripts/msm89xx/patches/300-bluez-main-conf-secure-connections-off.patch" "$GITHUB_WORKSPACE/openwrt/feeds/packages/utils/bluez/patches/300-bluez-main-conf-secure-connections-off.patch"
+
+cp "$GITHUB_WORKSPACE/scripts/msm89xx/patches/005-pulseaudio-system-pa-auth-anonymous.patch" "$GITHUB_WORKSPACE/openwrt/feeds/packages/sound/pulseaudio/patches/005-pulseaudio-system-pa-auth-anonymous.patch"

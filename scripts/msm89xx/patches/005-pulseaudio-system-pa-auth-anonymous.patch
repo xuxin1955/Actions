@@ -1,0 +1,11 @@
+--- a/src/daemon/system.pa.in
++++ b/src/daemon/system.pa.in
+@@ -50,7 +50,7 @@
+ .ifexists module-esound-protocol-unix@PA_SOEXT@
+ load-module module-esound-protocol-unix
+ .endif
+-load-module module-native-protocol-unix
++load-module module-native-protocol-unix auth-anonymous=1
+ 
+ ### Automatically restore the default sink/source when changed by the user
+ ### during runtime

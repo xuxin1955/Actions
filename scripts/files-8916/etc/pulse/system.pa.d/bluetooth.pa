@@ -1,0 +1,2 @@
+.nofail
+load-module module-bluez5-discover

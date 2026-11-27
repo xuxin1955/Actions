@@ -1,0 +1,11 @@
+--- a/src/main.conf
++++ b/src/main.conf
+@@ -120,7 +120,7 @@
+ # - "on": Secure Connections are enabled when peer device supports them
+ # - "only": we allow only Secure Connections
+ # Defaults to "on"
+-#SecureConnections = on
++SecureConnections = off
+ 
+ # Enables D-Bus experimental interfaces
+ # Possible values: true or false
